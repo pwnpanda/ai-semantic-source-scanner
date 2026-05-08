@@ -107,7 +107,7 @@ def cache_rm(
         Path(path).chmod(stat_mod.S_IWUSR | stat_mod.S_IRUSR | stat_mod.S_IXUSR)
         Path(path).unlink(missing_ok=True)
 
-    shutil.rmtree(repo_dir, onerror=_force)
+    shutil.rmtree(repo_dir, onexc=_force)
     typer.echo(f"Removed {repo_id}")
 
 

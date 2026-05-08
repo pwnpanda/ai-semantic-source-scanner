@@ -65,7 +65,7 @@ def _existing_snapshot_matches(
 
 
 def _force_remove(_func, path, _exc) -> None:
-    """``shutil.rmtree`` ``onerror`` hook to clear read-only bits before retry."""
+    """``shutil.rmtree`` ``onexc`` hook to clear read-only bits before retry."""
     Path(path).chmod(stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
     Path(path).unlink(missing_ok=True)
 
@@ -73,7 +73,7 @@ def _force_remove(_func, path, _exc) -> None:
 def _cp_snapshot(target: Path, cache_dir: Path) -> Path:
     snapshot_dir = cache_dir / "source"
     if snapshot_dir.exists():
-        shutil.rmtree(snapshot_dir, onerror=_force_remove)
+        shutil.rmtree(snapshot_dir, onexc=_force_remove)
     shutil.copytree(target, snapshot_dir, symlinks=False, ignore_dangling_symlinks=True)
     return snapshot_dir
 
@@ -105,7 +105,7 @@ def _git_worktree_snapshot(target: Path, cache_dir: Path, commit: str) -> Path:
             check=False,
         )
         if snapshot_dir.exists():
-            shutil.rmtree(snapshot_dir, onerror=_force_remove)
+            shutil.rmtree(snapshot_dir, onexc=_force_remove)
     cache_dir.mkdir(parents=True, exist_ok=True)
     # S603/S607: literal argv, no shell.
     subprocess.run(  # noqa: S603
