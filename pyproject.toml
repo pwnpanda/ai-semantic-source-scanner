@@ -40,6 +40,7 @@ ignore = ["S101"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S", "PLR2004"]
+"ai_codescan/third_party/*" = ["ALL"]
 
 # `ty` does not have a single `strict` toggle; instead, the Makefile passes
 # `--error-on-warning` to escalate every warn-level diagnostic to an error.
