@@ -7,8 +7,9 @@ import datetime as _dt
 import shutil
 import stat as stat_mod
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
+import duckdb
 import typer
 
 from ai_codescan.config import default_cache_root
@@ -74,6 +75,90 @@ def prep(
         commit_label = f" @ {snap.commit_sha[:8]}" if snap.commit_sha else ""
         typer.echo(f"snapshot {status_word} ({snap.method}){commit_label}")
         typer.echo(f"index at {db_path}")
+
+
+def _format_rows(columns: list[str], rows: list[tuple[Any, ...]]) -> str:
+    """Render rows as an aligned text table (replacement for pandas to_string)."""
+    if not rows:
+        return "(no rows)"
+    str_rows = [[str(v) if v is not None else "" for v in row] for row in rows]
+    widths = [max(len(columns[i]), *(len(r[i]) for r in str_rows)) for i in range(len(columns))]
+    header = "  ".join(col.rjust(widths[i]) for i, col in enumerate(columns))
+    body = "\n".join(
+        "  ".join(cell.rjust(widths[i]) for i, cell in enumerate(row)) for row in str_rows
+    )
+    return f"{header}\n{body}"
+
+
+def _resolve_repo_id(cache_root: Path, repo_id: str) -> str:
+    """Pick the cached repo by id, or auto-select if exactly one exists."""
+    if repo_id:
+        return repo_id
+    if not cache_root.exists():
+        typer.echo("Cache directory does not exist.", err=True)
+        raise typer.Exit(code=1)
+    repos = sorted(p.name for p in cache_root.iterdir() if p.is_dir())
+    if len(repos) != 1:
+        typer.echo("Specify --repo-id (zero or multiple cached repos exist).", err=True)
+        raise typer.Exit(code=1)
+    return repos[0]
+
+
+@app.command()
+def query(
+    ctx: typer.Context,
+    sql: Annotated[str, typer.Argument(help="SQL to run against the repo's index.duckdb.")],
+    repo_id: Annotated[str, typer.Option("--repo-id", help="Which cached repo.")] = "",
+) -> None:
+    """Run an arbitrary read-only SQL against a cached repo's index."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    db = cache_root / repo_id / "index.duckdb"
+    conn = duckdb.connect(str(db), read_only=True)
+    try:
+        cur = conn.execute(sql)
+        columns = [d[0] for d in cur.description] if cur.description else []
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    typer.echo(_format_rows(columns, rows))
+
+
+@app.command()
+def flows(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    from_symbol: Annotated[str, typer.Option("--from")] = "",
+    to_symbol: Annotated[str, typer.Option("--to")] = "",
+) -> None:
+    """List flows reaching/from a symbol via the navigation views."""
+    if bool(from_symbol) == bool(to_symbol):
+        typer.echo("Specify exactly one of --from or --to.", err=True)
+        raise typer.Exit(code=1)
+
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    db = cache_root / repo_id / "index.duckdb"
+    conn = duckdb.connect(str(db), read_only=True)
+    try:
+        if from_symbol:
+            cur = conn.execute(
+                "SELECT * FROM v_sources_to_sinks WHERE source_symbol_id = ?",
+                [from_symbol],
+            )
+        else:
+            cur = conn.execute(
+                "SELECT * FROM v_sinks_from_sources WHERE sink_symbol_id = ?",
+                [to_symbol],
+            )
+        columns = [d[0] for d in cur.description] if cur.description else []
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        typer.echo("no flows")
+        return
+    typer.echo(_format_rows(columns, rows))
 
 
 @app.command()

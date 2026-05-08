@@ -112,3 +112,42 @@ def test_prep_populates_duckdb(tmp_path: Path, fixtures_dir: Path) -> None:
     assert symbols_row is not None
     assert files_row[0] >= 1
     assert symbols_row[0] >= 1
+
+
+@pytest.mark.integration
+def test_query_subcommand_returns_rows(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "query",
+            "--repo-id",
+            repo_id,
+            "SELECT COUNT(*) AS n FROM symbols",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "n" in result.stdout
+
+
+@pytest.mark.integration
+def test_flows_subcommand_handles_empty_db(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "flows", "--repo-id", repo_id, "--from", "anything"],
+    )
+    assert result.exit_code == 0
+    assert "no flows" in result.stdout.lower() or result.stdout.strip() == ""
