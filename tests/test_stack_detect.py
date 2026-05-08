@@ -46,3 +46,20 @@ def test_html_only_directory_yields_html_project(fixtures_dir: Path, tmp_path: P
     projects = detect_projects(site)
     assert len(projects) == 1
     assert projects[0].kind is ProjectKind.HTML_ONLY
+
+
+def test_express_framework_detected(fixtures_dir: Path) -> None:
+    p = detect_projects(fixtures_dir / "tiny-express")[0]
+    assert "express" in p.frameworks
+    assert p.package_manager == "npm"
+
+
+def test_react_and_typescript_framework_detected(fixtures_dir: Path) -> None:
+    p = detect_projects(fixtures_dir / "tiny-react")[0]
+    assert "react" in p.frameworks
+    assert p.package_manager == "pnpm"
+
+
+def test_fastify_in_monorepo_workspace(fixtures_dir: Path) -> None:
+    api = next(p for p in detect_projects(fixtures_dir / "monorepo-pnpm") if p.name == "api")
+    assert "fastify" in api.frameworks

@@ -34,6 +34,8 @@ class Project:
     has_tsconfig: bool = False
     is_workspace_member: bool = False
     workspace_root: Path | None = None  # base_path of the workspace root (if any)
+    frameworks: set[str] = field(default_factory=set)
+    package_manager: str = "unknown"
 
 
 def _is_workspace_root(pkg_json: Path) -> bool:
@@ -81,6 +83,53 @@ def _project_name(pkg_json: Path) -> str:
     return str(data.get("name") or pkg_json.parent.name)
 
 
+_FRAMEWORK_DEPS: dict[str, str] = {
+    # dependency-name → framework label
+    "express": "express",
+    "fastify": "fastify",
+    "@nestjs/core": "nest",
+    "next": "nextjs",
+    "react": "react",
+    "react-dom": "react",
+    "vue": "vue",
+    "@vue/runtime-core": "vue",
+    "svelte": "svelte",
+    "@sveltejs/kit": "sveltekit",
+    "@angular/core": "angular",
+    "astro": "astro",
+    "koa": "koa",
+    "hapi": "hapi",
+    "@hapi/hapi": "hapi",
+    "remix": "remix",
+    "@remix-run/server-runtime": "remix",
+}
+
+
+def _detect_frameworks(pkg_json: Path) -> set[str]:
+    try:
+        data = json.loads(pkg_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    deps: dict[str, str] = {}
+    for key in ("dependencies", "devDependencies", "peerDependencies"):
+        deps.update(data.get(key) or {})
+    return {label for dep, label in _FRAMEWORK_DEPS.items() if dep in deps}
+
+
+def _detect_package_manager(workspace_root: Path) -> str:
+    if (workspace_root / "pnpm-lock.yaml").is_file():
+        return "pnpm"
+    if (workspace_root / "yarn.lock").is_file():
+        return "yarn"
+    if (workspace_root / "bun.lock").is_file() or (workspace_root / "bun.lockb").is_file():
+        return "bun"
+    if (workspace_root / "package-lock.json").is_file():
+        return "npm"
+    if (workspace_root / "npm-shrinkwrap.json").is_file():
+        return "npm"
+    return "unknown"
+
+
 def detect_projects(root: Path) -> list[Project]:
     """Return all projects discovered under ``root``."""
     pkg_jsons = sorted(
@@ -102,6 +151,8 @@ def detect_projects(root: Path) -> list[Project]:
         is_root = rel == Path(".")
         if is_root and workspace_root_path is not None:
             continue
+        pm_root = root / (workspace_root_path or Path("."))
+        package_manager = _detect_package_manager(pm_root)
         projects.append(
             Project(
                 name=_project_name(pkg),
@@ -111,6 +162,8 @@ def detect_projects(root: Path) -> list[Project]:
                 has_tsconfig=(pkg.parent / "tsconfig.json").is_file(),
                 is_workspace_member=workspace_root_path is not None and not is_root,
                 workspace_root=workspace_root_path,
+                frameworks=_detect_frameworks(pkg),
+                package_manager=package_manager,
             )
         )
 
