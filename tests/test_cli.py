@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import duckdb
 import pytest
 from typer.testing import CliRunner
 
@@ -93,3 +94,21 @@ def test_cache_rm_removes_repo_dir(tmp_path: Path, fixtures_dir: Path) -> None:
     result = runner.invoke(app, ["--cache-dir", str(cache), "cache", "rm", repo_id])
     assert result.exit_code == 0
     assert not (cache / repo_id).exists()
+
+
+@pytest.mark.integration
+def test_prep_populates_duckdb(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-react")],
+    )
+    repo_dirs = list(cache.iterdir())
+    db_path = repo_dirs[0] / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    files_row = conn.execute("SELECT COUNT(*) FROM files").fetchone()
+    symbols_row = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()
+    assert files_row is not None
+    assert symbols_row is not None
+    assert files_row[0] >= 1
+    assert symbols_row[0] >= 1
