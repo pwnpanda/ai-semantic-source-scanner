@@ -12,6 +12,8 @@ dependencies = [
   "duckdb>=1.1.3",
   "protobuf>=5.28",
   "xxhash>=3.5",
+  "pyyaml>=6.0.2",
+  "sarif-om>=1.0.4",
 ]
 
 [project.scripts]
