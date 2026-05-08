@@ -16,10 +16,10 @@ _DOT_DIR_SKIP = frozenset({".git", ".hg", ".svn", "node_modules", ".venv", "__py
 class ManifestEntry:
     """One file's record in the manifest."""
 
-    path: str       # POSIX-style relative path
-    sha256: str     # hex digest
-    size: int       # bytes
-    mtime: float    # POSIX timestamp
+    path: str  # POSIX-style relative path
+    sha256: str  # hex digest
+    size: int  # bytes
+    mtime: float  # POSIX timestamp
 
 
 @dataclass(frozen=True, slots=True)
