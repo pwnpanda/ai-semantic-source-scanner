@@ -42,3 +42,13 @@ Quick check after running prep:
 ai-codescan query "SELECT kind, COUNT(*) FROM symbols GROUP BY kind"
 ai-codescan flows --from <symbol-id>
 ```
+
+## Phase 1C status
+
+`prep` now runs CodeQL after AST/SCIP. Install CodeQL CLI 2.25+ and ensure `codeql` is on PATH. Filter scan classes via `--target-bug-class injection` or `--target-bug-class xss,sqli`.
+
+```bash
+ai-codescan prep /path/to/target --target-bug-class injection
+ai-codescan list-bug-classes
+ai-codescan query "SELECT cwe, COUNT(*) FROM flows GROUP BY cwe"
+```
