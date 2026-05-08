@@ -17,8 +17,10 @@ def _canonical_target_identity(target: Path) -> str:
     absolute filesystem path so non-git directories still get a stable id.
     """
     if (target / ".git").exists():
-        result = subprocess.run(
-            ["git", "-C", str(target), "remote", "get-url", "origin"],
+        # S603/S607: argv list with literal "git" — target is passed as a
+        # separate arg (no shell), and git remote get-url has no side effects.
+        result = subprocess.run(  # noqa: S603
+            ["git", "-C", str(target), "remote", "get-url", "origin"],  # noqa: S607
             capture_output=True,
             text=True,
             check=False,
