@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": { "driver": { "name": "CodeQL", "version": "2.25.0" } },
+      "results": [
+        {
+          "ruleId": "js/sql-injection",
+          "ruleIndex": 0,
+          "message": { "text": "Untrusted data flows into SQL." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "server.js" },
+                "region": { "startLine": 5, "startColumn": 14, "endLine": 5, "endColumn": 70 }
+              }
+            }
+          ],
+          "codeFlows": [
+            {
+              "threadFlows": [
+                {
+                  "locations": [
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": { "uri": "server.js" },
+                          "region": { "startLine": 4, "startColumn": 22, "endLine": 4, "endColumn": 35 }
+                        },
+                        "message": { "text": "req.query.id" }
+                      }
+                    },
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": { "uri": "server.js" },
+                          "region": { "startLine": 5, "startColumn": 14, "endLine": 5, "endColumn": 70 }
+                        },
+                        "message": { "text": "concatenated SQL" }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "tags": ["security", "external/cwe/cwe-089"],
+            "security-severity": "8.8"
+          }
+        }
+      ],
+      "originalUriBaseIds": { "%SRCROOT%": { "uri": "file:///abs/" } }
+    }
+  ]
+}
