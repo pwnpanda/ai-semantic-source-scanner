@@ -70,6 +70,22 @@ def _force_remove(_func, path, _exc) -> None:
     Path(path).unlink(missing_ok=True)
 
 
+def _cp_snapshot(target: Path, cache_dir: Path) -> Path:
+    snapshot_dir = cache_dir / "source"
+    if snapshot_dir.exists():
+        shutil.rmtree(snapshot_dir, onerror=_force_remove)
+    shutil.copytree(target, snapshot_dir, symlinks=False, ignore_dangling_symlinks=True)
+    return snapshot_dir
+
+
+def _manifest_already_matches(cache_dir: Path, snapshot_dir: Path) -> bool:
+    """For non-git targets: return True if the snapshot content already matches."""
+    manifest_path = cache_dir / "manifest.jsonl"
+    if not manifest_path.is_file() or not snapshot_dir.exists():
+        return False
+    return read_manifest(manifest_path) == build_manifest(snapshot_dir)
+
+
 def _git_worktree_snapshot(target: Path, cache_dir: Path, commit: str) -> Path:
     snapshot_dir = cache_dir / "source"
     if snapshot_dir.exists():
@@ -117,17 +133,19 @@ def take_snapshot(
 ) -> SnapshotResult:
     """Snapshot ``target`` into ``cache_dir``.
 
-    Returns a :class:`SnapshotResult` describing where the snapshot landed.
-    Re-invocation with the same ``commit`` is idempotent: returns
-    ``skipped=True`` without re-copying.
+    Uses ``git worktree`` when ``target`` is a git repo, ``cp -r`` otherwise.
+    Idempotent: a re-invocation with matching state returns ``skipped=True``.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = cache_dir / "source"
+    manifest_path = cache_dir / "manifest.jsonl"
+
     if _is_git_repo(target):
         sha = _resolve_commit(target, commit)
         if _existing_snapshot_matches(cache_dir, sha):
             return SnapshotResult(
-                snapshot_dir=cache_dir / "source",
-                manifest_path=cache_dir / "manifest.jsonl",
+                snapshot_dir=snapshot_dir,
+                manifest_path=manifest_path,
                 commit_sha=sha,
                 method="git-worktree",
                 skipped=True,
@@ -135,17 +153,26 @@ def take_snapshot(
         snapshot_dir = _git_worktree_snapshot(target, cache_dir, sha)
         (cache_dir / ".snapshot-commit").write_text(sha, encoding="utf-8")
         method: Literal["git-worktree", "cp"] = "git-worktree"
+        commit_sha: str | None = sha
     else:
-        raise NotImplementedError("non-git snapshot lands in Task 5")
+        if _manifest_already_matches(cache_dir, snapshot_dir):
+            return SnapshotResult(
+                snapshot_dir=snapshot_dir,
+                manifest_path=manifest_path,
+                commit_sha=None,
+                method="cp",
+                skipped=True,
+            )
+        snapshot_dir = _cp_snapshot(target, cache_dir)
+        method = "cp"
+        commit_sha = None
 
-    manifest_path = cache_dir / "manifest.jsonl"
     write_manifest(manifest_path, build_manifest(snapshot_dir))
     _make_read_only(snapshot_dir)
-    _ = read_manifest  # imported for Task 5 / later use
     return SnapshotResult(
         snapshot_dir=snapshot_dir,
         manifest_path=manifest_path,
-        commit_sha=sha if _is_git_repo(target) else None,
+        commit_sha=commit_sha,
         method=method,
         skipped=False,
     )
