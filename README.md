@@ -24,3 +24,21 @@ uv run ai-codescan prep /tmp/tmp-express
 cat ~/.ai_codescan/repos/tmp-express-*/repo.md
 uv run ai-codescan cache list
 ```
+
+## Phase 1B status
+
+`prep` now also runs the AST extractor (ts-morph + parse5 + tree-sitter), builds a SCIP index, and populates `index.duckdb`. New subcommands: `query`, `flows --from/--to`. External tools required:
+
+- `node` (>=22) and `pnpm` for the AST worker
+- `scip-typescript` global install:
+
+```bash
+npm i -g @sourcegraph/scip-typescript
+```
+
+Quick check after running prep:
+
+```bash
+ai-codescan query "SELECT kind, COUNT(*) FROM symbols GROUP BY kind"
+ai-codescan flows --from <symbol-id>
+```
