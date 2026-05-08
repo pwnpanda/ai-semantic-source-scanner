@@ -1,0 +1,5 @@
+{
+  "name": "tiny-vuln",
+  "version": "0.0.1",
+  "dependencies": { "express": "^4.21.0", "mysql2": "^3.11.0" }
+}
