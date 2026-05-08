@@ -19,6 +19,7 @@ from ai_codescan.taxonomy.loader import (
     list_classes,
     resolve_classes,
 )
+from ai_codescan.views import render_file_view
 
 _BYTES_PER_KIB = 1024
 
@@ -209,6 +210,60 @@ def flows(
         typer.echo("no flows")
         return
     typer.echo(_format_rows(columns, rows))
+
+
+@app.command()
+def view(
+    ctx: typer.Context,
+    file: Annotated[
+        str, typer.Option("--file", help="Absolute path of a file in the snapshot.")
+    ] = "",
+    symbol: Annotated[str, typer.Option("--symbol", help="Symbol id to centre the view on.")] = "",
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+) -> None:
+    """Render an annotated source view to stdout."""
+    if bool(file) == bool(symbol):
+        typer.echo("Specify exactly one of --file or --symbol.", err=True)
+        raise typer.Exit(code=1)
+
+    cache_root: Path = ctx.obj["cache_root"]
+    if not repo_id:
+        repos = sorted(p.name for p in cache_root.iterdir() if p.is_dir())
+        if len(repos) != 1:
+            typer.echo("Specify --repo-id.", err=True)
+            raise typer.Exit(code=1)
+        repo_id = repos[0]
+    db_path = cache_root / repo_id / "index.duckdb"
+    conn = duckdb.connect(str(db_path), read_only=True)
+
+    if symbol:
+        row = conn.execute("SELECT file FROM symbols WHERE id = ?", [symbol]).fetchone()
+        if not row:
+            typer.echo(f"unknown symbol id: {symbol}", err=True)
+            raise typer.Exit(code=1)
+        file = row[0]
+
+    typer.echo(render_file_view(conn, file=file))
+
+
+@app.command()
+def entrypoints(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+) -> None:
+    """Print the cached ``entrypoints.md``."""
+    cache_root: Path = ctx.obj["cache_root"]
+    if not repo_id:
+        repos = sorted(p.name for p in cache_root.iterdir() if p.is_dir())
+        if len(repos) != 1:
+            typer.echo("Specify --repo-id.", err=True)
+            raise typer.Exit(code=1)
+        repo_id = repos[0]
+    md_path = cache_root / repo_id / "entrypoints.md"
+    if not md_path.is_file():
+        typer.echo("No entrypoints.md yet — run `prep` first.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(md_path.read_text(encoding="utf-8"))
 
 
 @app.command()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import stat as stat_mod
 from pathlib import Path
 
 import duckdb
@@ -10,11 +11,16 @@ import duckdb
 from ai_codescan.ast.runner import AstJob, run_jobs
 from ai_codescan.config import compute_repo_id
 from ai_codescan.engines.codeql import build_database, run_queries
+from ai_codescan.entrypoints.detectors import Entrypoint, detect_entrypoints
+from ai_codescan.entrypoints.ingest import ingest_entrypoints
+from ai_codescan.entrypoints.render import render_entrypoints_md
 from ai_codescan.index.duckdb_ingest import ingest as duckdb_ingest
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.index.scip import build_scip_index
 from ai_codescan.ingest.sarif import ingest_sarif
+from ai_codescan.manifest import build_manifest, write_manifest
 from ai_codescan.repo_md import render_repo_md
+from ai_codescan.sidecars import emit_sidecars
 from ai_codescan.snapshot import SnapshotResult, take_snapshot
 from ai_codescan.stack_detect import Project, ProjectKind, detect_projects
 from ai_codescan.taxonomy.loader import BugClass
@@ -23,6 +29,20 @@ log = logging.getLogger(__name__)
 
 _SCIP_RANGE_WITH_END_LINE = 3
 """SCIP occurrence range with [start_line, start_col, end_col] is len 3; with end_line is len 4."""
+
+_W_BITS = stat_mod.S_IWUSR | stat_mod.S_IWGRP | stat_mod.S_IWOTH
+
+
+def _set_writable(root: Path, *, writable: bool) -> None:
+    """Toggle the user/group/other write bits on every entry under ``root``.
+
+    Mirrors ``snapshot._make_read_only`` (root itself is left alone).
+    """
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            continue
+        mode = path.stat().st_mode
+        path.chmod(mode | _W_BITS if writable else mode & ~_W_BITS)
 
 
 def _files_for_project(snapshot_root: Path, project: Project) -> tuple[list[Path], list[Path]]:
@@ -174,9 +194,27 @@ def run_prep(
             project_id=project.name,
             snapshot_root=snap.snapshot_dir,
         )
+        entries = detect_entrypoints(xrefs=xrefs, symbols=symbols)
+        ingest_entrypoints(conn, entries)
+
+    all_entries_rows = conn.execute("SELECT symbol_id, kind, signature FROM entrypoints").fetchall()
+    all_entries: list[Entrypoint] = []
+    for sym_id, kind, sig in all_entries_rows:
+        all_entries.append(Entrypoint(symbol_id=sym_id, kind=kind, signature=sig, file="", line=0))
+    (repo_dir / "entrypoints.md").write_text(
+        render_entrypoints_md(target_name=target.name, entrypoints=all_entries),
+        encoding="utf-8",
+    )
 
     if engine == "codeql":
         _run_codeql_for_projects(snap.snapshot_dir, projects, repo_dir, bug_classes, conn)
+
+    _set_writable(snap.snapshot_dir, writable=True)
+    try:
+        emit_sidecars(conn, snapshot_root=snap.snapshot_dir)
+        write_manifest(snap.manifest_path, build_manifest(snap.snapshot_dir))
+    finally:
+        _set_writable(snap.snapshot_dir, writable=False)
 
     conn.close()
     return snap, db_path

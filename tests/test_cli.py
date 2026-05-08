@@ -160,6 +160,36 @@ def test_list_bug_classes_prints_entries() -> None:
     assert "sqli" in result.stdout
 
 
+@pytest.mark.integration
+def test_prep_emits_entrypoints_md(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    ep = (cache / repo_id / "entrypoints.md").read_text()
+    assert "Entrypoints:" in ep
+
+
+@pytest.mark.integration
+def test_view_command_renders_for_known_file(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    snap_root = cache / repo_id / "source"
+    server_js = next(snap_root.rglob("server.js"))
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "view", "--file", str(server_js), "--repo-id", repo_id],
+    )
+    assert result.exit_code == 0
+    assert "View:" in result.stdout
+
+
 def test_unknown_bug_class_errors_with_suggestion(tmp_path: Path, fixtures_dir: Path) -> None:
     cache = tmp_path / "cache"
     result = runner.invoke(
