@@ -67,3 +67,29 @@ def test_prep_idempotent_on_second_run(tmp_path: Path, fixtures_dir: Path) -> No
     assert first.exit_code == 0
     assert second.exit_code == 0
     assert "skipped" in second.stdout.lower()
+
+
+@pytest.mark.integration
+def test_cache_list_shows_repo_after_prep(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    result = runner.invoke(app, ["--cache-dir", str(cache), "cache", "list"])
+    assert result.exit_code == 0
+    assert "tiny-express-" in result.stdout
+    assert "MB" in result.stdout or "KB" in result.stdout or "B " in result.stdout
+
+
+@pytest.mark.integration
+def test_cache_rm_removes_repo_dir(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    result = runner.invoke(app, ["--cache-dir", str(cache), "cache", "rm", repo_id])
+    assert result.exit_code == 0
+    assert not (cache / repo_id).exists()

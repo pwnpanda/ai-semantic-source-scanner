@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import datetime as _dt
 import shutil
 import stat as stat_mod
 from pathlib import Path
@@ -13,6 +15,8 @@ from ai_codescan.config import compute_repo_id, default_cache_root
 from ai_codescan.repo_md import render_repo_md
 from ai_codescan.snapshot import take_snapshot
 from ai_codescan.stack_detect import detect_projects
+
+_BYTES_PER_KIB = 1024
 
 app = typer.Typer(
     name="ai-codescan",
@@ -100,19 +104,39 @@ def status(ctx: typer.Context) -> None:
         typer.echo(f"- {name}")
 
 
+def _human_size(bytes_: int) -> str:
+    size = float(bytes_)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < _BYTES_PER_KIB or unit == "GB":
+            return f"{size:>6.1f} {unit}"
+        size /= _BYTES_PER_KIB
+    return f"{size:.1f} GB"
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for p in path.rglob("*"):
+        if p.is_file() and not p.is_symlink():
+            with contextlib.suppress(OSError):
+                total += p.stat().st_size
+    return total
+
+
 @cache_app.command("list")
 def cache_list(ctx: typer.Context) -> None:
-    """List cached repos."""
+    """List cached repos with size + age."""
     cache_root: Path = ctx.obj["cache_root"]
     if not cache_root.exists():
         typer.echo("No cached repos.")
         return
-    repos = sorted(p.name for p in cache_root.iterdir() if p.is_dir())
+    repos = sorted(p for p in cache_root.iterdir() if p.is_dir())
     if not repos:
         typer.echo("No cached repos.")
         return
-    for name in repos:
-        typer.echo(name)
+    for repo_dir in repos:
+        size = _dir_size(repo_dir)
+        mtime = _dt.datetime.fromtimestamp(repo_dir.stat().st_mtime, tz=_dt.UTC)
+        typer.echo(f"{repo_dir.name}  {_human_size(size)}  {mtime.isoformat(timespec='seconds')}")
 
 
 @cache_app.command("rm")
