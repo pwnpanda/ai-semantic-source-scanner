@@ -52,3 +52,12 @@ ai-codescan prep /path/to/target --target-bug-class injection
 ai-codescan list-bug-classes
 ai-codescan query "SELECT cwe, COUNT(*) FROM flows GROUP BY cwe"
 ```
+
+## Phase 1D status
+
+`prep` now derives `entrypoints.md`, emits per-file `*.enrich.jsonl` sidecars, and offers `view`/`entrypoints` subcommands.
+
+```bash
+ai-codescan entrypoints
+ai-codescan view --file /path/to/source/file.ts
+```
