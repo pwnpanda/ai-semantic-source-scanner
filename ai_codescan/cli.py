@@ -9,7 +9,10 @@ from typing import Annotated
 
 import typer
 
-from ai_codescan.config import default_cache_root
+from ai_codescan.config import compute_repo_id, default_cache_root
+from ai_codescan.repo_md import render_repo_md
+from ai_codescan.snapshot import take_snapshot
+from ai_codescan.stack_detect import detect_projects
 
 app = typer.Typer(
     name="ai-codescan",
@@ -57,8 +60,29 @@ def prep(
     commit: _CommitOption = None,
 ) -> None:
     """Snapshot ``target``, detect its stack, and write ``repo.md``."""
-    typer.echo("prep is not implemented yet (Task 10)")
-    raise typer.Exit(code=1)
+    if not target.is_dir():
+        typer.echo(f"Target is not a directory: {target}", err=True)
+        raise typer.Exit(code=2)
+
+    cache_root: Path = ctx.obj["cache_root"]
+    quiet: bool = ctx.obj["quiet"]
+    repo_dir = cache_root / compute_repo_id(target)
+
+    snap = take_snapshot(target, cache_dir=repo_dir, commit=commit)
+    if not quiet:
+        status_word = "skipped" if snap.skipped else "took"
+        method = snap.method
+        commit_label = f" @ {snap.commit_sha[:8]}" if snap.commit_sha else ""
+        typer.echo(f"snapshot {status_word} ({method}){commit_label}")
+
+    projects = detect_projects(snap.snapshot_dir)
+    repo_md_path = repo_dir / "repo.md"
+    repo_md_path.write_text(
+        render_repo_md(target_name=target.name, projects=projects),
+        encoding="utf-8",
+    )
+    if not quiet:
+        typer.echo(f"detected {len(projects)} project(s); wrote {repo_md_path}")
 
 
 @app.command()
