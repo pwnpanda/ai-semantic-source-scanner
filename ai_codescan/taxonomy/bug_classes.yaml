@@ -1,0 +1,76 @@
+# Phase 1C subset — only flow-traceable classes (CodeQL has a model).
+# Full taxonomy with semantic-only classes (idor, bfla) lands in 1E.
+
+xss:
+  cwes: [CWE-79]
+  codeql_tags: [security/cwe/cwe-079]
+  group: injection
+
+sqli:
+  aliases: [sql-injection]
+  cwes: [CWE-89]
+  codeql_tags: [security/cwe/cwe-089]
+  group: injection
+
+nosqli:
+  aliases: [nosql-injection]
+  cwes: [CWE-943]
+  codeql_tags: [security/cwe/cwe-943]
+  group: injection
+
+cmdi:
+  aliases: [command-injection, os-cmdi]
+  cwes: [CWE-78]
+  codeql_tags: [security/cwe/cwe-078]
+  group: injection
+
+code-injection:
+  cwes: [CWE-94]
+  codeql_tags: [security/cwe/cwe-094]
+  group: injection
+
+ssti:
+  aliases: [template-injection]
+  cwes: [CWE-1336]
+  codeql_tags: [security/cwe/cwe-1336]
+  group: injection
+
+xxe:
+  aliases: [xml-external-entity]
+  cwes: [CWE-611]
+  codeql_tags: [security/cwe/cwe-611]
+  group: injection
+
+path-traversal:
+  aliases: [dir-traversal]
+  cwes: [CWE-22]
+  codeql_tags: [security/cwe/cwe-022]
+  group: file
+
+ssrf:
+  cwes: [CWE-918]
+  codeql_tags: [security/cwe/cwe-918]
+  group: request-forgery
+
+open-redirect:
+  cwes: [CWE-601]
+  codeql_tags: [security/cwe/cwe-601]
+  group: redirect
+
+unsafe-deserialization:
+  cwes: [CWE-502]
+  codeql_tags: [security/cwe/cwe-502]
+  group: serialization
+
+prototype-pollution:
+  cwes: [CWE-1321]
+  codeql_tags: [security/cwe/cwe-1321]
+  group: javascript
+
+groups:
+  injection:       [xss, sqli, nosqli, cmdi, code-injection, ssti, xxe]
+  file:            [path-traversal]
+  request-forgery: [ssrf]
+  serialization:   [unsafe-deserialization]
+  javascript:      [prototype-pollution]
+  redirect:        [open-redirect]
