@@ -79,7 +79,7 @@ def test_cache_list_shows_repo_after_prep(tmp_path: Path, fixtures_dir: Path) ->
     result = runner.invoke(app, ["--cache-dir", str(cache), "cache", "list"])
     assert result.exit_code == 0
     assert "tiny-express-" in result.stdout
-    assert "MB" in result.stdout or "KB" in result.stdout or "B " in result.stdout
+    assert "MiB" in result.stdout or "KiB" in result.stdout or "B " in result.stdout
 
 
 @pytest.mark.integration

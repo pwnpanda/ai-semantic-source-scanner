@@ -106,11 +106,11 @@ def status(ctx: typer.Context) -> None:
 
 def _human_size(bytes_: int) -> str:
     size = float(bytes_)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < _BYTES_PER_KIB or unit == "GB":
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < _BYTES_PER_KIB or unit == "GiB":
             return f"{size:>6.1f} {unit}"
         size /= _BYTES_PER_KIB
-    return f"{size:.1f} GB"
+    raise AssertionError("unreachable")
 
 
 def _dir_size(path: Path) -> int:
