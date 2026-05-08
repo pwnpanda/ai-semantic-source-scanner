@@ -14,6 +14,11 @@ import typer
 
 from ai_codescan.config import default_cache_root
 from ai_codescan.prep import run_prep
+from ai_codescan.taxonomy.loader import (
+    UnknownBugClassError,
+    list_classes,
+    resolve_classes,
+)
 
 _BYTES_PER_KIB = 1024
 
@@ -61,20 +66,65 @@ def prep(
     ctx: typer.Context,
     target: Annotated[Path, typer.Argument(help="Target repo to scan.")],
     commit: _CommitOption = None,
+    engine: Annotated[
+        str,
+        typer.Option(
+            "--engine",
+            help="Static engine to run (Phase 1: only 'codeql' is supported).",
+        ),
+    ] = "codeql",
+    target_bug_class: Annotated[
+        str,
+        typer.Option(
+            "--target-bug-class",
+            help="Comma-separated names or @groups (default: all).",
+        ),
+    ] = "",
 ) -> None:
-    """Snapshot, detect, AST, SCIP, and populate the DuckDB index."""
+    """Snapshot, detect, AST, SCIP, CodeQL, ingest into DuckDB."""
+    if engine != "codeql":
+        typer.echo(f"--engine {engine} is not supported in Phase 1.", err=True)
+        raise typer.Exit(code=2)
     if not target.is_dir():
         typer.echo(f"Target is not a directory: {target}", err=True)
         raise typer.Exit(code=2)
 
+    if target_bug_class:
+        try:
+            bug_classes = resolve_classes(
+                [t.strip() for t in target_bug_class.split(",") if t.strip()]
+            )
+        except UnknownBugClassError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from exc
+    else:
+        bug_classes = list_classes()
+
     cache_root: Path = ctx.obj["cache_root"]
     quiet: bool = ctx.obj["quiet"]
-    snap, db_path = run_prep(target, cache_root=cache_root, commit=commit)
+    snap, db_path = run_prep(
+        target,
+        cache_root=cache_root,
+        commit=commit,
+        bug_classes=bug_classes,
+        engine=engine,
+    )
     if not quiet:
         status_word = "skipped" if snap.skipped else "took"
         commit_label = f" @ {snap.commit_sha[:8]}" if snap.commit_sha else ""
         typer.echo(f"snapshot {status_word} ({snap.method}){commit_label}")
         typer.echo(f"index at {db_path}")
+        typer.echo(f"bug classes: {', '.join(c.name for c in bug_classes)}")
+
+
+@app.command("list-bug-classes")
+def list_bug_classes() -> None:
+    """Print every taxonomy entry."""
+    rows = sorted(list_classes(), key=lambda c: c.name)
+    for c in rows:
+        aliases = f" ({', '.join(c.aliases)})" if c.aliases else ""
+        cwes = ", ".join(c.cwes)
+        typer.echo(f"{c.name}{aliases}\t{c.group}\t{cwes}")
 
 
 def _format_rows(columns: list[str], rows: list[tuple[Any, ...]]) -> str:

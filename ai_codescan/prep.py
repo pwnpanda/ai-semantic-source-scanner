@@ -9,12 +9,15 @@ import duckdb
 
 from ai_codescan.ast.runner import AstJob, run_jobs
 from ai_codescan.config import compute_repo_id
+from ai_codescan.engines.codeql import build_database, run_queries
 from ai_codescan.index.duckdb_ingest import ingest as duckdb_ingest
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.index.scip import build_scip_index
+from ai_codescan.ingest.sarif import ingest_sarif
 from ai_codescan.repo_md import render_repo_md
 from ai_codescan.snapshot import SnapshotResult, take_snapshot
 from ai_codescan.stack_detect import Project, ProjectKind, detect_projects
+from ai_codescan.taxonomy.loader import BugClass
 
 log = logging.getLogger(__name__)
 
@@ -82,11 +85,53 @@ def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: 
     return lookup
 
 
+def _run_codeql_for_projects(
+    snapshot_root: Path,
+    projects: list[Project],
+    repo_dir: Path,
+    bug_classes: list[BugClass] | None,
+    conn,
+) -> None:
+    tags: list[str] = []
+    if bug_classes:
+        for c in bug_classes:
+            tags.extend(c.codeql_tags)
+    for project in projects:
+        if project.kind is not ProjectKind.NODE:
+            continue
+        if not project.languages.intersection({"javascript", "typescript"}):
+            continue
+        project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
+        try:
+            db_path = build_database(
+                snapshot_root / project.base_path,
+                cache_dir=repo_dir,
+                project_id=project_id,
+            )
+            result = run_queries(
+                db_path,
+                cache_dir=repo_dir,
+                project_id=project_id,
+                codeql_tags=tags,
+            )
+            ingest_sarif(
+                conn,
+                sarif_path=result.sarif_path,
+                project_id=project_id,
+                snapshot_root=snapshot_root,
+                engine="codeql",
+            )
+        except (RuntimeError, OSError) as exc:
+            log.warning("codeql failed for %s: %s", project.name, exc)
+
+
 def run_prep(
     target: Path,
     *,
     cache_root: Path,
     commit: str | None = None,
+    bug_classes: list[BugClass] | None = None,
+    engine: str = "codeql",
 ) -> tuple[SnapshotResult, Path]:
     """Snapshot, detect, AST, SCIP, ingest. Returns the snapshot result and the duckdb path."""
     repo_dir = cache_root / compute_repo_id(target)
@@ -129,6 +174,9 @@ def run_prep(
             project_id=project.name,
             snapshot_root=snap.snapshot_dir,
         )
+
+    if engine == "codeql":
+        _run_codeql_for_projects(snap.snapshot_dir, projects, repo_dir, bug_classes, conn)
 
     conn.close()
     return snap, db_path

@@ -151,3 +151,28 @@ def test_flows_subcommand_handles_empty_db(tmp_path: Path, fixtures_dir: Path) -
     )
     assert result.exit_code == 0
     assert "no flows" in result.stdout.lower() or result.stdout.strip() == ""
+
+
+def test_list_bug_classes_prints_entries() -> None:
+    result = runner.invoke(app, ["list-bug-classes"])
+    assert result.exit_code == 0
+    assert "xss" in result.stdout
+    assert "sqli" in result.stdout
+
+
+def test_unknown_bug_class_errors_with_suggestion(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "prep",
+            str(fixtures_dir / "tiny-express"),
+            "--target-bug-class",
+            "xs",
+        ],
+    )
+    assert result.exit_code != 0
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert "did you mean" in combined.lower()
