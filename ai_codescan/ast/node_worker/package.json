@@ -1,0 +1,24 @@
+{
+  "name": "ai-codescan-ast-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.0.0" },
+  "dependencies": {
+    "ts-morph": "26.0.0",
+    "typescript": "5.7.3",
+    "parse5": "7.2.1",
+    "tree-sitter": "0.22.4",
+    "tree-sitter-typescript": "0.23.2"
+  },
+  "scripts": {
+    "worker": "node worker.mjs"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "tree-sitter",
+      "tree-sitter-javascript",
+      "tree-sitter-typescript"
+    ]
+  }
+}
