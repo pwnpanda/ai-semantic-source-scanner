@@ -1,6 +1,3 @@
-# Phase 1C subset — only flow-traceable classes (CodeQL has a model).
-# Full taxonomy with semantic-only classes (idor, bfla) lands in 1E.
-
 xss:
   cwes: [CWE-79]
   codeql_tags: [security/cwe/cwe-079]
@@ -35,10 +32,27 @@ ssti:
   codeql_tags: [security/cwe/cwe-1336]
   group: injection
 
+prompt-injection:
+  cwes: [CWE-1427]
+  codeql_tags: []
+  group: injection
+  needs_semantic: true
+
 xxe:
   aliases: [xml-external-entity]
   cwes: [CWE-611]
   codeql_tags: [security/cwe/cwe-611]
+  group: injection
+
+ldap-injection:
+  cwes: [CWE-90]
+  codeql_tags: [security/cwe/cwe-090]
+  group: injection
+
+crlf-injection:
+  aliases: [header-injection]
+  cwes: [CWE-93]
+  codeql_tags: [security/cwe/cwe-093]
   group: injection
 
 path-traversal:
@@ -47,17 +61,58 @@ path-traversal:
   codeql_tags: [security/cwe/cwe-022]
   group: file
 
+lfi:
+  aliases: [local-file-inclusion]
+  cwes: [CWE-98]
+  codeql_tags: [security/cwe/cwe-098]
+  group: file
+
+rfi:
+  aliases: [remote-file-inclusion]
+  cwes: [CWE-98]
+  codeql_tags: [security/cwe/cwe-098]
+  group: file
+
 ssrf:
   cwes: [CWE-918]
   codeql_tags: [security/cwe/cwe-918]
   group: request-forgery
+
+csrf:
+  cwes: [CWE-352]
+  codeql_tags: [security/cwe/cwe-352]
+  group: request-forgery
+
+idor:
+  aliases: [bola]
+  cwes: [CWE-639]
+  codeql_tags: []
+  group: authz
+  needs_semantic: true
+
+bfla:
+  cwes: [CWE-862]
+  codeql_tags: []
+  group: authz
+  needs_semantic: true
+
+mass-assignment:
+  cwes: [CWE-915]
+  codeql_tags: [security/cwe/cwe-915]
+  group: authz
 
 open-redirect:
   cwes: [CWE-601]
   codeql_tags: [security/cwe/cwe-601]
   group: redirect
 
+cors-misconfig:
+  cwes: [CWE-942]
+  codeql_tags: [security/cwe/cwe-942]
+  group: web-config
+
 unsafe-deserialization:
+  aliases: [insec-deser]
   cwes: [CWE-502]
   codeql_tags: [security/cwe/cwe-502]
   group: serialization
@@ -67,10 +122,92 @@ prototype-pollution:
   codeql_tags: [security/cwe/cwe-1321]
   group: javascript
 
+dom-clobbering:
+  cwes: [CWE-79]
+  codeql_tags: []
+  group: javascript
+  needs_semantic: true
+
+redos:
+  aliases: [regex-dos]
+  cwes: [CWE-1333]
+  codeql_tags: [security/cwe/cwe-1333]
+  group: dos
+
+auth-bypass:
+  aliases: [broken-authn]
+  cwes: [CWE-287]
+  codeql_tags: [security/cwe/cwe-287]
+  group: authn
+
+weak-crypto:
+  cwes: [CWE-327, CWE-328]
+  codeql_tags: [security/cwe/cwe-327, security/cwe/cwe-328]
+  group: crypto
+
+insecure-random:
+  cwes: [CWE-330, CWE-338]
+  codeql_tags: [security/cwe/cwe-338]
+  group: crypto
+
+jwt-misuse:
+  cwes: [CWE-345, CWE-347]
+  codeql_tags: [security/cwe/cwe-347]
+  group: authn
+
+session-fixation:
+  cwes: [CWE-384]
+  codeql_tags: [security/cwe/cwe-384]
+  group: session
+
+host-header-injection:
+  cwes: [CWE-20]
+  codeql_tags: []
+  group: web-config
+  needs_semantic: true
+
+request-smuggling:
+  cwes: [CWE-444]
+  codeql_tags: []
+  group: web-config
+  needs_semantic: true
+
+cache-poisoning:
+  cwes: [CWE-444]
+  codeql_tags: []
+  group: web-config
+  needs_semantic: true
+
+oauth-misconfig:
+  cwes: [CWE-285]
+  codeql_tags: []
+  group: web-config
+  needs_semantic: true
+
+info-disclosure:
+  cwes: [CWE-200]
+  codeql_tags: [security/cwe/cwe-200]
+  group: data-exposure
+
+client-side-redirect:
+  cwes: [CWE-601]
+  codeql_tags: []
+  group: redirect
+  needs_semantic: true
+
 groups:
-  injection:       [xss, sqli, nosqli, cmdi, code-injection, ssti, xxe]
-  file:            [path-traversal]
-  request-forgery: [ssrf]
-  serialization:   [unsafe-deserialization]
-  javascript:      [prototype-pollution]
-  redirect:        [open-redirect]
+  injection:
+    [xss, sqli, nosqli, cmdi, code-injection, ssti, prompt-injection, xxe, ldap-injection, crlf-injection]
+  file: [path-traversal, lfi, rfi]
+  authz: [idor, bfla, mass-assignment]
+  authn: [auth-bypass, jwt-misuse]
+  request-forgery: [ssrf, csrf]
+  crypto: [weak-crypto, insecure-random]
+  web-config: [cors-misconfig, host-header-injection, request-smuggling, cache-poisoning, oauth-misconfig]
+  serialization: [unsafe-deserialization]
+  javascript: [prototype-pollution, dom-clobbering]
+  redirect: [open-redirect, client-side-redirect]
+  dos: [redos]
+  data-exposure: [info-disclosure]
+  session: [session-fixation]
+  all-injection: ["@injection", "@file", "@serialization"]

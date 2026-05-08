@@ -34,3 +34,13 @@ def test_resolve_unknown_suggests_match() -> None:
 def test_list_classes_returns_all_canonical_names() -> None:
     names = {c.name for c in list_classes()}
     assert "xss" in names and "ssrf" in names
+
+
+def test_idor_class_marked_needs_semantic() -> None:
+    classes = resolve_classes(["idor"])
+    assert classes[0].needs_semantic is True
+
+
+def test_xss_class_does_not_need_semantic() -> None:
+    classes = resolve_classes(["xss"])
+    assert classes[0].needs_semantic is False

@@ -21,6 +21,7 @@ class BugClass:
     codeql_tags: list[str]
     group: str | None
     aliases: list[str]
+    needs_semantic: bool = False
 
 
 def _yaml_path() -> Path:
@@ -44,6 +45,7 @@ def list_classes() -> list[BugClass]:
                 codeql_tags=list(body.get("codeql_tags", [])),
                 group=body.get("group"),
                 aliases=list(body.get("aliases", [])),
+                needs_semantic=bool(body.get("needs_semantic", False)),
             )
         )
     return out
