@@ -15,6 +15,7 @@ dependencies = [
   "pyyaml>=6.0.2",
   "sarif-om>=1.0.4",
   "sqlglot>=26",
+  "semgrep>=1.162.0",
 ]
 
 [project.scripts]

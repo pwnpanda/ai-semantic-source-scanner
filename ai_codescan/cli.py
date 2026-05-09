@@ -18,6 +18,7 @@ import yaml
 from ai_codescan.analyzer import run_analyzer
 from ai_codescan.config import compute_repo_id, default_cache_root
 from ai_codescan.engines.codeql import run_queries
+from ai_codescan.engines.hybrid import run_hybrid
 from ai_codescan.engines.llm_heavy import run_llm_heavy_engine
 from ai_codescan.findings.model import parse_finding
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
@@ -27,6 +28,7 @@ from ai_codescan.nominator import run_nominator
 from ai_codescan.prep import run_prep
 from ai_codescan.report import write_report
 from ai_codescan.runs.state import load_or_create
+from ai_codescan.stack_detect import ProjectKind, detect_projects
 from ai_codescan.storage_taint import load_schema_yaml, run_fixpoint, save_schema_yaml
 from ai_codescan.taxonomy.loader import (
     UnknownBugClassError,
@@ -97,10 +99,11 @@ def prep(
         ),
     ] = "",
 ) -> None:
-    """Snapshot, detect, AST, SCIP, CodeQL or llm-heavy, ingest into DuckDB."""
-    if engine not in {"codeql", "llm-heavy"}:
+    """Snapshot, detect, AST, SCIP, then run the chosen engine(s) and ingest into DuckDB."""
+    if engine not in {"codeql", "llm-heavy", "hybrid"}:
         typer.echo(
-            f"--engine {engine} is not supported. Use 'codeql' (default) or 'llm-heavy'.",
+            f"--engine {engine} is not supported. "
+            "Use 'codeql' (default), 'llm-heavy', or 'hybrid'.",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -126,8 +129,8 @@ def prep(
         cache_root=cache_root,
         commit=commit,
         bug_classes=bug_classes,
-        # CodeQL prep stage runs only when engine == 'codeql'.
-        engine=engine if engine == "codeql" else "none",
+        # CodeQL prep stage runs when engine ∈ {codeql, hybrid}.
+        engine="codeql" if engine in {"codeql", "hybrid"} else "none",
     )
     if engine == "llm-heavy":
         repo_dir = cache_root / compute_repo_id(target)
@@ -145,6 +148,29 @@ def prep(
         )
         if not quiet:
             typer.echo(f"llm-heavy ingested {n} flow(s)")
+    elif engine == "hybrid":
+        # Walk detected projects and run Semgrep (+ Joern when on PATH), then dedupe.
+        repo_dir = cache_root / compute_repo_id(target)
+        snapshot_root = snap.snapshot_dir
+        roots: list[tuple[Path, str]] = []
+        for project in detect_projects(snapshot_root):
+            if project.kind is not ProjectKind.NODE:
+                continue
+            project_id = (
+                f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
+            )
+            roots.append((snapshot_root / project.base_path, project_id))
+        stats = run_hybrid(
+            roots,
+            snapshot_root=snapshot_root,
+            repo_dir=repo_dir,
+            db_path=db_path,
+        )
+        if not quiet:
+            typer.echo(
+                f"hybrid: codeql={stats.codeql_flows} semgrep={stats.semgrep_flows} "
+                f"joern={stats.joern_flows} deduped={stats.deduped}"
+            )
 
     if not quiet:
         status_word = "skipped" if snap.skipped else "took"
