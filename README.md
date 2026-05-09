@@ -88,3 +88,39 @@ ai-codescan nominate --llm-provider codex --llm-model o3
 ```
 
 The selection is persisted to `runs/<run_id>/run.json` for auditability and re-runs.
+
+## Phase 2 status — deep analysis, validation, reports
+
+Five-stage pipeline now runs end-to-end:
+
+```bash
+ai-codescan run /path/to/target --target-bug-class injection --yes  # phase 1
+ai-codescan analyze                                                  # deep per-finding sub-agent
+ai-codescan gate-2 --yes
+ai-codescan validate                                                 # docker sandbox PoC
+ai-codescan gate-3 --yes
+ai-codescan report --report-dir ./report                             # bug-bounty-ready md
+```
+
+Layer 5 storage taint MVP runs separately:
+
+```bash
+ai-codescan taint-schema --run     # populate storage_locations + storage_writes
+ai-codescan taint-schema --show    # inspect schema.taint.yml
+ai-codescan taint-schema --edit    # hand-edit annotations
+```
+
+Alternative engine modes:
+
+```bash
+ai-codescan prep . --engine llm-heavy   # LLM walks flows itself (no CodeQL)
+ai-codescan prep . --engine hybrid      # CodeQL + Semgrep (+ Joern when on PATH), deduped
+```
+
+## Phase 3 status — hybrid engine, visualization
+
+```bash
+ai-codescan visualize --fmt svg --cwe CWE-89 --out flows.svg
+```
+
+See [TRADEOFFS.md](TRADEOFFS.md) for autonomous decisions, open follow-ups, and how to opt into Joern integration (deferred install).
