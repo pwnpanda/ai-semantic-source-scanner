@@ -195,9 +195,7 @@ def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
         for storage_id in ids:
             storage_locations[storage_id] = "sql_column"
             if op == "write":
-                storage_writes.append(
-                    (storage_id, fid, tid, None, json.dumps({"shape": "sql"}))
-                )
+                storage_writes.append((storage_id, fid, tid, None, json.dumps({"shape": "sql"})))
 
     if storage_locations:
         conn.executemany(
@@ -212,13 +210,7 @@ def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
         # Mark each location dirty with the union of contributing tids.
         rows: list[tuple[str, str, str, str]] = []
         for storage_id in storage_locations:
-            tids = sorted(
-                {
-                    w[2]
-                    for w in storage_writes
-                    if w[0] == storage_id and w[2] is not None
-                }
-            )
+            tids = sorted({w[2] for w in storage_writes if w[0] == storage_id and w[2] is not None})
             if tids:
                 rows.append(
                     (
@@ -284,8 +276,7 @@ def detect_storage_reads(conn: duckdb.DuckDBPyConnection, *, snapshot_root: Path
         return 0
 
     known_locations = {
-        row[0]
-        for row in conn.execute("SELECT storage_id FROM storage_locations").fetchall()
+        row[0] for row in conn.execute("SELECT storage_id FROM storage_locations").fetchall()
     }
     existing_reads = {
         (row[0], row[1])
@@ -385,9 +376,7 @@ def _ensure_taint_source(
     evidence_loc: str,
 ) -> None:
     """Insert a synthetic ``taint_sources`` row if not already present."""
-    existing = conn.execute(
-        "SELECT 1 FROM taint_sources WHERE tid = ?", [tid]
-    ).fetchone()
+    existing = conn.execute("SELECT 1 FROM taint_sources WHERE tid = ?", [tid]).fetchone()
     if existing is None:
         conn.execute(
             "INSERT INTO taint_sources VALUES (?, ?, ?, ?, ?)",
@@ -486,9 +475,7 @@ def synthesize_round2_flows(conn: duckdb.DuckDBPyConnection) -> int:
     if not dirty:
         return 0
 
-    existing_fids = {
-        row[0] for row in conn.execute("SELECT fid FROM flows").fetchall()
-    }
+    existing_fids = {row[0] for row in conn.execute("SELECT fid FROM flows").fetchall()}
     inserted = 0
 
     for storage_id, derived_tid, contributing_json in dirty:
@@ -545,6 +532,7 @@ def run_full_fixpoint(
     *,
     snapshot_root: Path,
     max_rounds: int = 3,
+    schema_path: Path | None = None,
 ) -> dict[str, Any]:
     """Run the full Layer-5 fixpoint: round 1 + round 2 to convergence.
 
@@ -554,6 +542,12 @@ def run_full_fixpoint(
       3. ``derive_storage_taint`` — mark reached locations dirty.
       4. ``synthesize_round2_flows`` — emit storage→read synthetic flows.
 
+    Optional pre-pass (round 0): when ``schema_path`` points at a
+    ``schema.taint.yml`` containing an ``llm_suggested:`` block, those
+    storage_ids are seeded into ``storage_locations`` + ``storage_taint`` and
+    matching cache/queue read sites are detected so subsequent rounds can
+    emit storage→read flows for them.
+
     Iterates until no new synthetic flows or storage writes are produced, or
     ``max_rounds`` is reached. Returns a dict with per-round counters.
     """
@@ -562,6 +556,14 @@ def run_full_fixpoint(
     total_locations = 0
     total_reads = 0
     total_derived = 0
+
+    seed_locs, seed_reads = (0, 0)
+    if schema_path is not None:
+        seed_locs, seed_reads = _seed_llm_suggested_locations(
+            conn, schema_path=schema_path, snapshot_root=snapshot_root
+        )
+        total_locations += seed_locs
+        total_reads += seed_reads
 
     for round_idx in range(1, max_rounds + 1):
         prior_writes = conn.execute("SELECT COUNT(*) FROM storage_writes").fetchone()
@@ -602,7 +604,196 @@ def run_full_fixpoint(
         "storage_locations": total_locations,
         "storage_reads": total_reads,
         "storage_taint_derived": total_derived,
+        "llm_seeded_locations": seed_locs,
+        "llm_seeded_reads": seed_reads,
     }
+
+
+# ---------------------------------------------------------------------------
+# LLM-suggested seeding (round 0): consume schema.taint.yml `llm_suggested:`
+# ---------------------------------------------------------------------------
+
+
+_DYNAMIC_READ_CALL = re.compile(
+    r"\b(?:cache|redis|client)\.(?:get|hget|mget)\s*\(",
+    re.IGNORECASE,
+)
+_DYNAMIC_WRITE_CALL = re.compile(
+    r"\b(?:cache|redis|client)\.(?:set|hset|setex)\s*\(",
+    re.IGNORECASE,
+)
+_QUEUE_CONSUME_CALL = re.compile(
+    r"\b(?:queue|worker|consumer|subscriber)\.(?:process|consume|subscribe|on)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _key_pattern_to_regex(storage_id: str) -> re.Pattern[str]:
+    """Convert a structural key like ``cache:user:*:profile`` into a regex
+    matching the literal portions in source-code template strings.
+
+    The regex deliberately matches the colon-joined tail of the key with
+    ``*`` placeholders relaxed to any non-quote run, so a concrete call
+    site like ``cache.get(`user:${id}:profile`)`` is recognised regardless
+    of which JS interpolation form was used.
+    """
+    _, _, tail = storage_id.partition(":")
+    if not tail:
+        tail = storage_id
+    parts = tail.split("*")
+    escaped = r"[^`'\"\s]*".join(re.escape(p) for p in parts)
+    return re.compile(escaped, re.IGNORECASE)
+
+
+def _seed_llm_suggested_locations(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    schema_path: Path,
+    snapshot_root: Path,
+) -> tuple[int, int]:
+    """Load ``llm_suggested:`` from ``schema_path`` and seed it into the DB.
+
+    Inserts one ``storage_locations`` + one ``storage_taint`` row per
+    suggested storage_id, then scans the snapshot for cache/queue read
+    sites whose key template matches the structural pattern and records
+    them in ``storage_reads`` so the round-2 synthesizer can stitch a
+    storage→read flow.
+
+    Returns ``(locations_seeded, reads_seeded)``.
+    """
+    if not schema_path.is_file():
+        return (0, 0)
+    data = load_schema_yaml(schema_path)
+    raw_suggested = data.get("llm_suggested") or {}
+    if not isinstance(raw_suggested, dict) or not raw_suggested:
+        return (0, 0)
+
+    existing_locs = {
+        row[0] for row in conn.execute("SELECT storage_id FROM storage_locations").fetchall()
+    }
+    existing_taint = {
+        row[0]
+        for row in conn.execute(
+            "SELECT derived_tid FROM storage_taint WHERE derived_tid IS NOT NULL"
+        ).fetchall()
+    }
+
+    locs_added = 0
+    suggested: dict[str, dict[str, Any]] = {}
+    for storage_id, meta in raw_suggested.items():
+        if not isinstance(storage_id, str):
+            continue
+        meta_dict = meta if isinstance(meta, dict) else {}
+        suggested[storage_id] = meta_dict
+        kind = str(meta_dict.get("kind", "unknown"))
+        if storage_id not in existing_locs:
+            conn.execute(
+                "INSERT OR REPLACE INTO storage_locations VALUES (?, ?, ?)",
+                [storage_id, kind, "llm_suggested"],
+            )
+            existing_locs.add(storage_id)
+            locs_added += 1
+        derived_tid = _derived_tid_for_storage(storage_id)
+        if derived_tid not in existing_taint:
+            conn.execute(
+                "INSERT INTO storage_taint VALUES (?, ?, ?, ?)",
+                [storage_id, derived_tid, json.dumps([]), "llm-suggested"],
+            )
+            existing_taint.add(derived_tid)
+        _ensure_taint_source(
+            conn,
+            tid=derived_tid,
+            class_="storage.read",
+            key=storage_id,
+            evidence_loc=storage_id,
+        )
+
+    reads_added = _detect_dynamic_storage_reads(
+        conn, snapshot_root=snapshot_root, suggested=suggested
+    )
+    return (locs_added, reads_added)
+
+
+def _detect_dynamic_storage_reads(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    snapshot_root: Path,
+    suggested: dict[str, dict[str, Any]],
+) -> int:
+    """Scan source for cache/queue read sites matching LLM-suggested keys."""
+    if not snapshot_root.is_dir() or not suggested:
+        return 0
+
+    cache_ids = [sid for sid, meta in suggested.items() if meta.get("kind") == "cache_key"]
+    queue_ids = [sid for sid, meta in suggested.items() if meta.get("kind") == "queue_topic"]
+    if not cache_ids and not queue_ids:
+        return 0
+
+    cache_patterns = {sid: _key_pattern_to_regex(sid) for sid in cache_ids}
+    queue_patterns = {sid: _key_pattern_to_regex(sid) for sid in queue_ids}
+
+    existing_reads = {
+        (row[0], row[1])
+        for row in conn.execute("SELECT storage_id, symbol_id FROM storage_reads").fetchall()
+    }
+
+    new_rows: list[tuple[str, str, str | None]] = []
+    for glob_pattern in _JS_TS_GLOBS:
+        for src_path in snapshot_root.glob(glob_pattern):
+            if not src_path.is_file():
+                continue
+            try:
+                text = src_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            rel = src_path.relative_to(snapshot_root).as_posix()
+            _scan_dynamic_calls(
+                text=text,
+                rel=rel,
+                call_regex=_DYNAMIC_READ_CALL,
+                key_patterns=cache_patterns,
+                existing=existing_reads,
+                out=new_rows,
+            )
+            _scan_dynamic_calls(
+                text=text,
+                rel=rel,
+                call_regex=_QUEUE_CONSUME_CALL,
+                key_patterns=queue_patterns,
+                existing=existing_reads,
+                out=new_rows,
+            )
+
+    if new_rows:
+        conn.executemany(
+            "INSERT INTO storage_reads VALUES (?, ?, ?)",
+            new_rows,
+        )
+    return len(new_rows)
+
+
+def _scan_dynamic_calls(  # noqa: PLR0913 - keyword-only fan-in is the cleanest expression here
+    *,
+    text: str,
+    rel: str,
+    call_regex: re.Pattern[str],
+    key_patterns: dict[str, re.Pattern[str]],
+    existing: set[tuple[str, str]],
+    out: list[tuple[str, str, str | None]],
+) -> None:
+    """Append ``storage_reads`` rows where a call's argument matches a key."""
+    for match in call_regex.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        tail = text[match.end() : match.end() + 200]
+        symbol_id = f"read:{rel}:{line}"
+        for storage_id, regex in key_patterns.items():
+            if not regex.search(tail):
+                continue
+            key = (storage_id, symbol_id)
+            if key in existing:
+                continue
+            existing.add(key)
+            out.append((storage_id, symbol_id, None))
 
 
 # ---------------------------------------------------------------------------
@@ -614,12 +805,8 @@ _DYNAMIC_TEMPLATE = re.compile(r"\$\{[^}]+\}|\+\s*[A-Za-z_]\w*|`[^`]*\$")
 
 # Line-scoped variants of the original callee regexes (no end-of-string anchor)
 # for searching whole snippets rather than isolated callee strings.
-_CACHE_SET_LINE = re.compile(
-    r"\b(?:cache|redis|client)\.(?:set|hset|setex)\b", re.IGNORECASE
-)
-_CACHE_GET_LINE = re.compile(
-    r"\b(?:cache|redis|client)\.(?:get|hget|mget)\b", re.IGNORECASE
-)
+_CACHE_SET_LINE = re.compile(r"\b(?:cache|redis|client)\.(?:set|hset|setex)\b", re.IGNORECASE)
+_CACHE_GET_LINE = re.compile(r"\b(?:cache|redis|client)\.(?:get|hget|mget)\b", re.IGNORECASE)
 _QUEUE_PUBLISH_LINE = re.compile(
     r"\b(?:queue|jobs|publisher|producer|kafka|amqp)\.(?:publish|emit|add|send)\b",
     re.IGNORECASE,
@@ -708,9 +895,7 @@ def find_unresolved_dynamic_calls(
     return list(by_id.values())
 
 
-def write_resolver_queue(
-    run_dir: Path, calls: list[UnresolvedCall]
-) -> Path:
+def write_resolver_queue(run_dir: Path, calls: list[UnresolvedCall]) -> Path:
     """Stage the resolver queue under ``<run_dir>/storage_resolver/queue.jsonl``."""
     queue_dir = run_dir / "storage_resolver"
     queue_dir.mkdir(parents=True, exist_ok=True)

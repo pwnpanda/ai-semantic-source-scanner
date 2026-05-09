@@ -31,6 +31,10 @@ _CONFIDENCE_RANK: dict[str, int] = {
     "llm-suggested": 1,
     "unknown": 0,
 }
+_CONFIDENCE_BY_RANK: dict[int, str] = {v: k for k, v in _CONFIDENCE_RANK.items()}
+
+_CONSENSUS_FORCE_DEFINITE = 3
+_CONSENSUS_BUMP_ONE_RANK = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,14 +84,34 @@ def dedupe_flows(conn: duckdb.DuckDBPyConnection) -> int:
         survivor = group[0]
         engines = sorted({r[4] for r in group if r[4]})
         merged_engine = "+".join(engines) if len(engines) > 1 else (survivor[4] or "")
+        merged_conf = _consensus_confidence(
+            base_confidence=survivor[7] or "unknown",
+            engine_count=len(engines),
+        )
         conn.execute(
-            "UPDATE flows SET engine = ? WHERE fid = ?",
-            [merged_engine, survivor[0]],
+            "UPDATE flows SET engine = ?, confidence = ? WHERE fid = ?",
+            [merged_engine, merged_conf, survivor[0]],
         )
         for loser in group[1:]:
             conn.execute("DELETE FROM flows WHERE fid = ?", [loser[0]])
             removed += 1
     return removed
+
+
+def _consensus_confidence(*, base_confidence: str, engine_count: int) -> str:
+    """Boost confidence based on multi-engine agreement.
+
+    - 1 engine → unchanged.
+    - 2 engines → bump one rank (caps at 'definite').
+    - 3+ engines → forced to 'definite'.
+    """
+    if engine_count >= _CONSENSUS_FORCE_DEFINITE:
+        return "definite"
+    if engine_count == _CONSENSUS_BUMP_ONE_RANK:
+        rank = _CONFIDENCE_RANK.get(base_confidence, 0) + 1
+        rank = min(rank, _CONFIDENCE_RANK["definite"])
+        return _CONFIDENCE_BY_RANK.get(rank, base_confidence)
+    return base_confidence
 
 
 def _count_flows(conn: duckdb.DuckDBPyConnection, *, engine_like: str) -> int:
@@ -155,10 +179,12 @@ def _ingest_joern_jsonl(
             "INSERT OR REPLACE INTO taint_sinks VALUES (?, ?, ?, ?, ?, ?)",
             [sid, None, sink_class, sink_name, str(f.get("parameterization") or "unknown"), "[]"],
         )
-        steps_json = json.dumps([
-            [source_file, source_line, source_line],
-            [sink_file, sink_line, sink_line],
-        ])
+        steps_json = json.dumps(
+            [
+                [source_file, source_line, source_line],
+                [sink_file, sink_line, sink_line],
+            ]
+        )
         conn.execute(
             "INSERT OR REPLACE INTO flows VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [fid, tid, sid, cwe, "joern", steps_json, str(jsonl_path), "inferred"],

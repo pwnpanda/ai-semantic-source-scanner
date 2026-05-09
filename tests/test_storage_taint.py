@@ -30,9 +30,7 @@ def test_detect_sql_storage_ids_simple_select() -> None:
 
 
 def test_detect_sql_storage_ids_with_alias() -> None:
-    ids = detect_sql_storage_ids(
-        "SELECT u.bio FROM users u WHERE u.id = 1"
-    )
+    ids = detect_sql_storage_ids("SELECT u.bio FROM users u WHERE u.id = 1")
     assert "sql:users.bio" in ids
 
 
@@ -75,12 +73,9 @@ def test_run_fixpoint_records_storage_locations(tmp_path: Path) -> None:
     db = tmp_path / "x.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)
+    conn.execute("INSERT INTO taint_sources VALUES ('T1', NULL, 'http.body', 'name', 'a:1')")
     conn.execute(
-        "INSERT INTO taint_sources VALUES ('T1', NULL, 'http.body', 'name', 'a:1')"
-    )
-    conn.execute(
-        "INSERT INTO taint_sinks VALUES "
-        "('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
+        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
     )
     conn.execute(
         "INSERT INTO flows VALUES "
@@ -101,12 +96,9 @@ def test_run_fixpoint_records_storage_locations(tmp_path: Path) -> None:
 def _seed_round1_users_bio(conn: duckdb.DuckDBPyConnection) -> None:
     """Seed schema + a flow that updates users.bio so storage_writes has content."""
     apply_schema(conn)
+    conn.execute("INSERT INTO taint_sources VALUES ('T1', NULL, 'http.body', 'name', 'a:1')")
     conn.execute(
-        "INSERT INTO taint_sources VALUES ('T1', NULL, 'http.body', 'name', 'a:1')"
-    )
-    conn.execute(
-        "INSERT INTO taint_sinks VALUES "
-        "('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
+        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
     )
     conn.execute(
         "INSERT INTO flows VALUES "
@@ -131,9 +123,7 @@ def test_detect_storage_reads_from_select_statements(tmp_path: Path) -> None:
 
     inserted = detect_storage_reads(conn, snapshot_root=snapshot_root)
     assert inserted >= 1
-    rows = conn.execute(
-        "SELECT storage_id, symbol_id FROM storage_reads"
-    ).fetchall()
+    rows = conn.execute("SELECT storage_id, symbol_id FROM storage_reads").fetchall()
     assert any(storage_id == "sql:users.bio" for storage_id, _ in rows)
     # Re-running is idempotent.
     second = detect_storage_reads(conn, snapshot_root=snapshot_root)
@@ -150,8 +140,7 @@ def test_derive_storage_taint_marks_locations_with_flows_dirty(tmp_path: Path) -
     derived = derive_storage_taint(conn)
     assert derived >= 1
     rows = conn.execute(
-        "SELECT storage_id, derived_tid, contributing_tids_json, confidence "
-        "FROM storage_taint"
+        "SELECT storage_id, derived_tid, contributing_tids_json, confidence FROM storage_taint"
     ).fetchall()
     assert rows
     storage_id, derived_tid, contrib_json, confidence = rows[0]
@@ -182,8 +171,7 @@ def test_synthesize_round2_flows_links_dirty_storage_to_reads(tmp_path: Path) ->
     inserted = synthesize_round2_flows(conn)
     assert inserted >= 1
     flows = conn.execute(
-        "SELECT fid, tid, sid, cwe, engine, confidence FROM flows "
-        "WHERE engine = 'storage-taint-r2'"
+        "SELECT fid, tid, sid, cwe, engine, confidence FROM flows WHERE engine = 'storage-taint-r2'"
     ).fetchall()
     assert flows
     fid, tid, sid, cwe, engine, confidence = flows[0]
@@ -194,12 +182,8 @@ def test_synthesize_round2_flows_links_dirty_storage_to_reads(tmp_path: Path) ->
     assert confidence == "inferred"
     assert cwe == "CWE-89"
     # FK rows synthesised.
-    assert conn.execute(
-        "SELECT 1 FROM taint_sources WHERE tid = ?", [tid]
-    ).fetchone() is not None
-    assert conn.execute(
-        "SELECT 1 FROM taint_sinks WHERE sid = ?", [sid]
-    ).fetchone() is not None
+    assert conn.execute("SELECT 1 FROM taint_sources WHERE tid = ?", [tid]).fetchone() is not None
+    assert conn.execute("SELECT 1 FROM taint_sinks WHERE sid = ?", [sid]).fetchone() is not None
     # Idempotent.
     again = synthesize_round2_flows(conn)
     assert again == 0
@@ -209,12 +193,9 @@ def test_run_full_fixpoint_terminates_within_3_rounds(tmp_path: Path) -> None:
     db = tmp_path / "x.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)
+    conn.execute("INSERT INTO taint_sources VALUES ('T1', NULL, 'http.body', 'name', 'a:1')")
     conn.execute(
-        "INSERT INTO taint_sources VALUES ('T1', NULL, 'http.body', 'name', 'a:1')"
-    )
-    conn.execute(
-        "INSERT INTO taint_sinks VALUES "
-        "('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
+        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
     )
     conn.execute(
         "INSERT INTO flows VALUES "
@@ -236,9 +217,7 @@ def test_run_full_fixpoint_terminates_within_3_rounds(tmp_path: Path) -> None:
     assert stats["storage_reads"] >= 1
     assert stats["storage_taint_derived"] >= 1
     # Synthetic round-2 flow row exists.
-    r2 = conn.execute(
-        "SELECT COUNT(*) FROM flows WHERE engine = 'storage-taint-r2'"
-    ).fetchone()
+    r2 = conn.execute("SELECT COUNT(*) FROM flows WHERE engine = 'storage-taint-r2'").fetchone()
     assert r2 is not None and r2[0] >= 1
 
 
@@ -324,14 +303,90 @@ def test_merge_proposals_keeps_high_confidence_only(tmp_path: Path) -> None:
     assert "cache:flaky" not in body["llm_suggested"]
 
 
+def test_run_full_fixpoint_seeds_from_llm_suggested(tmp_path: Path) -> None:
+    """Round-0: schema's `llm_suggested:` block drives storage→read flows."""
+    db = tmp_path / "x.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+
+    snapshot_root = tmp_path / "source"
+    snapshot_root.mkdir()
+    (snapshot_root / "reader.js").write_text(
+        "async function loadProfile(userId) {\n  return cache.get(`user:${userId}:profile`);\n}\n",
+        encoding="utf-8",
+    )
+
+    schema_path = tmp_path / "schema.taint.yml"
+    save_schema_yaml(
+        schema_path,
+        {
+            "llm_suggested": {
+                "cache:user:*:profile": {
+                    "kind": "cache_key",
+                    "confidence": 0.9,
+                    "rationale": "test",
+                    "call_id": "S-test",
+                },
+            },
+        },
+    )
+
+    stats = run_full_fixpoint(
+        conn,
+        snapshot_root=snapshot_root,
+        max_rounds=3,
+        schema_path=schema_path,
+    )
+
+    assert stats["llm_seeded_locations"] == 1
+    assert stats["llm_seeded_reads"] >= 1
+    locs = conn.execute(
+        "SELECT storage_id, kind, schema_evidence FROM storage_locations"
+    ).fetchall()
+    assert ("cache:user:*:profile", "cache_key", "llm_suggested") in locs
+    taint = conn.execute("SELECT storage_id, confidence FROM storage_taint").fetchall()
+    assert ("cache:user:*:profile", "llm-suggested") in taint
+    r2_flows = conn.execute(
+        "SELECT cwe, engine, confidence FROM flows WHERE engine = 'storage-taint-r2'"
+    ).fetchall()
+    assert r2_flows, "expected at least one round-2 flow seeded by llm_suggested"
+
+    # Idempotent: second run does not re-seed the same locations or reads.
+    stats2 = run_full_fixpoint(
+        conn,
+        snapshot_root=snapshot_root,
+        max_rounds=3,
+        schema_path=schema_path,
+    )
+    assert stats2["llm_seeded_locations"] == 0
+    assert stats2["llm_seeded_reads"] == 0
+
+
+def test_run_full_fixpoint_without_llm_suggested_block(tmp_path: Path) -> None:
+    """An empty schema is a no-op for the LLM-seed pass."""
+    db = tmp_path / "x.duckdb"
+    conn = duckdb.connect(str(db))
+    _seed_round1_users_bio(conn)
+    schema_path = tmp_path / "schema.taint.yml"
+    save_schema_yaml(schema_path, {"tables": {}})
+    stats = run_full_fixpoint(
+        conn,
+        snapshot_root=tmp_path / "source",
+        max_rounds=2,
+        schema_path=schema_path,
+    )
+    assert stats["llm_seeded_locations"] == 0
+    assert stats["llm_seeded_reads"] == 0
+
+
 def test_parse_resolver_proposals_returns_jsonl(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     sr = run_dir / "storage_resolver"
     sr.mkdir(parents=True)
     (sr / "proposals.jsonl").write_text(
         '{"call_id": "S-1", "storage_id": "cache:x", "confidence": 0.8}\n'
-        '\n'
-        'not-json\n'
+        "\n"
+        "not-json\n"
         '{"call_id": "S-2", "storage_id": null}\n',
         encoding="utf-8",
     )

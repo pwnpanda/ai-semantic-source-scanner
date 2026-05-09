@@ -190,9 +190,7 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
         for project in detect_projects(snapshot_root):
             if project.kind is not ProjectKind.NODE:
                 continue
-            project_id = (
-                f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
-            )
+            project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
             roots.append((snapshot_root / project.base_path, project_id))
         stats = run_hybrid(
             roots,
@@ -257,9 +255,7 @@ def taxonomy_diff(
         typer.echo(f"  - {tag}")
     if apply:
         appended = apply_diff(diff)
-        typer.echo(
-            f"appended {appended} stub entries to bug_classes.yaml; review and rename"
-        )
+        typer.echo(f"appended {appended} stub entries to bug_classes.yaml; review and rename")
     else:
         typer.echo("\nSuggested stubs (run with --apply to merge):\n")
         typer.echo(diff.suggested_stubs_yaml)
@@ -909,9 +905,7 @@ def taint_schema(  # noqa: PLR0913, PLR0912, PLR0915 - CLI orchestrator
             )
             return
         cmd_script = write_llm_cmd_script(state.run_dir / ".llm-cmd-resolver.sh", provider)
-        skill_dir = (
-            Path(__file__).resolve().parent / "skills" / "storage_taint_resolver"
-        )
+        skill_dir = Path(__file__).resolve().parent / "skills" / "storage_taint_resolver"
         env = os.environ.copy()
         env["AICS_RUN_DIR"] = str(state.run_dir)
         env["AICS_SKILL_DIR"] = str(skill_dir)
@@ -944,13 +938,15 @@ def taint_schema(  # noqa: PLR0913, PLR0912, PLR0915 - CLI orchestrator
         snapshot_root = repo_dir / "source"
         conn = duckdb.connect(str(db))
         try:
-            stats = run_full_fixpoint(conn, snapshot_root=snapshot_root)
+            stats = run_full_fixpoint(conn, snapshot_root=snapshot_root, schema_path=schema_path)
         finally:
             conn.close()
         typer.echo(
             f"fixpoint: rounds={stats['rounds_run']} new_flows={stats['new_flows']} "
             f"locations={stats['storage_locations']} "
-            f"reads={stats['storage_reads']} derived={stats['storage_taint_derived']}"
+            f"reads={stats['storage_reads']} derived={stats['storage_taint_derived']} "
+            f"llm_seeded={stats.get('llm_seeded_locations', 0)}/"
+            f"{stats.get('llm_seeded_reads', 0)}"
         )
         return
 
