@@ -25,14 +25,22 @@ from ai_codescan.engines.llm_heavy import run_llm_heavy_engine
 from ai_codescan.findings.model import parse_finding
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
 from ai_codescan.ingest.sarif import ingest_sarif
-from ai_codescan.llm import LLMConfig, UnknownProviderError
-from ai_codescan.nominator import run_nominator
+from ai_codescan.llm import LLMConfig, UnknownProviderError, is_available
+from ai_codescan.nominator import run_nominator, write_llm_cmd_script
 from ai_codescan.prep import run_prep
 from ai_codescan.report import write_report
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.server import serve as start_server
 from ai_codescan.stack_detect import ProjectKind, detect_projects
-from ai_codescan.storage_taint import load_schema_yaml, run_full_fixpoint, save_schema_yaml
+from ai_codescan.storage_taint import (
+    find_unresolved_dynamic_calls,
+    load_schema_yaml,
+    merge_proposals_into_schema,
+    parse_resolver_proposals,
+    run_full_fixpoint,
+    save_schema_yaml,
+    write_resolver_queue,
+)
 from ai_codescan.taxonomy.diff import (
     apply_diff,
     days_since_last_check,
@@ -839,7 +847,7 @@ def report(
 
 
 @app.command("taint-schema")
-def taint_schema(
+def taint_schema(  # noqa: PLR0913, PLR0912, PLR0915 - CLI orchestrator
     ctx: typer.Context,
     repo_id: Annotated[str, typer.Option("--repo-id")] = "",
     show: Annotated[bool, typer.Option("--show")] = False,
@@ -848,12 +856,85 @@ def taint_schema(
         bool,
         typer.Option("--run", help="Run the storage-taint fixpoint over the cached index."),
     ] = False,
+    resolve: Annotated[
+        bool,
+        typer.Option(
+            "--resolve",
+            help=(
+                "Resolve dynamic cache/queue keys via the storage-taint-resolver "
+                "skill; merges accepted suggestions into schema.taint.yml under "
+                "an `llm_suggested:` block."
+            ),
+        ),
+    ] = False,
+    llm_provider: Annotated[str, typer.Option("--llm-provider")] = "",
+    llm_model: Annotated[str, typer.Option("--llm-model")] = "",
 ) -> None:
     """Inspect or edit ``schema.taint.yml`` (Layer 5 storage-taint annotations)."""
     cache_root: Path = ctx.obj["cache_root"]
     repo_id = _resolve_repo_id(cache_root, repo_id)
     repo_dir = cache_root / repo_id
     schema_path = repo_dir / "schema.taint.yml"
+
+    if resolve:
+        db = repo_dir / "index.duckdb"
+        if not db.is_file():
+            typer.echo("No index. Run prep first.", err=True)
+            raise typer.Exit(code=1)
+        snapshot_root = repo_dir / "source"
+        conn = duckdb.connect(str(db), read_only=True)
+        try:
+            calls = find_unresolved_dynamic_calls(conn, snapshot_root=snapshot_root)
+        finally:
+            conn.close()
+        if not calls:
+            typer.echo("no unresolved dynamic storage calls; schema unchanged")
+            return
+
+        state = load_or_create(
+            repo_dir,
+            engine="codeql",
+            temperature=0.0,
+            target_bug_classes=[],
+            llm_provider=llm_provider or "claude",
+            llm_model=llm_model or None,
+        )
+        write_resolver_queue(state.run_dir, calls)
+        provider = LLMConfig(provider=state.llm_provider, model=state.llm_model)
+        if not is_available(provider.provider):
+            queue_path = state.run_dir / "storage_resolver" / "queue.jsonl"
+            typer.echo(
+                f"{provider.provider} CLI not on PATH; skipping skill loop. "
+                f"Wrote {len(calls)} candidates to {queue_path} for manual triage."
+            )
+            return
+        cmd_script = write_llm_cmd_script(state.run_dir / ".llm-cmd-resolver.sh", provider)
+        skill_dir = (
+            Path(__file__).resolve().parent / "skills" / "storage_taint_resolver"
+        )
+        env = os.environ.copy()
+        env["AICS_RUN_DIR"] = str(state.run_dir)
+        env["AICS_SKILL_DIR"] = str(skill_dir)
+        env["AICS_LLM_CMD"] = str(cmd_script)
+        # Stage repo.md + schema.taint.yml as inputs.
+        inputs_dir = state.run_dir / "inputs"
+        inputs_dir.mkdir(parents=True, exist_ok=True)
+        if (repo_dir / "repo.md").is_file():
+            shutil.copyfile(repo_dir / "repo.md", inputs_dir / "repo.md")
+        if schema_path.is_file():
+            shutil.copyfile(schema_path, inputs_dir / "schema.taint.yml")
+        subprocess.run(  # noqa: S603 - argv-only, no shell
+            ["bash", str(skill_dir / "scripts" / "loop.sh")],  # noqa: S607
+            env=env,
+            check=False,
+        )
+        proposals = parse_resolver_proposals(state.run_dir)
+        merged = merge_proposals_into_schema(schema_path, proposals)
+        typer.echo(
+            f"resolver: {len(calls)} candidates, {len(proposals)} proposals returned, "
+            f"{merged} merged into schema.taint.yml under llm_suggested:"
+        )
+        return
 
     if run:
         db = repo_dir / "index.duckdb"

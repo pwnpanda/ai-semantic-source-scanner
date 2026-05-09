@@ -603,3 +603,187 @@ def run_full_fixpoint(
         "storage_reads": total_reads,
         "storage_taint_derived": total_derived,
     }
+
+
+# ---------------------------------------------------------------------------
+# LLM-driven storage-id resolution (round 3)
+# ---------------------------------------------------------------------------
+
+
+_DYNAMIC_TEMPLATE = re.compile(r"\$\{[^}]+\}|\+\s*[A-Za-z_]\w*|`[^`]*\$")
+
+# Line-scoped variants of the original callee regexes (no end-of-string anchor)
+# for searching whole snippets rather than isolated callee strings.
+_CACHE_SET_LINE = re.compile(
+    r"\b(?:cache|redis|client)\.(?:set|hset|setex)\b", re.IGNORECASE
+)
+_CACHE_GET_LINE = re.compile(
+    r"\b(?:cache|redis|client)\.(?:get|hget|mget)\b", re.IGNORECASE
+)
+_QUEUE_PUBLISH_LINE = re.compile(
+    r"\b(?:queue|jobs|publisher|producer|kafka|amqp)\.(?:publish|emit|add|send)\b",
+    re.IGNORECASE,
+)
+_QUEUE_CONSUME_LINE = re.compile(
+    r"\b(?:queue|worker|consumer|subscriber)\.(?:process|consume|subscribe|on)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedCall:
+    """A storage call site the static detector couldn't pin to a key."""
+
+    call_id: str
+    file: str
+    line: int
+    callee: str
+    code_snippet: str
+    context_lines: list[str]
+
+
+def find_unresolved_dynamic_calls(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    snapshot_root: Path,
+    context_radius: int = 3,
+) -> list[UnresolvedCall]:
+    """Find cache/queue/file calls that have a dynamic key the static analyser
+    couldn't resolve. Used as input to the storage-taint-resolver skill.
+
+    Heuristic: any callsite whose ``calleeText`` matches a storage operation
+    AND whose code contains a template-literal hole (``${...}``), an
+    addition operator on identifiers, or a function-call receiver.
+    """
+    out: list[UnresolvedCall] = []
+    rows = conn.execute(
+        """
+        SELECT caller_id, file, line, kind FROM xrefs
+        WHERE kind = 'call' AND file IS NOT NULL AND line IS NOT NULL
+        """
+    ).fetchall()
+    for caller_id, file, line, _kind in rows:
+        # Read the line + surrounding context from the snapshot.
+        try:
+            text = Path(file).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        idx = int(line) - 1
+        if idx < 0 or idx >= len(lines):
+            continue
+        snippet = lines[idx]
+
+        # Filter to storage callees of interest, then keep only dynamic ones.
+        callee_match = (
+            _CACHE_SET_LINE.search(snippet)
+            or _CACHE_GET_LINE.search(snippet)
+            or _QUEUE_PUBLISH_LINE.search(snippet)
+            or _QUEUE_CONSUME_LINE.search(snippet)
+        )
+        if not callee_match:
+            continue
+        if not _DYNAMIC_TEMPLATE.search(snippet):
+            continue
+
+        context_start = max(0, idx - context_radius)
+        context_end = min(len(lines), idx + context_radius + 1)
+        context = lines[context_start:context_end]
+
+        call_id = f"S-{_stable_id('dyn', file, str(line), snippet)[:12]}"
+        out.append(
+            UnresolvedCall(
+                call_id=call_id,
+                file=file,
+                line=int(line),
+                callee=callee_match.group(0),
+                code_snippet=snippet.strip(),
+                context_lines=[ln for ln in context],
+            )
+        )
+        _ = caller_id  # reserved
+    _ = snapshot_root  # reserved for future per-snapshot resolution
+    # Deduplicate by call_id (same line might be picked by multiple regexes).
+    by_id = {c.call_id: c for c in out}
+    return list(by_id.values())
+
+
+def write_resolver_queue(
+    run_dir: Path, calls: list[UnresolvedCall]
+) -> Path:
+    """Stage the resolver queue under ``<run_dir>/storage_resolver/queue.jsonl``."""
+    queue_dir = run_dir / "storage_resolver"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = queue_dir / "queue.jsonl"
+    with queue_path.open("w", encoding="utf-8") as f:
+        for c in calls:
+            f.write(
+                json.dumps(
+                    {
+                        "call_id": c.call_id,
+                        "file": c.file,
+                        "line": c.line,
+                        "callee": c.callee,
+                        "code_snippet": c.code_snippet,
+                        "context_lines": c.context_lines,
+                    }
+                )
+            )
+            f.write("\n")
+    return queue_path
+
+
+def parse_resolver_proposals(run_dir: Path) -> list[dict[str, Any]]:
+    """Parse ``proposals.jsonl`` written by the storage-taint-resolver skill."""
+    p = run_dir / "storage_resolver" / "proposals.jsonl"
+    if not p.is_file():
+        return []
+    out: list[dict[str, Any]] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            out.append(data)
+    return out
+
+
+def merge_proposals_into_schema(
+    schema_path: Path,
+    proposals: list[dict[str, Any]],
+    *,
+    min_confidence: float = 0.4,
+) -> int:
+    """Merge LLM-suggested storage IDs into ``schema.taint.yml``.
+
+    Each accepted proposal lands under a top-level ``llm_suggested:`` block
+    keyed by ``storage_id`` so a human reviewer can audit / promote them
+    later. Returns the count of proposals merged.
+    """
+    if not proposals:
+        return 0
+    data = load_schema_yaml(schema_path)
+    suggested: dict[str, Any] = data.setdefault("llm_suggested", {})
+    merged = 0
+    for prop in proposals:
+        sid = prop.get("storage_id")
+        if not sid or not isinstance(sid, str):
+            continue
+        confidence = float(prop.get("confidence", 0.0) or 0.0)
+        if confidence < min_confidence:
+            continue
+        if sid in suggested:
+            continue  # don't overwrite human-reviewed entries
+        suggested[sid] = {
+            "kind": str(prop.get("kind", "unknown")),
+            "confidence": confidence,
+            "rationale": str(prop.get("rationale", "")),
+            "call_id": str(prop.get("call_id", "")),
+        }
+        merged += 1
+    save_schema_yaml(schema_path, data)
+    return merged
