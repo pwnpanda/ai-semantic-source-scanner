@@ -89,6 +89,21 @@ uv run ai-codescan gate-3 --yes
 uv run ai-codescan report --report-dir ./report
 ```
 
+### Python target example
+
+The same workflow drives Python projects — language is auto-detected from
+`pyproject.toml` / `setup.py` / `setup.cfg` / `requirements.txt`. Running
+`prep` on a Flask/FastAPI/Django service routes it through CodeQL Python
+(`python-security-extended.qls`), Semgrep (`--config=auto`), Joern's
+`pysrc2cpg` frontend, and tree-sitter-python AST extraction. Optional
+SCIP indexing via `scip-python` (`npm i -g @sourcegraph/scip-python`) adds
+cross-file symbol resolution.
+
+```bash
+uv run ai-codescan prep ./tests/fixtures/tiny-flask --engine hybrid
+uv run ai-codescan run ./tests/fixtures/tiny-flask --target-bug-class injection --yes
+```
+
 Reports land in `./report/YYYY-MM-DD--<severity>--<vuln-class>--<component>.md`.
 
 ---
@@ -227,10 +242,11 @@ Quality gates: zero ruff warnings, zero ty errors, all tests green. ~158 tests, 
 
 ## Status
 
-Phases 1, 2, and 3 are complete and tagged. Joern engine integration is wired but defers the binary install to opt-in. Python language support landed in phase 4: stack-detect, CodeQL (`python-security-extended.qls`), Joern via `pysrc2cpg`, tree-sitter-python AST extraction, and Python idiom regexes for storage-taint. See [TRADEOFFS.md](TRADEOFFS.md) for the full list of autonomous decisions and what's still on the roadmap.
+Phases 1, 2, and 3 are complete and tagged. JavaScript / TypeScript and Python are fully implemented (every layer of the pipeline — stack detection, CodeQL, Semgrep, Joern, AST extraction, SCIP indexing, storage-taint regexes, framework-aware entrypoint detection, fixtures, end-to-end smoke tests). Joern install remains opt-in. Java / Go / Ruby are next on the roadmap. See [TRADEOFFS.md](TRADEOFFS.md) for the full list of autonomous decisions.
 
 ## Claude Sessions
 
 | Session | Summary | Date |
 |---------|---------|------|
 | `python-language-support` | Added full-parity Python language support: stack_detect (pyproject/setup/requirements + framework + pkg-mgr detection), CodeQL Python query suite, Joern pysrc2cpg + Python source/sink patterns, tree-sitter-python AST worker, Python idiom regexes in storage_taint, tiny-flask fixture, end-to-end smoke test. | 2026-05-09 |
+| `js-python-elevation` | Elevated JS/TS and Python from MVP to fully implemented: language-aware views.py (Python `#` comments), broader JS entrypoints (NestJS decorators, Next.js Pages/App Router, Remix loaders/actions), Python entrypoints (Flask/FastAPI/Django/Starlette + Celery/argparse), tightened Joern JS XSS receiver filter, optional scip-python integration, tiny-fastapi CWE-22 fixture, hybrid-mode integration test, README Python quickstart. | 2026-05-09 |

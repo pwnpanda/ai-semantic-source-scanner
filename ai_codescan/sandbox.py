@@ -149,20 +149,20 @@ def run_in_sandbox(  # noqa: PLR0913 - kw-only args mirror the CLI surface
 class LanguageProfile:
     """How to run a PoC written in a given language."""
 
-    name: str           # canonical lang
-    extension: str      # ".py" / ".js" / …
-    image: str          # default container image
-    interpreter: str    # entrypoint binary inside the image
+    name: str  # canonical lang
+    extension: str  # ".py" / ".js" / …
+    image: str  # default container image
+    interpreter: str  # entrypoint binary inside the image
 
 
 _PROFILES: dict[str, LanguageProfile] = {
-    "python":     LanguageProfile("python",     ".py",  "python:3.13-alpine", "python3"),
-    "javascript": LanguageProfile("javascript", ".js",  "node:22-alpine",     "node"),
-    "typescript": LanguageProfile("typescript", ".ts",  "node:22-alpine",     "node"),
-    "php":        LanguageProfile("php",        ".php", "php:8-alpine",       "php"),
-    "ruby":       LanguageProfile("ruby",       ".rb",  "ruby:3-alpine",      "ruby"),
-    "go":         LanguageProfile("go",         ".go",  "golang:1-alpine",    "go run"),
-    "shell":      LanguageProfile("shell",      ".sh",  "alpine:3.20",        "sh"),
+    "python": LanguageProfile("python", ".py", "python:3.13-alpine", "python3"),
+    "javascript": LanguageProfile("javascript", ".js", "node:22-alpine", "node"),
+    "typescript": LanguageProfile("typescript", ".ts", "node:22-alpine", "node"),
+    "php": LanguageProfile("php", ".php", "php:8-alpine", "php"),
+    "ruby": LanguageProfile("ruby", ".rb", "ruby:3-alpine", "ruby"),
+    "go": LanguageProfile("go", ".go", "golang:1-alpine", "go run"),
+    "shell": LanguageProfile("shell", ".sh", "alpine:3.20", "sh"),
 }
 
 

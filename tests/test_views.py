@@ -33,6 +33,26 @@ def test_render_view_includes_annotations(tmp_path: Path) -> None:
     assert "h.ts" in md
 
 
+def test_render_view_python_uses_hash_comment_marker(tmp_path: Path) -> None:
+    db = tmp_path / "x.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    file_abs = (tmp_path / "h.py").as_posix()
+    (tmp_path / "h.py").write_text(
+        "def h(req):\n    user_id = req.args.get('id')\n    return user_id\n"
+    )
+    conn.execute("INSERT INTO files VALUES (?, 'sha', 'python', 'p', 100)", [file_abs])
+    conn.execute(
+        "INSERT INTO taint_sources VALUES ('T1', NULL, 'http.query', 'id', ?)",
+        [f"{file_abs}:2"],
+    )
+
+    md = render_file_view(conn, file=file_abs)
+    assert "```python" in md
+    assert "# [T1] SOURCE" in md  # Python uses # for comments, not //
+    assert "// [T1] SOURCE" not in md
+
+
 def test_render_view_for_unknown_file_returns_marker(tmp_path: Path) -> None:
     db = tmp_path / "y.duckdb"
     conn = duckdb.connect(str(db))

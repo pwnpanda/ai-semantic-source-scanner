@@ -56,9 +56,7 @@ def load() -> UserConfig:
     runtime = str(
         os.environ.get("AICS_CONTAINER_RUNTIME") or raw.get("container_runtime") or "docker"
     )
-    pref = str(
-        os.environ.get("AICS_POC_LANG") or raw.get("poc_language_preference") or "auto"
-    )
+    pref = str(os.environ.get("AICS_POC_LANG") or raw.get("poc_language_preference") or "auto")
 
     if runtime not in _VALID_RUNTIMES:
         runtime = "docker"

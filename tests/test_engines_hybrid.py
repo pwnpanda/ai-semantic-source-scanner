@@ -4,8 +4,11 @@ import json
 from pathlib import Path
 
 import duckdb
+import pytest
 
-from ai_codescan.engines.hybrid import dedupe_flows
+from ai_codescan.engines import joern as joern_eng
+from ai_codescan.engines import semgrep as semgrep_eng
+from ai_codescan.engines.hybrid import dedupe_flows, run_hybrid
 from ai_codescan.index.duckdb_schema import apply_schema
 
 
@@ -139,3 +142,96 @@ def test_dedupe_no_op_when_keys_unique(tmp_path: Path) -> None:
         [json.dumps([["/x", 3], ["/y", 4]])],
     )
     assert dedupe_flows(conn) == 0
+
+
+# ---------------------------------------------------------------------------
+# Integration: run_hybrid drives both JS and Python projects with mocked engines
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _stub_engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Stub Semgrep + Joern so run_hybrid can be exercised without their CLIs."""
+
+    def fake_run_semgrep(project_root: Path, *, cache_dir: Path, project_id: str, **_kwargs):
+        sarif = cache_dir / "semgrep" / f"{project_id}.sarif"
+        sarif.parent.mkdir(parents=True, exist_ok=True)
+        # An empty SARIF body — ingest_sarif tolerates this and inserts zero flows.
+        sarif.write_text(
+            json.dumps({"version": "2.1.0", "runs": []}),
+            encoding="utf-8",
+        )
+        return sarif
+
+    captured_languages: list[str] = []
+
+    def fake_run_joern(
+        project_root: Path,
+        *,
+        cache_dir: Path,
+        project_id: str,
+        language: str = "javascript",
+    ):
+        captured_languages.append(language)
+        out = cache_dir / "joern" / f"{project_id}.flows.jsonl"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "fid": f"joern-{project_id}",
+            "source_file": f"{project_root.as_posix()}/x",
+            "source_line": 1,
+            "sink_file": f"{project_root.as_posix()}/y",
+            "sink_line": 2,
+            "source_name": "src",
+            "sink_name": "exec",
+            "cwe": "CWE-89",
+            "sink_class": "sql.exec",
+            "parameterization": "unknown",
+        }
+        out.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(semgrep_eng, "is_available", lambda: True)
+    monkeypatch.setattr(semgrep_eng, "run_semgrep", fake_run_semgrep)
+    monkeypatch.setattr(joern_eng, "is_available", lambda: True)
+    monkeypatch.setattr(joern_eng, "run_joern", fake_run_joern)
+    return captured_languages
+
+
+def test_run_hybrid_routes_per_project_language(tmp_path: Path, _stub_engines: list[str]) -> None:
+    """A JS and a Python project route to Joern with the right language flag,
+    and each project's flow is ingested under engine='joern'."""
+    db_path = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    conn.close()
+
+    snapshot = tmp_path / "snap"
+    js_root = snapshot / "js-app"
+    py_root = snapshot / "py-app"
+    js_root.mkdir(parents=True)
+    py_root.mkdir(parents=True)
+
+    project_roots = [
+        (js_root, "js-app", "javascript"),
+        (py_root, "py-app", "python"),
+    ]
+
+    repo_dir = tmp_path / "cache"
+    repo_dir.mkdir()
+    stats = run_hybrid(
+        project_roots,
+        snapshot_root=snapshot,
+        repo_dir=repo_dir,
+        db_path=db_path,
+    )
+
+    # Both languages were forwarded to the Joern stub.
+    assert _stub_engines == ["javascript", "python"]
+    assert stats.joern_flows == 2
+
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        engines = {row[0] for row in conn.execute("SELECT DISTINCT engine FROM flows").fetchall()}
+    finally:
+        conn.close()
+    assert engines == {"joern"}

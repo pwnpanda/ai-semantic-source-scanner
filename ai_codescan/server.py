@@ -150,8 +150,7 @@ def _insert_note(conn: duckdb.DuckDBPyConnection, payload: dict[str, Any]) -> in
     content = str(payload["content"])
     pinned = bool(payload.get("pinned", False))
     conn.execute(
-        "INSERT INTO notes (symbol_id, layer, author, content, pinned)"
-        " VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO notes (symbol_id, layer, author, content, pinned) VALUES (?, ?, ?, ?, ?)",
         [sid, layer, author, content, pinned],
     )
     # Return inserted rowid via the latest matching row.

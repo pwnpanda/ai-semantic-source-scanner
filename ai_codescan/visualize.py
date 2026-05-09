@@ -91,9 +91,7 @@ def render_flows_dot(
             )
             seen_nodes.add(sink_node)
         edge_label = f"{flow_cwe or '?'} ({engine}, {confidence})"
-        lines.append(
-            f'  {src_node} -> {sink_node} [label="{_short_label(edge_label)}"];'
-        )
+        lines.append(f'  {src_node} -> {sink_node} [label="{_short_label(edge_label)}"];')
     lines.append("}")
     return "\n".join(lines)
 

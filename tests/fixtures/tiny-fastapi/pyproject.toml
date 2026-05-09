@@ -1,0 +1,9 @@
+[project]
+name = "tiny-fastapi"
+version = "0.0.1"
+description = "Minimal FastAPI app with a deliberate path traversal for SAST testing."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+]

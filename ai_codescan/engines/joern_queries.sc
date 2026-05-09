@@ -125,10 +125,27 @@ import java.security.MessageDigest
   // double-report a flow that the data-flow engine already produced.
   val emitted = scala.collection.mutable.HashSet.empty[(String, Int, String, Int, String)]
 
+  // For JS XSS sinks the bare-name pattern (?i)(send|write|end) over-matches —
+  // it picks up Promise.end, Array.send, Stream.write etc. Filter the sink set
+  // by receiver text (``res.``, ``response.``, ``reply.``, ``ctx.``) for the
+  // JS XSS class to cut FPs without disturbing the generic match flow.
+  val xssReceiver = """(?is).*\b(?:res|response|reply|ctx)\.(?:send|write|end)\b.*""".r
+  def restrictXssSinks(
+    cwe: String,
+    sinks: List[io.shiftleft.codepropertygraph.generated.nodes.Call]
+  ): List[io.shiftleft.codepropertygraph.generated.nodes.Call] = {
+    if (cwe == "CWE-79" && language.toLowerCase != "python") {
+      sinks.filter { c =>
+        val code = if (c.code != null) c.code else ""
+        xssReceiver.matches(code)
+      }
+    } else sinks
+  }
+
   val w = new BufferedWriter(new FileWriter(outPath))
   try {
     for ((cwe, sinkClass, sinkPattern) <- sinkClasses) {
-      val sinkCalls = cpg.call.name(sinkPattern).l
+      val sinkCalls = restrictXssSinks(cwe, cpg.call.name(sinkPattern).l)
 
       // ---- Pass 1: reachableByFlows on each sink's arguments ----
       for (call <- sinkCalls) {

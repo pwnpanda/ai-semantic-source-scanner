@@ -15,22 +15,18 @@ def _seed(conn: duckdb.DuckDBPyConnection, file: Path) -> None:
         [f"{file.as_posix()}:2"],
     )
     conn.execute(
-        "INSERT INTO taint_sinks VALUES "
-        "('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
+        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
     )
     steps = f'[["{file.as_posix()}", 2, 2], ["{file.as_posix()}", 5, 5]]'
     conn.execute(
-        "INSERT INTO flows VALUES "
-        "('F1', 'T1', 'K1', 'CWE-89', 'codeql', ?, '/sarif', 'definite')",
+        "INSERT INTO flows VALUES ('F1', 'T1', 'K1', 'CWE-89', 'codeql', ?, '/sarif', 'definite')",
         [steps],
     )
 
 
 def test_extract_slice_returns_source_sink_with_context(tmp_path: Path) -> None:
     src = tmp_path / "x.ts"
-    src.write_text(
-        "// 1\nconst id = req.body.name\n// 3\n// 4\nawait db.query(`x ${id}`)\n// 6\n"
-    )
+    src.write_text("// 1\nconst id = req.body.name\n// 3\n// 4\nawait db.query(`x ${id}`)\n// 6\n")
     db = tmp_path / "x.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)

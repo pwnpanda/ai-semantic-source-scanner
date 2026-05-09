@@ -18,13 +18,11 @@ def _seed(conn: duckdb.DuckDBPyConnection, file: str) -> None:
         [f"{file}:2"],
     )
     conn.execute(
-        "INSERT INTO taint_sinks VALUES "
-        "('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
+        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
     )
     steps = f'[["{file}", 2, 2], ["{file}", 5, 5]]'
     conn.execute(
-        "INSERT INTO flows VALUES "
-        "('F1', 'T1', 'K1', 'CWE-89', 'codeql', ?, '/sarif', 'definite')",
+        "INSERT INTO flows VALUES ('F1', 'T1', 'K1', 'CWE-89', 'codeql', ?, '/sarif', 'definite')",
         [steps],
     )
 
@@ -41,8 +39,7 @@ def _seed_two_flows_same_file(conn: duckdb.DuckDBPyConnection, file: str) -> Non
         [f"{file}:50"],
     )
     conn.execute(
-        "INSERT INTO taint_sinks VALUES "
-        "('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
+        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'pg', 'template-literal', '[]')"
     )
     steps_42 = f'[["{file}", 42, 42], ["{file}", 60, 60]]'
     steps_50 = f'[["{file}", 50, 50], ["{file}", 70, 70]]'
@@ -115,9 +112,7 @@ def test_run_analyzer_writes_queue_and_slices(
     src_dir = repo_dir / "source"
     src_dir.mkdir()
     src_file = src_dir / "x.ts"
-    src_file.write_text(
-        "// 1\nconst id = req.body.name\n// 3\n// 4\nawait db.query(`x ${id}`)\n"
-    )
+    src_file.write_text("// 1\nconst id = req.body.name\n// 3\n// 4\nawait db.query(`x ${id}`)\n")
 
     db = repo_dir / "index.duckdb"
     conn = duckdb.connect(str(db))
@@ -125,9 +120,7 @@ def test_run_analyzer_writes_queue_and_slices(
     _seed(conn, str(src_file))
     conn.close()
 
-    state = load_or_create(
-        repo_dir, engine="codeql", temperature=0.0, target_bug_classes=["sqli"]
-    )
+    state = load_or_create(repo_dir, engine="codeql", temperature=0.0, target_bug_classes=["sqli"])
     # The QueueItem.loc field carries the exact source_loc (file:line).
     nomination_loc = f"{src_file}:2"
     (state.run_dir / "nominations.md").write_text(

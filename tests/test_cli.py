@@ -509,9 +509,7 @@ def test_serve_help_advertises_flags() -> None:
     assert "--open" in result.stdout
 
 
-def test_install_skills_protect_and_list(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_install_skills_protect_and_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     # Mark wide_nominator as protected.
     result = runner.invoke(app, ["install-skills", "--protect", "wide_nominator"])
@@ -525,9 +523,7 @@ def test_install_skills_protect_and_list(
     assert "no protected skills" in listing2.stdout
 
 
-def test_install_skills_skips_protected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_install_skills_skips_protected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     # Mark deep_analyzer protected before the first install.

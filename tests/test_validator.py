@@ -78,7 +78,7 @@ def test_parse_verdict_extracts_json_block() -> None:
 
     stdout = (
         "running PoC...\n"
-        'observed: response body matches expected SQL error\n'
+        "observed: response body matches expected SQL error\n"
         '{"verdict": "vulnerable", "evidence": ["sql syntax error"], "confidence": 0.92}\n'
     )
     parsed = _parse_verdict(stdout)

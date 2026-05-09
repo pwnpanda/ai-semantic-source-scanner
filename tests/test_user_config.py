@@ -8,9 +8,7 @@ from ai_codescan import user_config
 
 
 @pytest.fixture
-def isolated_config_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def isolated_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("AICS_CONTAINER_RUNTIME", raising=False)
     monkeypatch.delenv("AICS_POC_LANG", raising=False)
@@ -43,9 +41,7 @@ def test_invalid_runtime_falls_back_to_docker(isolated_config_dir: Path) -> None
     assert cfg.poc_language_preference == "auto"
 
 
-def test_env_var_overrides_disk(
-    isolated_config_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_env_var_overrides_disk(isolated_config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     user_config.save(user_config.UserConfig(container_runtime="docker"))
     monkeypatch.setenv("AICS_CONTAINER_RUNTIME", "podman")
     monkeypatch.setenv("AICS_POC_LANG", "php")
@@ -54,8 +50,6 @@ def test_env_var_overrides_disk(
     assert cfg.poc_language_preference == "php"
 
 
-def test_config_path_under_xdg_config_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_config_path_under_xdg_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert user_config.config_path() == tmp_path / "ai-codescan" / "config.yaml"

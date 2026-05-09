@@ -93,16 +93,27 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
     return jobs
 
 
+def _scip_language_for_project(project: Project) -> str | None:
+    """Return the SCIP indexer language for ``project``, or None to skip."""
+    if project.kind is ProjectKind.NODE and "typescript" in project.languages:
+        return "javascript"
+    if project.kind is ProjectKind.PYTHON and "python" in project.languages:
+        return "python"
+    return None
+
+
 def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: Path) -> dict:
     lookup: dict = {}
     for project in projects:
-        if project.kind is not ProjectKind.NODE or "typescript" not in project.languages:
+        scip_language = _scip_language_for_project(project)
+        if scip_language is None:
             continue
         try:
             result = build_scip_index(
                 snapshot_root / project.base_path,
                 cache_dir=cache_dir,
                 project_id=f"{project.name}-{project.base_path.as_posix().replace('/', '_')}",
+                language=scip_language,
             )
         except (RuntimeError, OSError) as exc:
             log.warning("scip index failed for %s: %s", project.name, exc)

@@ -1,8 +1,8 @@
-"""End-to-end smoke test: prep on the tiny-flask Python fixture.
+"""End-to-end smoke tests for Python prep.
 
-Engine is ``none`` so the test doesn't depend on the CodeQL Python pack
+Engine is ``none`` so the tests don't depend on the CodeQL Python pack
 being downloaded; we only validate that detection, AST, and ingestion
-correctly route a Python project through the pipeline.
+correctly route Python projects through the pipeline.
 """
 
 from __future__ import annotations
@@ -52,5 +52,34 @@ def test_prep_on_tiny_flask_indexes_python_symbols(tmp_path: Path, fixtures_dir:
             "AND line >= 25 AND line <= 28"
         ).fetchall()
         assert execute_calls, "expected an xref near the cursor.execute call site"
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(not _has_node(), reason="node runtime required for AST extraction")
+def test_prep_on_tiny_fastapi_detects_route_entrypoint(tmp_path: Path, fixtures_dir: Path) -> None:
+    """tiny-fastapi's ``@app.get('/files')`` must surface as an http_route entrypoint."""
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    snap, db_path = run_prep(
+        fixtures_dir / "tiny-fastapi",
+        cache_root=cache_root,
+        engine="none",
+        bug_classes=[],
+        quiet=True,
+    )
+    assert snap.snapshot_dir.is_dir()
+    assert db_path.is_file()
+
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        entrypoints = conn.execute(
+            "SELECT kind, signature FROM entrypoints WHERE file LIKE '%main.py'"
+        ).fetchall()
+        kinds = {row[0] for row in entrypoints}
+        assert "http_route" in kinds, (
+            f"expected http_route entrypoint for @app.get; got {entrypoints!r}"
+        )
+        assert any("app.get" in row[1] for row in entrypoints)
     finally:
         conn.close()

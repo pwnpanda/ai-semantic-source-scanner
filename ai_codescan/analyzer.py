@@ -23,9 +23,7 @@ from ai_codescan.slice import extract_slice
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "deep_analyzer"
 
 
-def _pick_flow_for_nomination(
-    conn: duckdb.DuckDBPyConnection, nomination: dict
-) -> str | None:
+def _pick_flow_for_nomination(conn: duckdb.DuckDBPyConnection, nomination: dict) -> str | None:
     """Return the fid of the flow whose source location matches the nomination,
     falling back to None when no flow is found.
     """

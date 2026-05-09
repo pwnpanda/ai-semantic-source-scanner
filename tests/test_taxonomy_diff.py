@@ -28,9 +28,7 @@ def test_diff_returns_empty_when_codeql_missing(
     assert diff.is_empty
 
 
-def test_diff_finds_missing_tag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_diff_finds_missing_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     pack = tmp_path / ".codeql" / "packages" / "test" / "1.0.0" / "queries"
     pack.mkdir(parents=True)

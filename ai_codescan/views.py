@@ -6,15 +6,31 @@ from pathlib import Path
 
 import duckdb
 
+_LANG_FENCE_BY_SUFFIX: tuple[tuple[tuple[str, ...], str], ...] = (
+    ((".ts", ".tsx"), "typescript"),
+    ((".js", ".jsx", ".mjs", ".cjs"), "javascript"),
+    ((".py", ".pyi"), "python"),
+    ((".html", ".htm"), "html"),
+)
+
 
 def _lang_fence(file: str) -> str:
-    if file.endswith((".ts", ".tsx")):
-        return "typescript"
-    if file.endswith((".js", ".jsx", ".mjs", ".cjs")):
-        return "javascript"
-    if file.endswith((".html", ".htm")):
-        return "html"
+    for suffixes, fence in _LANG_FENCE_BY_SUFFIX:
+        if file.endswith(suffixes):
+            return fence
     return ""
+
+
+def _comment_marker(fence: str) -> str:
+    """Return the inline-comment leader appropriate for ``fence``.
+
+    Used so per-line annotations are emitted as legal comment syntax for
+    the highlighted language. Languages with no obvious leader fall back to
+    ``//`` to preserve the existing behaviour.
+    """
+    if fence == "python":
+        return "#"
+    return "//"
 
 
 def _annotations_by_line(conn: duckdb.DuckDBPyConnection, file: str) -> dict[int, list[str]]:
@@ -65,10 +81,11 @@ def render_file_view(conn: duckdb.DuckDBPyConnection, *, file: str) -> str:
     text = fp.read_text(encoding="utf-8")
     annotations = _annotations_by_line(conn, file)
 
+    marker = _comment_marker(lang)
     out = [f"# View: {fp.name}", "", f"`{file}`", "", f"```{lang}"]
     for idx, line in enumerate(text.splitlines(), 1):
         markers = annotations.get(idx)
-        suffix = f"  // {' | '.join(markers)}" if markers else ""
+        suffix = f"  {marker} {' | '.join(markers)}" if markers else ""
         out.append(f"{line}{suffix}")
     out.append("```")
     return "\n".join(out) + "\n"

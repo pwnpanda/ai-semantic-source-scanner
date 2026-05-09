@@ -15,9 +15,7 @@ def _seed(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         "INSERT INTO taint_sources VALUES ('T1', NULL, 'http.body', 'name', '/abs/x.ts:13')"
     )
-    conn.execute(
-        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'pg', 'concat', '[]')"
-    )
+    conn.execute("INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'pg', 'concat', '[]')")
     conn.execute(
         "INSERT INTO flows VALUES ('F1', 'T1', 'K1', 'CWE-89', 'codeql', ?, '/sarif', 'definite')",
         [json.dumps([["/abs/x.ts", 13], ["/abs/x.ts", 42]])],

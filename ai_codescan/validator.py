@@ -160,9 +160,7 @@ def _run_poc(
     )
 
 
-def _profile_for_finding(
-    finding: Finding, *, repo_md: str | None
-) -> LanguageProfile:
+def _profile_for_finding(finding: Finding, *, repo_md: str | None) -> LanguageProfile:
     """Pick a language profile based on user pref, finding metadata, and repo.md hints."""
     pref = load_user_config().poc_language_preference
     if pref != "auto":
@@ -256,8 +254,13 @@ def run_validator(  # noqa: PLR0915 - orchestrator inherently combines several s
             continue
         # Pick the language profile from the file extension first; user pref is the override.
         ext_to_lang = {
-            ".py": "python", ".js": "javascript", ".ts": "typescript",
-            ".php": "php", ".rb": "ruby", ".go": "go", ".sh": "shell",
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".php": "php",
+            ".rb": "ruby",
+            ".go": "go",
+            ".sh": "shell",
         }
         explicit_lang = ext_to_lang.get(poc_path.suffix)
         profile = (
@@ -273,9 +276,7 @@ def run_validator(  # noqa: PLR0915 - orchestrator inherently combines several s
                 no_sandbox=no_sandbox,
             )
         except SandboxUnavailableError:
-            log_rows.append(
-                f"| {finding.finding_id} | sandbox-unavailable | -- | -- | -- |"
-            )
+            log_rows.append(f"| {finding.finding_id} | sandbox-unavailable | -- | -- | -- |")
             continue
         flipped, verdict = _flip_status(result)
         new_status = cast(Status, flipped)

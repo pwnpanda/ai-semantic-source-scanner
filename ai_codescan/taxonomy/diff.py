@@ -101,16 +101,11 @@ def diff_against_installed_codeql() -> TaxonomyDiff:
             cwe_num = int(m.group(1))
             slug = f"cwe-{cwe_num}"
             stubs.append(
-                f"{slug}:\n"
-                f"  cwes: [CWE-{cwe_num}]\n"
-                f"  codeql_tags: [{tag}]\n"
-                f"  group: TODO\n\n"
+                f"{slug}:\n  cwes: [CWE-{cwe_num}]\n  codeql_tags: [{tag}]\n  group: TODO\n\n"
             )
         else:
             slug = tag.replace("/", "-").replace(".", "-")
-            stubs.append(
-                f"{slug}:\n  cwes: []\n  codeql_tags: [{tag}]\n  group: TODO\n\n"
-            )
+            stubs.append(f"{slug}:\n  cwes: []\n  codeql_tags: [{tag}]\n  group: TODO\n\n")
 
     return TaxonomyDiff(missing_tags=missing, suggested_stubs_yaml="".join(stubs))
 
@@ -132,9 +127,10 @@ def apply_diff(diff: TaxonomyDiff) -> int:
         raw_text = body.rstrip() + "\n"
     appended = raw_text.rstrip() + "\n\n" + diff.suggested_stubs_yaml.rstrip() + "\n"
     if groups:
-        appended += "\ngroups:\n" + yaml.safe_dump({"groups": groups}, default_flow_style=False)[
-            len("groups:\n") :
-        ]
+        appended += (
+            "\ngroups:\n"
+            + yaml.safe_dump({"groups": groups}, default_flow_style=False)[len("groups:\n") :]
+        )
     yaml_path.write_text(appended, encoding="utf-8")
     return len(diff.missing_tags)
 

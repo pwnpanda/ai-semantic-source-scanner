@@ -25,10 +25,12 @@ def test_ingest_llm_heavy_flows_inserts_rows(tmp_path: Path) -> None:
 
     flows = tmp_path / "flows.jsonl"
     flows.write_text(
-        "\n".join([
-            __import__("json").dumps(_flow_row()),
-            __import__("json").dumps(_flow_row(fid="L-002", file="/abs/y.ts")),
-        ]),
+        "\n".join(
+            [
+                __import__("json").dumps(_flow_row()),
+                __import__("json").dumps(_flow_row(fid="L-002", file="/abs/y.ts")),
+            ]
+        ),
         encoding="utf-8",
     )
 
