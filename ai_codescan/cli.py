@@ -8,6 +8,7 @@ import os
 import shutil
 import stat as stat_mod
 import subprocess
+import webbrowser
 from pathlib import Path
 from typing import Annotated, Any
 from typing import cast as _cast
@@ -29,6 +30,7 @@ from ai_codescan.nominator import run_nominator
 from ai_codescan.prep import run_prep
 from ai_codescan.report import write_report
 from ai_codescan.runs.state import load_or_create
+from ai_codescan.server import serve as start_server
 from ai_codescan.stack_detect import ProjectKind, detect_projects
 from ai_codescan.storage_taint import load_schema_yaml, run_fixpoint, save_schema_yaml
 from ai_codescan.taxonomy.loader import (
@@ -883,6 +885,40 @@ def install_skills() -> None:
         installed.append(dest)
     for d in installed:
         typer.echo(f"installed skill to {d}")
+
+
+@app.command()
+def serve(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    host: Annotated[str, typer.Option("--host", help="Bind host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Bind port.")] = 8765,
+    open_browser: Annotated[
+        bool, typer.Option("--open/--no-open", help="Open browser after start.")
+    ] = True,
+) -> None:
+    """Serve the React Flow viewer for a cached repo's flows + notes."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    db_path = cache_root / repo_id / "index.duckdb"
+    if not db_path.is_file():
+        typer.echo("No prep output. Run `ai-codescan prep` first.", err=True)
+        raise typer.Exit(code=1)
+    server = start_server(db_path, host=host, port=port)
+    addr = server.server_address
+    bound_host, bound_port = str(addr[0]), int(addr[1])
+    url = f"http://{bound_host}:{bound_port}"
+    typer.echo(f"viewer at {url}  (Ctrl-C to stop)")
+    if open_browser:
+        with contextlib.suppress(Exception):
+            webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("\nshutting down")
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":

@@ -463,3 +463,11 @@ def test_visualize_writes_dot(tmp_path: Path, fixtures_dir: Path) -> None:
     assert result.exit_code == 0, result.output
     assert out.is_file()
     assert "digraph" in out.read_text()
+
+
+def test_serve_help_advertises_flags() -> None:
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code == 0
+    assert "--port" in result.stdout
+    assert "--host" in result.stdout
+    assert "--open" in result.stdout
