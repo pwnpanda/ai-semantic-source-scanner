@@ -13,6 +13,7 @@ import yaml
 _QUERY_SUITES: dict[str, str] = {
     "javascript": "codeql/javascript-queries:codeql-suites/javascript-security-extended.qls",
     "python": "codeql/python-queries:codeql-suites/python-security-extended.qls",
+    "java": "codeql/java-queries:codeql-suites/java-security-extended.qls",
 }
 """Per-language default suite — security-extended is the broadest stable set.
 
@@ -24,14 +25,23 @@ use via ``codeql pack download <pack>`` (auto-fetched when not present in
 _QUERY_PACKS: dict[str, str] = {
     "javascript": "codeql/javascript-queries",
     "python": "codeql/python-queries",
+    "java": "codeql/java-queries",
 }
 
 _CODEQL_LANGUAGE_FLAG: dict[str, str] = {
     # Value passed to ``codeql database create --language=...``.
-    # JS and TS share an extractor; Python is its own language.
+    # JS and TS share an extractor; Python is its own language; Java's
+    # extractor analyses Kotlin too when present.
     "javascript": "javascript-typescript",
     "python": "python",
+    "java": "java-kotlin",
 }
+
+# Languages whose extractor needs ``--build-mode=none`` to extract source
+# without an external build (CodeQL CLI ≥ 2.18.2). JS/Python don't accept
+# this flag; Java/Kotlin require *some* build mode and ``none`` is the
+# zero-config option.
+_CODEQL_BUILD_MODE_LANGS: frozenset[str] = frozenset({"java"})
 
 QUERY_SUITE = _QUERY_SUITES["javascript"]
 """Default JavaScript suite — kept as a public alias for back-compat."""
@@ -65,19 +75,25 @@ def build_database(
     env = os.environ.copy()
     if allow_minified and language == "javascript":
         env["CODEQL_EXTRACTOR_JAVASCRIPT_ALLOW_MINIFIED_FILES"] = "true"
+    cmd = [
+        "codeql",
+        "database",
+        "create",
+        str(db_path),
+        f"--language={_CODEQL_LANGUAGE_FLAG[language]}",
+        "--source-root",
+        str(project_root),
+        "--overwrite",
+    ]
+    if language in _CODEQL_BUILD_MODE_LANGS:
+        # ``none`` produces less precise results than a real build (no
+        # annotation-processor output, no private-registry deps), but it
+        # avoids requiring Maven/Gradle on the scanner host.
+        cmd.append("--build-mode=none")
     # S603/S607: argv list with literal "codeql" on PATH; all arguments are
     # constructed locally (no shell) and the inputs are validated paths.
     subprocess.run(  # noqa: S603
-        [  # noqa: S607
-            "codeql",
-            "database",
-            "create",
-            str(db_path),
-            f"--language={_CODEQL_LANGUAGE_FLAG[language]}",
-            "--source-root",
-            str(project_root),
-            "--overwrite",
-        ],
+        cmd,  # noqa: S607
         check=True,
         capture_output=True,
         env=env,

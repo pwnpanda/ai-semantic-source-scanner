@@ -29,16 +29,21 @@ from pathlib import Path
 QUERIES_SCRIPT = Path(__file__).resolve().parent / "joern_queries.sc"
 
 _JOERN_LANGUAGE_FLAG: dict[str, str] = {
-    # Token passed to ``joern-parse --language``.
-    # `pythonsrc` selects the modern pysrc2cpg frontend; `python` is the
-    # legacy python2cpg and produces a less faithful CPG.
+    # Token passed to ``joern-parse --language``. Keep frontend-specific
+    # tokens here so callers stay in scanner-language terms.
+    # - ``pythonsrc`` selects the modern ``pysrc2cpg`` frontend; ``python``
+    #   would pick the legacy ``python2cpg`` which produces a less faithful CPG.
+    # - ``JAVASRC`` selects the source frontend (``javasrc2cpg``); ``JAVA``
+    #   would pick the bytecode frontend (``jimple2cpg``).
     "javascript": "javascript",
     "python": "pythonsrc",
+    "java": "JAVASRC",
 }
 
 _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
     "javascript": frozenset({".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"}),
     "python": frozenset({".py", ".pyi"}),
+    "java": frozenset({".java"}),
 }
 
 

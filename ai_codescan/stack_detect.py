@@ -1,9 +1,11 @@
-"""Detect logical projects (each with one ``package.json`` or Python manifest) inside a snapshot.
+"""Detect logical projects (each with one ``package.json``, Python manifest, or JVM build file).
 
 Enumerates projects and labels their language(s), package manager, and
-detected web frameworks. Supports JS/TS (Node), Python, and HTML-only
-fallback. Python projects are recognised by the presence of any of
-``pyproject.toml``, ``setup.py``, ``setup.cfg``, or ``requirements.txt``.
+detected web frameworks. Supports JS/TS (Node), Python, Java (Maven/Gradle),
+and HTML-only fallback.
+
+  * Python projects: any of pyproject.toml, setup.py, setup.cfg, requirements.txt.
+  * Java projects: pom.xml (Maven), build.gradle, build.gradle.kts (Gradle).
 """
 
 from __future__ import annotations
@@ -34,6 +36,10 @@ _SKIP_DIRS = frozenset(
         ".ruff_cache",
         ".pytest_cache",
         "site-packages",
+        "target",  # Maven build output
+        ".gradle",  # Gradle cache
+        ".idea",  # JetBrains caches
+        "out",  # IntelliJ build dir
     }
 )
 
@@ -43,6 +49,7 @@ class ProjectKind(StrEnum):
 
     NODE = "node"  # has a package.json
     PYTHON = "python"  # has pyproject.toml / setup.py / setup.cfg / requirements.txt
+    JAVA = "java"  # has pom.xml or build.gradle(.kts)
     HTML_ONLY = "html"  # no package.json, but contains HTML
 
 
@@ -88,6 +95,9 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".tsx", "typescript"),
     (".py", "python"),
     (".pyi", "python"),
+    (".java", "java"),
+    (".kt", "kotlin"),
+    (".kts", "kotlin"),
     (".html", "html"),
     (".htm", "html"),
     (".vue", "vue"),
@@ -245,6 +255,97 @@ def _detect_python_frameworks(pkg_dir: Path) -> set[str]:
     return {label for dep, label in _PYTHON_FRAMEWORK_DEPS.items() if dep in deps}
 
 
+_JAVA_FRAMEWORK_DEPS: dict[str, str] = {
+    # Substrings searched against the concatenated text of pom.xml / build.gradle*
+    # so they catch both Maven XML coordinates (split across <groupId> +
+    # <artifactId> elements) and Gradle's compact ``group:artifact:version`` form.
+    "spring-boot-starter-web": "spring-boot",
+    "spring-boot-starter-webflux": "spring-boot",
+    "spring-webmvc": "spring",
+    "spring-webflux": "spring",
+    "quarkus-resteasy": "quarkus",
+    "quarkus-resteasy-reactive": "quarkus",
+    "quarkus-rest": "quarkus",
+    "micronaut-http-server": "micronaut",
+    "dropwizard-core": "dropwizard",
+    "helidon-webserver": "helidon",
+    "helidon-microprofile": "helidon",
+    "ratpack-core": "ratpack",
+    "javalin": "javalin",
+    "play.api": "play",
+    "vertx-web": "vertx",
+}
+
+_JAVA_MANIFESTS: tuple[str, ...] = (
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+)
+
+_JAVA_PROJECT_NAME_RE = re.compile(
+    r"<artifactId>\s*([A-Za-z0-9._\-]+)\s*</artifactId>",
+)
+_JAVA_GROUP_ID_RE = re.compile(
+    r"<groupId>\s*([A-Za-z0-9._\-]+)\s*</groupId>",
+)
+_GRADLE_ROOT_PROJECT_NAME_RE = re.compile(
+    r"""rootProject\.name\s*=\s*['"]([A-Za-z0-9._\-]+)['"]""",
+)
+
+
+def _java_manifest(pkg_dir: Path) -> Path | None:
+    """Return the build manifest in ``pkg_dir`` (Maven preferred over Gradle), or None."""
+    for name in _JAVA_MANIFESTS:
+        candidate = pkg_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _project_name_java(manifest: Path) -> str:
+    """Best-effort Java project name from pom.xml or settings.gradle*."""
+    parent_name = manifest.parent.name or "java"
+    if manifest.name == "pom.xml":
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+        match = _JAVA_PROJECT_NAME_RE.search(text)
+        if match:
+            return match.group(1)
+        return parent_name
+    # Gradle: prefer ``rootProject.name`` from a sibling settings.gradle(.kts).
+    for settings_name in ("settings.gradle", "settings.gradle.kts"):
+        settings = manifest.parent / settings_name
+        if not settings.is_file():
+            continue
+        match = _GRADLE_ROOT_PROJECT_NAME_RE.search(
+            settings.read_text(encoding="utf-8", errors="replace")
+        )
+        if match:
+            return match.group(1)
+    return parent_name
+
+
+def _detect_java_frameworks(pkg_dir: Path) -> set[str]:
+    text_blobs: list[str] = []
+    for name in ("pom.xml", "build.gradle", "build.gradle.kts"):
+        candidate = pkg_dir / name
+        if candidate.is_file():
+            text_blobs.append(candidate.read_text(encoding="utf-8", errors="replace"))
+    if not text_blobs:
+        return set()
+    blob = "\n".join(text_blobs)
+    return {label for needle, label in _JAVA_FRAMEWORK_DEPS.items() if needle in blob}
+
+
+def _detect_java_package_manager(pkg_dir: Path) -> str:
+    if (pkg_dir / "pom.xml").is_file():
+        return "maven"
+    if (pkg_dir / "build.gradle.kts").is_file():
+        return "gradle-kts"
+    if (pkg_dir / "build.gradle").is_file():
+        return "gradle"
+    return "unknown"
+
+
 def _detect_python_package_manager(pkg_dir: Path) -> str:
     if (pkg_dir / "poetry.lock").is_file():
         return "poetry"
@@ -321,6 +422,53 @@ def _detect_python_projects(root: Path, claimed_dirs: set[Path]) -> list[Project
     return projects
 
 
+def _detect_java_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+    """Find Java/JVM projects (one per directory containing pom.xml or build.gradle*).
+
+    Multi-module Maven/Gradle builds nest sub-modules under the parent. We
+    only emit the *outermost* manifest in a tree so a single multi-module
+    build appears as one project; nested modules are skipped.
+    """
+    candidates: list[Path] = []
+    for name in _JAVA_MANIFESTS:
+        for path in root.rglob(name):
+            rel = path.relative_to(root)
+            if any(part in _SKIP_DIRS for part in rel.parts):
+                continue
+            candidates.append(path.parent)
+    candidates = sorted({c for c in candidates}, key=lambda p: len(p.parts))
+
+    selected: list[Path] = []
+    for cand in candidates:
+        rel = cand.relative_to(root)
+        if rel in claimed_dirs:
+            continue
+        if any(_is_descendant(rel, sel) for sel in selected):
+            continue
+        selected.append(rel)
+
+    projects: list[Project] = []
+    for rel in selected:
+        pkg_dir = root / rel
+        manifest = _java_manifest(pkg_dir)
+        if manifest is None:
+            continue
+        projects.append(
+            Project(
+                name=_project_name_java(manifest),
+                kind=ProjectKind.JAVA,
+                base_path=rel,
+                languages=_detect_languages(pkg_dir),
+                has_tsconfig=False,
+                is_workspace_member=False,
+                workspace_root=None,
+                frameworks=_detect_java_frameworks(pkg_dir),
+                package_manager=_detect_java_package_manager(pkg_dir),
+            )
+        )
+    return projects
+
+
 def _is_descendant(rel: Path, ancestor: Path) -> bool:
     if ancestor == Path("."):
         return rel != Path(".")
@@ -367,6 +515,7 @@ def detect_projects(root: Path) -> list[Project]:
         claimed_dirs.add(rel)
 
     projects.extend(_detect_python_projects(root, claimed_dirs))
+    projects.extend(_detect_java_projects(root, claimed_dirs))
 
     if not projects and (any(_iter_files(root, ".html")) or any(_iter_files(root, ".htm"))):
         projects.append(

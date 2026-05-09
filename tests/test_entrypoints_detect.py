@@ -238,6 +238,86 @@ def test_celery_task_decorator_detected() -> None:
     assert any(e.kind == "message_consumer" for e in eps)
 
 
+# --- Java framework patterns ---
+
+
+def test_spring_get_mapping_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/UserController.java",
+            "line": 25,
+            "calleeText": '@GetMapping("/u")',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_spring_rest_controller_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/UserController.java",
+            "line": 19,
+            "calleeText": "@RestController",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_jax_rs_path_get_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/UserResource.java",
+            "line": 14,
+            "calleeText": '@Path("/users")',
+        },
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/UserResource.java",
+            "line": 16,
+            "calleeText": "@GET",
+        },
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert sum(1 for e in eps if e.kind == "http_route") == 2
+
+
+def test_kafka_listener_detected_as_message_consumer() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/Listener.java",
+            "line": 11,
+            "calleeText": '@KafkaListener(topics = "orders")',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "message_consumer" for e in eps)
+
+
+def test_spring_scheduled_detected_as_cron() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/Tasks.java",
+            "line": 8,
+            "calleeText": '@Scheduled(cron = "0 0 * * * *")',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "cron" for e in eps)
+
+
 def test_python_sys_argv_detected() -> None:
     xrefs = [
         {

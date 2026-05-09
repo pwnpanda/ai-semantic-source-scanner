@@ -39,15 +39,47 @@ import java.security.MessageDigest
 
   implicit val engineCtx: EngineContext = EngineContext()
 
-  // Source/sink patterns are language-specific. Both the JS and pythonsrc
-  // frontends store `call.name` as the bare method name (e.g. "query",
-  // "execute"); receiver context is implicit in the data-flow path.
+  // Source/sink patterns are language-specific. The JS, pythonsrc, and
+  // javasrc frontends all expose ``call.name`` as the bare method name
+  // (``query`` / ``execute`` / ``executeQuery`` etc.); receiver and class
+  // context show up via ``methodFullName``, but we lean on bare-name
+  // patterns for portability and rely on the data-flow engine + cross-engine
+  // dedupe to suppress false positives.
   case class LangPatterns(
     sourcePattern: String,
     sinkClasses: List[(String, String, String)]
   )
 
   val patterns: LangPatterns = language.toLowerCase match {
+    case "java" =>
+      LangPatterns(
+        sourcePattern =
+          "(?i)(getParameter|getQueryString|getHeader|getInputStream|" +
+          "getReader|getRequestURI|getCookies|getRemoteUser|getPathInfo|" +
+          "getServletPath|getRequestURL|getQueryParam|getPathParam|" +
+          "getHeaderString|getFormParam|RequestParam|RequestBody|" +
+          "PathVariable|RequestHeader).*",
+        sinkClasses = List(
+          ("CWE-89",  "sql.exec",      "(?i)executeQuery"),
+          ("CWE-89",  "sql.exec",      "(?i)executeUpdate"),
+          ("CWE-89",  "sql.exec",      "(?i)prepareStatement"),
+          ("CWE-89",  "sql.exec",      "(?i)createQuery"),
+          ("CWE-89",  "sql.exec",      "(?i)createNativeQuery"),
+          ("CWE-89",  "sql.exec",      "(?i)queryForList"),
+          ("CWE-89",  "sql.exec",      "(?i)queryForObject"),
+          ("CWE-78",  "cmd.shell",     "(?i)exec"),
+          ("CWE-78",  "cmd.shell",     "(?i)ProcessBuilder"),
+          ("CWE-79",  "html.write",    "(?i)println"),
+          ("CWE-79",  "html.write",    "(?i)getWriter"),
+          ("CWE-79",  "html.write",    "(?i)addAttribute"),
+          ("CWE-22",  "fs.read",       "(?i)FileInputStream"),
+          ("CWE-22",  "fs.read",       "(?i)newInputStream"),
+          ("CWE-22",  "fs.read",       "(?i)newBufferedReader"),
+          ("CWE-22",  "fs.read",       "(?i)readAllBytes"),
+          ("CWE-502", "deser.unsafe",  "(?i)readObject"),
+          ("CWE-502", "deser.unsafe",  "(?i)deserialize")
+        )
+      )
     case "python" =>
       LangPatterns(
         sourcePattern =
@@ -106,8 +138,21 @@ import java.security.MessageDigest
   }
 
   // Pre-compute sources once for both flow-engine queries and the fallback.
-  val rawSources = cpg.fieldAccess.code(sourceNamePattern).l ++
-                   cpg.identifier.name(sourceNamePattern).l
+  // Java's request-borne data flows through method parameters that carry
+  // annotations like @RequestParam / @RequestBody / @PathVariable rather
+  // than top-level field reads, so for Java we additionally include matching
+  // parameter nodes (their ``code`` includes the annotation text).
+  val baseRawSources = cpg.fieldAccess.code(sourceNamePattern).l ++
+                       cpg.identifier.name(sourceNamePattern).l
+  val srcRegex = sourceNamePattern.r
+  val rawSources =
+    if (language.toLowerCase == "java") {
+      val javaParamSources =
+        cpg.parameter
+          .filter(p => p.code != null && srcRegex.findFirstIn(p.code).isDefined)
+          .l
+      baseRawSources ++ javaParamSources
+    } else baseRawSources
 
   val sourcesByFile = scala.collection.mutable.HashMap.empty[String, List[SourceLoc]]
   rawSources.foreach { node =>

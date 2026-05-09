@@ -1,6 +1,6 @@
 # ai-semantic-source-scanner (`ai-codescan`)
 
-AI-driven SAST pipeline for JavaScript / TypeScript / Python / HTML codebases. Combines deterministic static analysis (AST, SCIP, CodeQL, Semgrep, optional Joern) with LLM agents that nominate bug candidates, write per-finding reports, and validate exploits in a hardened Docker sandbox.
+AI-driven SAST pipeline for JavaScript / TypeScript / Python / Java / HTML codebases. Combines deterministic static analysis (AST, SCIP, CodeQL, Semgrep, optional Joern) with LLM agents that nominate bug candidates, write per-finding reports, and validate exploits in a hardened Docker sandbox.
 
 Five-stage pipeline with human-in-the-loop gates between every stage. Swappable LLM provider (`claude`, `gemini`, or `codex`).
 
@@ -242,7 +242,7 @@ Quality gates: zero ruff warnings, zero ty errors, all tests green. ~158 tests, 
 
 ## Status
 
-Phases 1, 2, and 3 are complete and tagged. JavaScript / TypeScript and Python are fully implemented (every layer of the pipeline — stack detection, CodeQL, Semgrep, Joern, AST extraction, SCIP indexing, storage-taint regexes, framework-aware entrypoint detection, fixtures, end-to-end smoke tests). Joern install remains opt-in. Java / Go / Ruby are next on the roadmap. See [TRADEOFFS.md](TRADEOFFS.md) for the full list of autonomous decisions.
+Phases 1, 2, and 3 are complete and tagged. JavaScript / TypeScript and Python are fully implemented (every layer of the pipeline — stack detection, CodeQL, Semgrep, Joern, AST extraction, SCIP indexing, storage-taint regexes, framework-aware entrypoint detection, fixtures, end-to-end smoke tests). Java reached MVP+ in the same session: stack-detect (Maven/Gradle/Spring/Quarkus), CodeQL with `--build-mode=none`, Joern's `javasrc2cpg`, tree-sitter-java AST, JDBC/JdbcTemplate/RedisTemplate idioms in storage-taint, Spring/JAX-RS/Kafka/Scheduled entrypoints, and a tiny-spring SQLi fixture. Joern install remains opt-in. Go and Ruby are next on the roadmap. See [TRADEOFFS.md](TRADEOFFS.md) for the full list of autonomous decisions.
 
 ## Claude Sessions
 
@@ -250,3 +250,4 @@ Phases 1, 2, and 3 are complete and tagged. JavaScript / TypeScript and Python a
 |---------|---------|------|
 | `python-language-support` | Added full-parity Python language support: stack_detect (pyproject/setup/requirements + framework + pkg-mgr detection), CodeQL Python query suite, Joern pysrc2cpg + Python source/sink patterns, tree-sitter-python AST worker, Python idiom regexes in storage_taint, tiny-flask fixture, end-to-end smoke test. | 2026-05-09 |
 | `js-python-elevation` | Elevated JS/TS and Python from MVP to fully implemented: language-aware views.py (Python `#` comments), broader JS entrypoints (NestJS decorators, Next.js Pages/App Router, Remix loaders/actions), Python entrypoints (Flask/FastAPI/Django/Starlette + Celery/argparse), tightened Joern JS XSS receiver filter, optional scip-python integration, tiny-fastapi CWE-22 fixture, hybrid-mode integration test, README Python quickstart. | 2026-05-09 |
+| `java-language-support` | Added Java MVP+ language support: stack_detect (Maven pom.xml + Gradle Groovy/KTS, framework detection for Spring Boot/Quarkus/Micronaut/Dropwizard/Helidon/Javalin/Vertx, multi-module skip, target/ skip), CodeQL Java (`--language=java-kotlin`, `--build-mode=none`, java-security-extended.qls), Joern's `javasrc2cpg` with annotated-parameter source detection (`@RequestParam`/`@RequestBody`/`@PathVariable`), tree-sitter-java AST worker emitting class/method/annotation symbols+xrefs, Java JDBC/Spring/Kafka idioms in storage_taint, Spring/JAX-RS/Kafka/Scheduled entrypoints, tiny-spring CWE-89 fixture. | 2026-05-09 |

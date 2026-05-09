@@ -73,6 +73,20 @@ def test_classify_call_recognises_celery_send_task() -> None:
     assert classify_call("celery.apply_async") == ("queue_topic", "write")
 
 
+def test_classify_call_recognises_java_jdbc() -> None:
+    assert classify_call("stmt.executeQuery") == ("sql_column", "unknown")
+    assert classify_call("preparedStatement.executeUpdate") == ("sql_column", "unknown")
+    assert classify_call("jdbcTemplate.queryForList") == ("sql_column", "unknown")
+
+
+def test_classify_call_recognises_spring_redis() -> None:
+    assert classify_call("redisTemplate.opsForValue") == ("cache_key", "write")
+
+
+def test_classify_call_recognises_spring_kafka_template() -> None:
+    assert classify_call("kafkaTemplate.convertAndSend") == ("queue_topic", "write")
+
+
 def test_load_save_schema_yaml_roundtrip(tmp_path: Path) -> None:
     target = tmp_path / "schema.taint.yml"
     data = {"tables": {"users": {"columns": {"bio": {"taint": "dirty"}}}}}

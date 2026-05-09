@@ -61,6 +61,28 @@ _QUEUE_CONSUMER = re.compile(
     re.IGNORECASE,
 )
 
+# --- Java callee patterns ---------------------------------------------------
+
+# Spring annotations on classes / handler methods (org.springframework.web.bind.annotation.*).
+# Match decorator-style "@RestController(...)" or "@GetMapping('/u')" callee text.
+_JAVA_SPRING_ROUTE = re.compile(
+    r"^@(?:RestController|Controller|RequestMapping|GetMapping|PostMapping|"
+    r"PutMapping|PatchMapping|DeleteMapping)\b",
+)
+# JAX-RS / Quarkus annotations. Both jakarta.ws.rs.* (modern) and javax.ws.rs.*
+# (legacy) carry these — the bare annotation name suffices.
+_JAVA_JAXRS_ROUTE = re.compile(
+    r"^@(?:Path|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b",
+)
+# Spring/Akka/JMS message consumers. Annotated handler methods.
+_JAVA_QUEUE_CONSUMER = re.compile(
+    r"^@(?:KafkaListener|RabbitListener|JmsListener|SqsListener|MessageMapping)\b",
+)
+# Scheduled tasks (Spring's @Scheduled, Quartz JobDetail). Treat as cron-style.
+_JAVA_CRON = re.compile(r"^@(?:Scheduled|Schedule|Cron)\b")
+# CLI entrypoints — Java's ``main`` is detected via symbols (kind=method,
+# name='main') downstream rather than xrefs; left out of the regex set.
+
 # --- Python callee patterns -------------------------------------------------
 
 # Flask/Quart/aiohttp/Bottle: ``@app.route``, ``@app.get``, ``@bp.post``, etc.
@@ -122,10 +144,22 @@ def _looks_like_django_urls(file: str) -> bool:
     return file.endswith("urls.py")
 
 
+def _classify_callee_java(callee: str) -> EntrypointKind | None:
+    if _JAVA_SPRING_ROUTE.search(callee) or _JAVA_JAXRS_ROUTE.search(callee):
+        return "http_route"
+    if _JAVA_QUEUE_CONSUMER.search(callee):
+        return "message_consumer"
+    if _JAVA_CRON.search(callee):
+        return "cron"
+    return None
+
+
 def _classify_callee(callee: str, file: str) -> EntrypointKind | None:
     """Return the entrypoint kind for a single callee-text from any language."""
     if file.endswith((".py", ".pyi")):
         return _classify_callee_py(callee, file)
+    if file.endswith(".java"):
+        return _classify_callee_java(callee)
     return _classify_callee_js(callee)
 
 

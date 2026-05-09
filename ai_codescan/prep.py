@@ -44,11 +44,21 @@ _PYTHON_SKIP_PARTS: frozenset[str] = frozenset(
     }
 )
 
+_JAVA_SKIP_PARTS: frozenset[str] = frozenset(
+    {
+        "target",  # Maven build output
+        "build",  # Gradle build output (also a generic name; rare collision)
+        ".gradle",
+        "out",
+        ".idea",
+    }
+)
+
 
 def _files_for_project(
     snapshot_root: Path, project: Project
-) -> tuple[list[Path], list[Path], list[Path]]:
-    """Return (ts_files, html_files, python_files) under ``project.base_path``."""
+) -> tuple[list[Path], list[Path], list[Path], list[Path]]:
+    """Return (ts_files, html_files, python_files, java_files) under ``project.base_path``."""
     base = snapshot_root / project.base_path
     ts = [
         p
@@ -69,12 +79,19 @@ def _files_for_project(
         and p.suffix in {".py", ".pyi"}
         and not any(part in _PYTHON_SKIP_PARTS for part in p.parts)
     ]
-    return ts, html, python
+    java = [
+        p
+        for p in base.rglob("*")
+        if p.is_file()
+        and p.suffix == ".java"
+        and not any(part in _JAVA_SKIP_PARTS for part in p.parts)
+    ]
+    return ts, html, python, java
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
     base = snapshot_root / project.base_path
-    ts_files, html_files, py_files = _files_for_project(snapshot_root, project)
+    ts_files, html_files, py_files, java_files = _files_for_project(snapshot_root, project)
     jobs: list[AstJob] = []
     if ts_files:
         tsconfig = base / "tsconfig.json"
@@ -90,6 +107,8 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         jobs.append(AstJob(kind="html", project_root=base, files=html_files))
     if py_files and project.kind is ProjectKind.PYTHON:
         jobs.append(AstJob(kind="python", project_root=base, files=py_files))
+    if java_files and project.kind is ProjectKind.JAVA:
+        jobs.append(AstJob(kind="java", project_root=base, files=java_files))
     return jobs
 
 
@@ -136,6 +155,8 @@ def _codeql_language_for_project(project: Project) -> str | None:
         return "javascript"
     if project.kind is ProjectKind.PYTHON and "python" in project.languages:
         return "python"
+    if project.kind is ProjectKind.JAVA and "java" in project.languages:
+        return "java"
     return None
 
 

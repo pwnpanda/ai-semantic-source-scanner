@@ -33,31 +33,41 @@ _SQL_READ_VERBS = {"select"}
 
 _FIXPOINT_MAX_ROUNDS = 5
 
-# Heuristic detection of storage operations by callee text. Patterns cover both
-# JS/TS idioms (``db.query``, ``redis.set``) and Python idioms (``cursor.execute``,
-# ``r.set``, ``celery.send_task``); matched against the full callee string and
+# Heuristic detection of storage operations by callee text. Patterns cover
+# JS/TS idioms (``db.query``, ``redis.set``), Python idioms (``cursor.execute``,
+# ``r.set``, ``celery.send_task``), and Java idioms (``stmt.executeQuery``,
+# ``jdbcTemplate.queryForList``); matched against the full callee string and
 # anchored at the end so partial-name false matches don't bleed in.
 _SQL_CALL = re.compile(
-    r"\b(?:db|conn|client|pool|knex|cursor|cur|session|engine)\."
-    r"(?:query|execute|executemany|run|raw)$",
+    r"\b(?:db|conn|client|pool|knex|cursor|cur|session|engine|stmt|"
+    r"statement|preparedStatement|jdbcTemplate|entityManager|em)\."
+    r"(?:query|execute|executemany|executeQuery|executeUpdate|"
+    r"prepareStatement|createQuery|createNativeQuery|queryForList|"
+    r"queryForObject|run|raw)$",
     re.IGNORECASE,
 )
 _CACHE_SET = re.compile(
-    r"\b(?:cache|redis|client|r|kv|memcache|mc)\.(?:set|hset|setex|mset|hmset|psetex)$",
+    r"\b(?:cache|redis|client|r|kv|memcache|mc|redisTemplate|jedis|"
+    r"valueOps|opsForValue)\."
+    r"(?:set|hset|setex|mset|hmset|psetex|opsForValue|setIfAbsent|put)$",
     re.IGNORECASE,
 )
 _CACHE_GET = re.compile(
-    r"\b(?:cache|redis|client|r|kv|memcache|mc)\.(?:get|hget|mget|hgetall|get_multi)$",
+    r"\b(?:cache|redis|client|r|kv|memcache|mc|redisTemplate|jedis|"
+    r"valueOps|opsForValue)\."
+    r"(?:get|hget|mget|hgetall|get_multi|getAndExpire)$",
     re.IGNORECASE,
 )
 _QUEUE_PUBLISH = re.compile(
-    r"\b(?:queue|jobs|publisher|producer|kafka|amqp|celery|sqs|rabbit)\."
-    r"(?:publish|emit|add|send|send_task|apply_async|delay|send_message)$",
+    r"\b(?:queue|jobs|publisher|producer|kafka|amqp|celery|sqs|rabbit|"
+    r"kafkaTemplate|jmsTemplate|rabbitTemplate)\."
+    r"(?:publish|emit|add|send|send_task|apply_async|delay|send_message|"
+    r"sendDefault|convertAndSend)$",
     re.IGNORECASE,
 )
 _QUEUE_CONSUME = re.compile(
-    r"\b(?:queue|worker|consumer|subscriber|task)\."
-    r"(?:process|consume|subscribe|on|receive_messages|task)$",
+    r"\b(?:queue|worker|consumer|subscriber|task|listener)\."
+    r"(?:process|consume|subscribe|on|receive_messages|task|onMessage)$",
     re.IGNORECASE,
 )
 
@@ -250,7 +260,14 @@ def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
 # or quoted strings. Round-2 detection is intentionally textual (regex + sqlglot
 # parse) rather than AST-based — it mirrors the round-1 SQL-string discovery
 # already used upstream.
-_JS_TS_GLOBS = ("**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.py")
+_JS_TS_GLOBS = (
+    "**/*.js",
+    "**/*.jsx",
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.py",
+    "**/*.java",
+)
 _SELECT_STRING = re.compile(
     r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",
     re.IGNORECASE | re.DOTALL,

@@ -171,6 +171,107 @@ def test_python_skips_venv_dirs(tmp_path: Path) -> None:
     assert [p.name for p in projects] == ["vapp"]
 
 
+# ---------------------------------------------------------------------------
+# Java detection
+# ---------------------------------------------------------------------------
+
+
+def test_java_maven_project_detected(fixtures_dir: Path) -> None:
+    projects = detect_projects(fixtures_dir / "tiny-spring")
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.JAVA
+    assert p.name == "tiny-spring"
+    assert "java" in p.languages
+    assert "spring-boot" in p.frameworks
+    assert p.package_manager == "maven"
+
+
+def test_java_gradle_project_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "gapp"
+    pkg.mkdir()
+    (pkg / "build.gradle.kts").write_text(
+        "plugins { java }\n"
+        "dependencies {\n"
+        '    implementation("org.springframework.boot:spring-boot-starter-webflux:3.3.4")\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    (pkg / "settings.gradle.kts").write_text(
+        'rootProject.name = "gapp-svc"\n',
+        encoding="utf-8",
+    )
+    (pkg / "src" / "main" / "java").mkdir(parents=True)
+    (pkg / "src" / "main" / "java" / "Main.java").write_text(
+        "public class Main { public static void main(String[] a){} }\n"
+    )
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.JAVA
+    assert p.name == "gapp-svc"
+    assert "spring-boot" in p.frameworks
+    assert p.package_manager == "gradle-kts"
+
+
+def test_java_quarkus_framework_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "qapp"
+    pkg.mkdir()
+    (pkg / "pom.xml").write_text(
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+        "<modelVersion>4.0.0</modelVersion>"
+        "<groupId>q</groupId><artifactId>qapp</artifactId><version>1</version>"
+        "<dependencies><dependency>"
+        "<groupId>io.quarkus</groupId>"
+        "<artifactId>quarkus-resteasy</artifactId>"
+        "</dependency></dependencies>"
+        "</project>\n",
+        encoding="utf-8",
+    )
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.JAVA
+    assert "quarkus" in p.frameworks
+    assert p.package_manager == "maven"
+
+
+def test_java_multi_module_only_outermost_reported(tmp_path: Path) -> None:
+    """A multi-module Maven build emits one project; submodules are skipped."""
+    outer = tmp_path / "monorepo"
+    outer.mkdir()
+    (outer / "pom.xml").write_text(
+        "<project><modelVersion>4.0.0</modelVersion>"
+        "<groupId>m</groupId><artifactId>monorepo</artifactId><version>1</version>"
+        "<modules><module>svc</module></modules></project>",
+        encoding="utf-8",
+    )
+    sub = outer / "svc"
+    sub.mkdir()
+    (sub / "pom.xml").write_text(
+        "<project><modelVersion>4.0.0</modelVersion>"
+        "<groupId>m</groupId><artifactId>svc</artifactId><version>1</version></project>",
+        encoding="utf-8",
+    )
+    projects = detect_projects(outer)
+    assert [p.name for p in projects] == ["monorepo"]
+
+
+def test_java_skips_target_dir(tmp_path: Path) -> None:
+    """Maven's ``target/`` (build output) must not pollute project detection."""
+    pkg = tmp_path / "tapp"
+    pkg.mkdir()
+    (pkg / "pom.xml").write_text(
+        "<project><modelVersion>4.0.0</modelVersion>"
+        "<groupId>t</groupId><artifactId>tapp</artifactId><version>1</version></project>",
+        encoding="utf-8",
+    )
+    nested = pkg / "target" / "generated-sources" / "shaded"
+    nested.mkdir(parents=True)
+    (nested / "pom.xml").write_text(
+        "<project><modelVersion>4.0.0</modelVersion>"
+        "<groupId>g</groupId><artifactId>shaded</artifactId><version>1</version></project>",
+        encoding="utf-8",
+    )
+    assert [p.name for p in detect_projects(pkg)] == ["tapp"]
+
+
 def test_node_and_python_coexist_at_same_root(tmp_path: Path) -> None:
     """A directory with both package.json and pyproject.toml yields a Node project only.
 
