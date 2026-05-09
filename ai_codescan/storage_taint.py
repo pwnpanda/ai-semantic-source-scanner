@@ -16,8 +16,10 @@ analogue) and is hand-editable.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -234,3 +236,370 @@ def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
         new_flows=0,  # round 2 deferred — see docstring
         storage_locations=len(storage_locations),
     )
+
+
+# ---------------------------------------------------------------------------
+# Round 2: reads + dirty propagation + synthetic flows
+# ---------------------------------------------------------------------------
+
+# Walk JS/TS source files looking for SQL SELECT statements in template literals
+# or quoted strings. Round-2 detection is intentionally textual (regex + sqlglot
+# parse) rather than AST-based — it mirrors the round-1 SQL-string discovery
+# already used upstream.
+_JS_TS_GLOBS = ("**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx")
+_SELECT_STRING = re.compile(
+    r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _stable_id(prefix: str, *parts: str) -> str:
+    """Return ``<prefix><sha1[:12]>`` deterministic from ``parts``."""
+    digest = hashlib.sha1("\x1f".join(parts).encode("utf-8"), usedforsecurity=False).hexdigest()
+    return f"{prefix}{digest[:12]}"
+
+
+def _derived_tid_for_storage(storage_id: str) -> str:
+    """Return the canonical round-2 derived ``tid`` for a storage location."""
+    return _stable_id("T-stored-", storage_id)
+
+
+def detect_storage_reads(conn: duckdb.DuckDBPyConnection, *, snapshot_root: Path) -> int:
+    """Walk JS/TS source files and emit ``storage_reads`` rows for SELECT statements.
+
+    For each ``SELECT <cols> FROM <table>`` literal found in the snapshot, emits
+    one ``storage_reads(storage_id, symbol_id, result_binding_id)`` row per
+    referenced ``sql:<table>.<column>`` storage_id, but only for storage_ids
+    that already appear in ``storage_locations`` (i.e. discovered as writes by
+    round 1) — round 2 only cares about reads of locations that *could* be
+    dirty.
+
+    ``symbol_id`` is synthesised as ``read:<relpath>:<line>`` so a future
+    round can correlate reads to flow steps. ``result_binding_id`` is left
+    NULL for now (binding tracking is out of scope for the round-2 MVP).
+
+    Returns the number of rows inserted.
+    """
+    if not snapshot_root.is_dir():
+        return 0
+
+    known_locations = {
+        row[0]
+        for row in conn.execute("SELECT storage_id FROM storage_locations").fetchall()
+    }
+    existing_reads = {
+        (row[0], row[1])
+        for row in conn.execute("SELECT storage_id, symbol_id FROM storage_reads").fetchall()
+    }
+
+    new_rows: list[tuple[str, str, str | None]] = []
+    for pattern in _JS_TS_GLOBS:
+        for src_path in snapshot_root.glob(pattern):
+            if not src_path.is_file():
+                continue
+            try:
+                text = src_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for match in _SELECT_STRING.finditer(text):
+                sql = match.group("sql").strip()
+                if not sql:
+                    continue
+                if classify_sql_op(sql) != "read":
+                    continue
+                line = text.count("\n", 0, match.start()) + 1
+                rel = src_path.relative_to(snapshot_root).as_posix()
+                symbol_id = f"read:{rel}:{line}"
+                for storage_id in detect_sql_storage_ids(sql):
+                    if storage_id not in known_locations:
+                        continue
+                    key = (storage_id, symbol_id)
+                    if key in existing_reads:
+                        continue
+                    existing_reads.add(key)
+                    new_rows.append((storage_id, symbol_id, None))
+
+    if new_rows:
+        conn.executemany(
+            "INSERT INTO storage_reads VALUES (?, ?, ?)",
+            new_rows,
+        )
+    return len(new_rows)
+
+
+def derive_storage_taint(conn: duckdb.DuckDBPyConnection) -> int:
+    """Mark every storage_id reached by a flow dirty.
+
+    For each ``storage_id`` in ``storage_writes`` that has at least one
+    contributing flow with a non-null source ``tid``, insert a single
+    ``storage_taint`` row keyed on a stable ``derived_tid`` of the form
+    ``T-stored-<sha1(storage_id)[:12]>``.
+
+    The function is idempotent: re-running it does not duplicate rows for
+    already-derived storage_ids.
+
+    Returns the number of new storage_taint rows inserted.
+    """
+    write_rows = conn.execute(
+        "SELECT storage_id, source_tid FROM storage_writes WHERE source_tid IS NOT NULL"
+    ).fetchall()
+    if not write_rows:
+        return 0
+
+    contributing: dict[str, set[str]] = {}
+    for storage_id, source_tid in write_rows:
+        contributing.setdefault(storage_id, set()).add(source_tid)
+
+    already_derived = {
+        row[0]
+        for row in conn.execute(
+            "SELECT derived_tid FROM storage_taint WHERE derived_tid IS NOT NULL"
+        ).fetchall()
+    }
+
+    new_rows: list[tuple[str, str, str, str]] = []
+    for storage_id, tids in contributing.items():
+        derived_tid = _derived_tid_for_storage(storage_id)
+        if derived_tid in already_derived:
+            continue
+        new_rows.append(
+            (
+                storage_id,
+                derived_tid,
+                json.dumps(sorted(tids)),
+                "definite",
+            )
+        )
+
+    if new_rows:
+        conn.executemany("INSERT INTO storage_taint VALUES (?, ?, ?, ?)", new_rows)
+    return len(new_rows)
+
+
+def _ensure_taint_source(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    tid: str,
+    class_: str,
+    key: str,
+    evidence_loc: str,
+) -> None:
+    """Insert a synthetic ``taint_sources`` row if not already present."""
+    existing = conn.execute(
+        "SELECT 1 FROM taint_sources WHERE tid = ?", [tid]
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO taint_sources VALUES (?, ?, ?, ?, ?)",
+            [tid, None, class_, key, evidence_loc],
+        )
+
+
+def _ensure_taint_sink(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    sid: str,
+    class_: str,
+    lib: str,
+    parameterization: str,
+) -> None:
+    """Insert a synthetic ``taint_sinks`` row if not already present."""
+    existing = conn.execute("SELECT 1 FROM taint_sinks WHERE sid = ?", [sid]).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO taint_sinks VALUES (?, ?, ?, ?, ?, ?)",
+            [sid, None, class_, lib, parameterization, "[]"],
+        )
+
+
+def _pick_dominant_cwe(conn: duckdb.DuckDBPyConnection, contributing_tids: list[str]) -> str:
+    """Return the most common CWE across flows whose tid is in ``contributing_tids``."""
+    if not contributing_tids:
+        return ""
+    placeholders = ", ".join(["?"] * len(contributing_tids))
+    rows = conn.execute(
+        f"SELECT cwe FROM flows WHERE tid IN ({placeholders}) AND cwe IS NOT NULL",  # noqa: S608 - placeholders are static '?' tokens, values bound separately
+        contributing_tids,
+    ).fetchall()
+    if not rows:
+        return ""
+    counts = Counter(r[0] for r in rows if r[0])
+    if not counts:
+        return ""
+    return counts.most_common(1)[0][0]
+
+
+def _origin_step(conn: duckdb.DuckDBPyConnection, contributing_tids: list[str]) -> str:
+    """Return a representative source location for the contributing tids."""
+    if not contributing_tids:
+        return ""
+    row = conn.execute(
+        "SELECT evidence_loc FROM taint_sources WHERE tid = ? AND evidence_loc IS NOT NULL",
+        [contributing_tids[0]],
+    ).fetchone()
+    return row[0] if row and row[0] else ""
+
+
+def _write_step(conn: duckdb.DuckDBPyConnection, storage_id: str) -> str:
+    """Return a representative write-site step for ``storage_id``."""
+    row = conn.execute(
+        """
+        SELECT f.steps_json FROM storage_writes w
+        JOIN flows f ON f.fid = w.flow_id
+        WHERE w.storage_id = ?
+        LIMIT 1
+        """,
+        [storage_id],
+    ).fetchone()
+    if row and row[0]:
+        try:
+            steps = json.loads(row[0])
+        except json.JSONDecodeError:
+            return f"write:{storage_id}"
+        if steps:
+            first = steps[-1]
+            if isinstance(first, list) and first:
+                return str(first[0])
+    return f"write:{storage_id}"
+
+
+def synthesize_round2_flows(conn: duckdb.DuckDBPyConnection) -> int:
+    """Emit synthetic round-2 ``flows`` rows linking dirty storage to read sites.
+
+    For every dirty ``storage_id`` (i.e. one with a ``storage_taint`` row) and
+    every recorded read of that location, emits exactly one synthetic flow:
+
+    * ``fid`` — stable id of the form ``f-r2-<sha1(...)>``
+    * ``tid`` — the storage's ``derived_tid``
+    * ``sid`` — synthetic sink keyed on the read symbol
+    * ``cwe`` — most common CWE among contributing flows (or empty)
+    * ``engine`` — ``'storage-taint-r2'``
+    * ``confidence`` — ``'inferred'``
+    * ``steps_json`` — ``[origin, write_site, read_site]``
+
+    Idempotent: existing synthetic flows (same ``fid``) are not re-inserted.
+    Returns the number of new flow rows inserted.
+    """
+    dirty = conn.execute(
+        "SELECT storage_id, derived_tid, contributing_tids_json FROM storage_taint"
+    ).fetchall()
+    if not dirty:
+        return 0
+
+    existing_fids = {
+        row[0] for row in conn.execute("SELECT fid FROM flows").fetchall()
+    }
+    inserted = 0
+
+    for storage_id, derived_tid, contributing_json in dirty:
+        try:
+            contributing = list(json.loads(contributing_json or "[]"))
+        except json.JSONDecodeError:
+            contributing = []
+        cwe = _pick_dominant_cwe(conn, contributing)
+        origin = _origin_step(conn, contributing)
+        write_site = _write_step(conn, storage_id)
+
+        _ensure_taint_source(
+            conn,
+            tid=derived_tid,
+            class_="storage.read",
+            key=storage_id,
+            evidence_loc=storage_id,
+        )
+
+        reads = conn.execute(
+            "SELECT symbol_id FROM storage_reads WHERE storage_id = ?",
+            [storage_id],
+        ).fetchall()
+        for (read_symbol,) in reads:
+            sid = _stable_id("S-r2-", storage_id, str(read_symbol))
+            _ensure_taint_sink(
+                conn,
+                sid=sid,
+                class_="storage.read",
+                lib="storage-taint-r2",
+                parameterization=str(read_symbol),
+            )
+            fid = _stable_id("f-r2-", derived_tid, sid)
+            if fid in existing_fids:
+                continue
+            existing_fids.add(fid)
+            steps = json.dumps(
+                [
+                    [origin or storage_id, 0, 0],
+                    [write_site, 0, 0],
+                    [str(read_symbol), 0, 0],
+                ]
+            )
+            conn.execute(
+                "INSERT INTO flows VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [fid, derived_tid, sid, cwe, "storage-taint-r2", steps, None, "inferred"],
+            )
+            inserted += 1
+    return inserted
+
+
+def run_full_fixpoint(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    snapshot_root: Path,
+    max_rounds: int = 3,
+) -> dict[str, Any]:
+    """Run the full Layer-5 fixpoint: round 1 + round 2 to convergence.
+
+    Pipeline per iteration:
+      1. ``run_fixpoint`` — discover SQL writes from existing flows.
+      2. ``detect_storage_reads`` — find SELECT reads of known locations.
+      3. ``derive_storage_taint`` — mark reached locations dirty.
+      4. ``synthesize_round2_flows`` — emit storage→read synthetic flows.
+
+    Iterates until no new synthetic flows or storage writes are produced, or
+    ``max_rounds`` is reached. Returns a dict with per-round counters.
+    """
+    rounds: list[dict[str, int]] = []
+    total_new_flows = 0
+    total_locations = 0
+    total_reads = 0
+    total_derived = 0
+
+    for round_idx in range(1, max_rounds + 1):
+        prior_writes = conn.execute("SELECT COUNT(*) FROM storage_writes").fetchone()
+        prior_writes_n = prior_writes[0] if prior_writes else 0
+
+        round1 = run_fixpoint(conn)
+        reads_added = detect_storage_reads(conn, snapshot_root=snapshot_root)
+        derived_added = derive_storage_taint(conn)
+        flows_added = synthesize_round2_flows(conn)
+
+        post_writes = conn.execute("SELECT COUNT(*) FROM storage_writes").fetchone()
+        post_writes_n = post_writes[0] if post_writes else 0
+        new_writes = post_writes_n - prior_writes_n
+
+        total_new_flows += flows_added
+        total_locations = max(total_locations, round1.storage_locations)
+        total_reads += reads_added
+        total_derived += derived_added
+        rounds.append(
+            {
+                "round": round_idx,
+                "locations": round1.storage_locations,
+                "reads": reads_added,
+                "derived": derived_added,
+                "new_flows": flows_added,
+                "new_writes": new_writes,
+            }
+        )
+
+        # Convergence: nothing new at any layer of this iteration.
+        if flows_added == 0 and new_writes == 0 and reads_added == 0 and derived_added == 0:
+            break
+
+    return {
+        "rounds_run": len(rounds),
+        "rounds": rounds,
+        "new_flows": total_new_flows,
+        "storage_locations": total_locations,
+        "storage_reads": total_reads,
+        "storage_taint_derived": total_derived,
+    }

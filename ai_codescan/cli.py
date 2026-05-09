@@ -32,7 +32,7 @@ from ai_codescan.report import write_report
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.server import serve as start_server
 from ai_codescan.stack_detect import ProjectKind, detect_projects
-from ai_codescan.storage_taint import load_schema_yaml, run_fixpoint, save_schema_yaml
+from ai_codescan.storage_taint import load_schema_yaml, run_full_fixpoint, save_schema_yaml
 from ai_codescan.taxonomy.loader import (
     UnknownBugClassError,
     list_classes,
@@ -789,14 +789,16 @@ def taint_schema(
         if not db.is_file():
             typer.echo("No index. Run prep first.", err=True)
             raise typer.Exit(code=1)
+        snapshot_root = repo_dir / "source"
         conn = duckdb.connect(str(db))
         try:
-            stats = run_fixpoint(conn)
+            stats = run_full_fixpoint(conn, snapshot_root=snapshot_root)
         finally:
             conn.close()
         typer.echo(
-            f"fixpoint: rounds={stats.rounds_run} new_flows={stats.new_flows} "
-            f"locations={stats.storage_locations}"
+            f"fixpoint: rounds={stats['rounds_run']} new_flows={stats['new_flows']} "
+            f"locations={stats['storage_locations']} "
+            f"reads={stats['storage_reads']} derived={stats['storage_taint_derived']}"
         )
         return
 
@@ -806,6 +808,32 @@ def taint_schema(
             typer.echo("(empty schema.taint.yml — run `taint-schema --run` to seed it)")
         else:
             typer.echo(yaml.safe_dump(data, sort_keys=True))
+        db = repo_dir / "index.duckdb"
+        if db.is_file():
+            conn = duckdb.connect(str(db), read_only=True)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT t.storage_id, t.derived_tid, t.confidence,
+                           (SELECT COUNT(*) FROM storage_writes w
+                            WHERE w.storage_id = t.storage_id) AS writes,
+                           (SELECT COUNT(*) FROM storage_reads r
+                            WHERE r.storage_id = t.storage_id) AS reads
+                    FROM storage_taint t
+                    ORDER BY t.storage_id
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+            if rows:
+                typer.echo("")
+                typer.echo("dirty storage locations:")
+                typer.echo(
+                    _format_rows(
+                        ["storage_id", "derived_tid", "confidence", "writes", "reads"],
+                        rows,
+                    )
+                )
         return
 
     if edit:
