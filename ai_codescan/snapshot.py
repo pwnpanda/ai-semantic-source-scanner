@@ -106,6 +106,15 @@ def _git_worktree_snapshot(target: Path, cache_dir: Path, commit: str) -> Path:
         )
         if snapshot_dir.exists():
             shutil.rmtree(snapshot_dir, onexc=_force_remove)
+    # Prune any stale worktree registrations in the source repo. Users who
+    # manually delete the cache (or whose previous run was killed) leave
+    # entries in `<target>/.git/worktrees/<name>/` that block `worktree add`
+    # with "missing but already registered worktree". Pruning is idempotent.
+    subprocess.run(  # noqa: S603 - argv-only, no shell
+        ["git", "-C", str(target), "worktree", "prune"],  # noqa: S607
+        capture_output=True,
+        check=False,
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
     # S603/S607: literal argv, no shell.
     subprocess.run(  # noqa: S603

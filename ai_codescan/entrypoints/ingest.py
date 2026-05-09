@@ -13,8 +13,8 @@ def ingest_entrypoints(
     conn: duckdb.DuckDBPyConnection,
     entrypoints: Iterable[Entrypoint],
 ) -> int:
-    rows = [(e.symbol_id, e.kind, e.signature) for e in entrypoints]
+    rows = [(e.symbol_id, e.kind, e.signature, e.file, e.line) for e in entrypoints]
     if not rows:
         return 0
-    conn.executemany("INSERT INTO entrypoints VALUES (?, ?, ?)", rows)
+    conn.executemany("INSERT INTO entrypoints VALUES (?, ?, ?, ?, ?)", rows)
     return len(rows)

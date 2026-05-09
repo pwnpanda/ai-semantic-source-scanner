@@ -14,9 +14,7 @@ def _has_codeql() -> bool:
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_codeql(), reason="codeql cli not installed")
-def test_build_database_succeeds_for_js_project(
-    tmp_path: Path, fixtures_dir: Path
-) -> None:
+def test_build_database_succeeds_for_js_project(tmp_path: Path, fixtures_dir: Path) -> None:
     cache = tmp_path / "cache"
     cache.mkdir()
     db_path = build_database(

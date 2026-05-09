@@ -72,7 +72,9 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE TABLE IF NOT EXISTS entrypoints (
   symbol_id VARCHAR,
   kind VARCHAR,
-  signature VARCHAR
+  signature VARCHAR,
+  file VARCHAR,
+  line INTEGER
 );
 """
 

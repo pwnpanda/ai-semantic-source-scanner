@@ -21,9 +21,7 @@ when not present in ``~/.codeql/packages``)."""
 
 def _ensure_codeql_on_path() -> None:
     if shutil.which("codeql") is None:
-        raise RuntimeError(
-            "codeql CLI not on PATH. Install from github.com/github/codeql-cli."
-        )
+        raise RuntimeError("codeql CLI not on PATH. Install from github.com/github/codeql-cli.")
 
 
 def build_database(

@@ -1,4 +1,9 @@
-"""Emit per-file sidecar JSONL records derived from the DuckDB index."""
+"""Emit per-file sidecar JSONL records derived from the DuckDB index.
+
+Sidecars live under ``<cache>/sidecars/<relpath>.enrich.jsonl``. They mirror
+the snapshot tree's relative paths but live outside the read-only snapshot
+so they can be regenerated without toggling permissions.
+"""
 
 from __future__ import annotations
 
@@ -86,22 +91,42 @@ def _records_for_file(conn: duckdb.DuckDBPyConnection, file: str) -> list[dict[s
     return out
 
 
+def sidecar_path_for(snapshot_root: Path, sidecars_root: Path, file_abs: str) -> Path:
+    """Return the path where a file's sidecar JSONL should live.
+
+    The sidecar mirrors the snapshot tree's relative layout under
+    ``sidecars_root``. If ``file_abs`` is outside the snapshot, fall back to
+    a flat layout keyed by the leaf name.
+    """
+    fp = Path(file_abs)
+    try:
+        rel = fp.relative_to(snapshot_root)
+    except ValueError:
+        rel = Path(fp.name)
+    return sidecars_root / rel.with_suffix(rel.suffix + ".enrich.jsonl")
+
+
 def emit_sidecars(
     conn: duckdb.DuckDBPyConnection,
     *,
     snapshot_root: Path,
+    sidecars_root: Path | None = None,
 ) -> int:
-    """Write one ``<file>.enrich.jsonl`` per file in the index. Returns count emitted."""
+    """Write one ``<file>.enrich.jsonl`` per file under ``sidecars_root``.
+
+    ``sidecars_root`` defaults to ``<snapshot_root>.parent / "sidecars"``,
+    placing sidecars next to (not inside) the read-only snapshot tree.
+    Returns the number of sidecar files written.
+    """
+    if sidecars_root is None:
+        sidecars_root = snapshot_root.parent / "sidecars"
     files = [row[0] for row in conn.execute("SELECT path FROM files").fetchall()]
     written = 0
     for file in files:
         records = _records_for_file(conn, file)
         if not records:
             continue
-        target = Path(file + ".enrich.jsonl")
-        if not target.is_absolute():
-            target = snapshot_root / file
-            target = target.with_suffix(target.suffix + ".enrich.jsonl")
+        target = sidecar_path_for(snapshot_root, sidecars_root, file)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(target.suffix + ".tmp")
         with tmp.open("w", encoding="utf-8") as f:

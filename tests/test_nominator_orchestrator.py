@@ -18,14 +18,13 @@ def _seed_flow(conn: duckdb.DuckDBPyConnection) -> None:
         "INSERT INTO taint_sources VALUES ('T1', 'S1', 'http.body', 'name', '/abs/x.ts:2')"
     )
     conn.execute(
-        "INSERT INTO taint_sinks VALUES "
-        "('K1', 'S1', 'sql.exec', 'pg', 'template-literal', '[]')"
+        "INSERT INTO taint_sinks VALUES ('K1', 'S1', 'sql.exec', 'pg', 'template-literal', '[]')"
     )
     conn.execute(
         "INSERT INTO flows VALUES "
         "('F1', 'T1', 'K1', 'CWE-89', 'codeql', '[]', '/sarif', 'definite')"
     )
-    conn.execute("INSERT INTO entrypoints VALUES ('S1', 'http_route', 'app.post')")
+    conn.execute("INSERT INTO entrypoints VALUES ('S1', 'http_route', 'app.post', '/abs/x.ts', 1)")
 
 
 def test_build_queue_includes_stream_a_for_each_flow(tmp_path: Path) -> None:

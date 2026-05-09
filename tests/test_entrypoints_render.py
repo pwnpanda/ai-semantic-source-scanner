@@ -19,8 +19,23 @@ def test_ingest_writes_rows(tmp_path: Path) -> None:
         Entrypoint(symbol_id=None, kind="listener", signature="bus.on", file="/b.ts", line=9),
     ]
     ingest_entrypoints(conn, eps)
-    rows = conn.execute("SELECT kind, signature FROM entrypoints ORDER BY kind").fetchall()
-    assert rows == [("http_route", "app.get"), ("listener", "bus.on")]
+    rows = conn.execute(
+        "SELECT kind, signature, file, line FROM entrypoints ORDER BY kind"
+    ).fetchall()
+    assert rows == [
+        ("http_route", "app.get", "/a.js", 5),
+        ("listener", "bus.on", "/b.ts", 9),
+    ]
+
+
+def test_render_includes_file_and_line() -> None:
+    eps = [
+        Entrypoint(
+            symbol_id=None, kind="http_route", signature="app.get", file="/srv/app.js", line=42
+        ),
+    ]
+    md = render_entrypoints_md(target_name="t", entrypoints=eps)
+    assert "/srv/app.js:42" in md
 
 
 def test_render_groups_by_kind() -> None:
