@@ -910,23 +910,95 @@ def visualize(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
     typer.echo(f"wrote {target}")
 
 
+def _protected_skills_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "ai-codescan" / "protected_skills.txt"
+
+
+def _read_protected() -> set[str]:
+    path = _protected_skills_path()
+    if not path.is_file():
+        return set()
+    return {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
+def _write_protected(names: set[str]) -> None:
+    path = _protected_skills_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sorted_names = sorted(names)
+    body = "# Skills protected from `install-skills` overwrite. One name per line.\n" + "\n".join(
+        sorted_names
+    )
+    path.write_text(body + "\n", encoding="utf-8")
+
+
 @app.command("install-skills")
-def install_skills() -> None:
-    """Copy bundled skills into ~/.claude/skills/."""
+def install_skills(
+    protect: Annotated[
+        list[str],
+        typer.Option(
+            "--protect",
+            help="Mark a skill as protected; never overwritten by future install-skills.",
+        ),
+    ] = [],  # noqa: B006 - typer requires a literal default
+    unprotect: Annotated[
+        list[str],
+        typer.Option(
+            "--unprotect",
+            help="Remove a skill from the protected list.",
+        ),
+    ] = [],  # noqa: B006 - typer requires a literal default
+    list_protected: Annotated[
+        bool,
+        typer.Option("--list-protected", help="Print the current protected list and exit."),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Overwrite even protected skills."),
+    ] = False,
+) -> None:
+    """Copy bundled skills into ~/.claude/skills/, honouring the protected list."""
+    protected = _read_protected()
+    if protect:
+        protected.update(protect)
+        _write_protected(protected)
+        typer.echo(f"protected: {', '.join(sorted(protect))}")
+    if unprotect:
+        protected.difference_update(unprotect)
+        _write_protected(protected)
+        typer.echo(f"unprotected: {', '.join(sorted(unprotect))}")
+    if list_protected:
+        if protected:
+            for name in sorted(protected):
+                typer.echo(name)
+        else:
+            typer.echo("(no protected skills)")
+        return
+
     skill_root = Path(__file__).resolve().parent / "skills"
     dest_root = Path.home() / ".claude" / "skills"
     dest_root.mkdir(parents=True, exist_ok=True)
     installed: list[Path] = []
-    for src in (skill_root.iterdir() if skill_root.is_dir() else []):
+    skipped: list[str] = []
+    for src in skill_root.iterdir() if skill_root.is_dir() else []:
         if not src.is_dir():
             continue
         dest = dest_root / src.name
+        if dest.exists() and src.name in protected and not force:
+            skipped.append(src.name)
+            continue
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(src, dest)
         installed.append(dest)
     for d in installed:
         typer.echo(f"installed skill to {d}")
+    for name in skipped:
+        typer.echo(f"skipped {name} (protected; use --force to overwrite)")
 
 
 @app.command()

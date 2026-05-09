@@ -507,3 +507,38 @@ def test_serve_help_advertises_flags() -> None:
     assert "--port" in result.stdout
     assert "--host" in result.stdout
     assert "--open" in result.stdout
+
+
+def test_install_skills_protect_and_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    # Mark wide_nominator as protected.
+    result = runner.invoke(app, ["install-skills", "--protect", "wide_nominator"])
+    assert result.exit_code == 0
+    listing = runner.invoke(app, ["install-skills", "--list-protected"])
+    assert "wide_nominator" in listing.stdout
+    # Removing the protection works.
+    result = runner.invoke(app, ["install-skills", "--unprotect", "wide_nominator"])
+    assert result.exit_code == 0
+    listing2 = runner.invoke(app, ["install-skills", "--list-protected"])
+    assert "no protected skills" in listing2.stdout
+
+
+def test_install_skills_skips_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Mark deep_analyzer protected before the first install.
+    runner.invoke(app, ["install-skills", "--protect", "deep_analyzer"])
+    # First install lands every skill (protection only applies to overwrites).
+    runner.invoke(app, ["install-skills"])
+    target = tmp_path / ".claude" / "skills" / "deep_analyzer" / "SKILL.md"
+    assert target.is_file()
+    # Tamper with the installed skill so we can detect overwrite vs preserve.
+    target.write_text("CUSTOM USER VERSION\n", encoding="utf-8")
+    # Re-install: protected skill must NOT be overwritten.
+    result = runner.invoke(app, ["install-skills"])
+    assert "skipped deep_analyzer" in result.stdout
+    assert target.read_text() == "CUSTOM USER VERSION\n"
