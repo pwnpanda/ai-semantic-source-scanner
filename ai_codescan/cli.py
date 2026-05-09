@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import contextlib
 import datetime as _dt
+import os
 import shutil
 import stat as stat_mod
+import subprocess
 from pathlib import Path
 from typing import Annotated, Any
 
 import duckdb
 import typer
 
-from ai_codescan.config import default_cache_root
+from ai_codescan.config import compute_repo_id, default_cache_root
+from ai_codescan.engines.codeql import run_queries
+from ai_codescan.gate import apply_yes_to_all, selected_extensions
+from ai_codescan.ingest.sarif import ingest_sarif
+from ai_codescan.nominator import run_nominator
 from ai_codescan.prep import run_prep
+from ai_codescan.runs.state import load_or_create
 from ai_codescan.taxonomy.loader import (
     UnknownBugClassError,
     list_classes,
@@ -340,6 +347,175 @@ def cache_rm(
 def cache_gc(ctx: typer.Context) -> None:
     """Stub — Phase 1B will implement stale-snapshot collection."""
     typer.echo("cache gc not implemented yet")
+
+
+@app.command()
+def nominate(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    target_bug_class: Annotated[str, typer.Option("--target-bug-class")] = "",
+    temperature: Annotated[float, typer.Option("--temperature")] = 0.0,
+) -> None:
+    """Run the wide-pass nominator skill against the cached repo."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    repo_dir = cache_root / repo_id
+    db_path = repo_dir / "index.duckdb"
+    if not db_path.is_file():
+        typer.echo("No prep output. Run `ai-codescan prep` first.", err=True)
+        raise typer.Exit(code=1)
+
+    if target_bug_class:
+        try:
+            bug_classes = resolve_classes(
+                [t.strip() for t in target_bug_class.split(",") if t.strip()]
+            )
+        except UnknownBugClassError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from exc
+    else:
+        bug_classes = list_classes()
+
+    state = load_or_create(
+        repo_dir,
+        engine="codeql",
+        temperature=temperature,
+        target_bug_classes=[c.name for c in bug_classes],
+    )
+    nominations_path = run_nominator(
+        state, repo_dir=repo_dir, bug_classes=bug_classes, db_path=db_path
+    )
+    typer.echo(f"nominations at {nominations_path}")
+
+
+@app.command("gate-1")
+def gate_1(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    yes: Annotated[bool, typer.Option("--yes", help="Mark every unanswered y/n: as y.")] = False,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Apply Stream C accepted extensions and re-run CodeQL."),
+    ] = False,
+) -> None:
+    """Open the latest nominations.md for HITL editing, or apply --yes / --apply."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    runs_root = cache_root / repo_id / "runs"
+    if not runs_root.is_dir():
+        typer.echo("No runs.", err=True)
+        raise typer.Exit(code=1)
+    last_run = max(runs_root.iterdir(), key=lambda p: p.stat().st_mtime)
+    nominations = last_run / "nominations.md"
+    if not nominations.is_file():
+        typer.echo("No nominations.md — run `nominate` first.", err=True)
+        raise typer.Exit(code=1)
+
+    if yes:
+        nominations.write_text(
+            apply_yes_to_all(nominations.read_text(encoding="utf-8")),
+            encoding="utf-8",
+        )
+        typer.echo("marked all unanswered as y")
+        return
+
+    if apply:
+        exts = selected_extensions(nominations.read_text(encoding="utf-8"))
+        if not exts:
+            typer.echo("no Stream C extensions accepted")
+            return
+        ext_dir = cache_root / repo_id / "codeql" / "extensions"
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        for ext in exts:
+            (ext_dir / f"{ext.nomination_id}.model.yml").write_text(
+                ext.yaml_body,
+                encoding="utf-8",
+            )
+        conn = duckdb.connect(str(cache_root / repo_id / "index.duckdb"))
+        try:
+            for db in (cache_root / repo_id / "codeql").glob("*.db"):
+                project_id = db.name[:-3]
+                try:
+                    result = run_queries(
+                        db,
+                        cache_dir=cache_root / repo_id,
+                        project_id=project_id,
+                        codeql_tags=[],
+                        extension_packs=[ext_dir],
+                    )
+                    ingest_sarif(
+                        conn,
+                        sarif_path=result.sarif_path,
+                        project_id=project_id,
+                        snapshot_root=cache_root / repo_id / "source",
+                        engine="codeql",
+                    )
+                except (RuntimeError, OSError) as exc:
+                    typer.echo(f"warning: re-run failed for {project_id}: {exc}", err=True)
+        finally:
+            conn.close()
+        typer.echo(f"applied {len(exts)} extension(s); flows updated")
+        return
+
+    editor = os.environ.get("EDITOR", "vi")
+    subprocess.run(  # noqa: S603 - editor is user-controlled, no shell
+        [editor, str(nominations)],  # noqa: S607
+        check=False,
+    )
+
+
+@app.command()
+def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
+    ctx: typer.Context,
+    target: Annotated[Path, typer.Argument(help="Target repo to scan end-to-end.")],
+    target_bug_class: Annotated[str, typer.Option("--target-bug-class")] = "",
+    temperature: Annotated[float, typer.Option("--temperature")] = 0.0,
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    commit: _CommitOption = None,
+) -> None:
+    """End-to-end Phase 1: prep + nominate + gate-1 in one shot."""
+    flags: list[str] = []
+    if target_bug_class:
+        flags += ["--target-bug-class", target_bug_class]
+    if commit:
+        flags += ["--commit", commit]
+
+    cache_root: Path = ctx.obj["cache_root"]
+    cache_arg = ["--cache-dir", str(cache_root)]
+    rc = subprocess.call(  # noqa: S603 - argv-only, no shell
+        ["ai-codescan", *cache_arg, "prep", str(target), *flags],  # noqa: S607
+    )
+    if rc != 0:
+        raise typer.Exit(code=rc)
+
+    repo_id = compute_repo_id(target)
+    nominate_args = ["--repo-id", repo_id, "--temperature", str(temperature)]
+    if target_bug_class:
+        nominate_args += ["--target-bug-class", target_bug_class]
+    rc = subprocess.call(  # noqa: S603 - argv-only, no shell
+        ["ai-codescan", *cache_arg, "nominate", *nominate_args],  # noqa: S607
+    )
+    if rc != 0:
+        raise typer.Exit(code=rc)
+
+    gate_args = ["--repo-id", repo_id]
+    if yes:
+        gate_args.append("--yes")
+    subprocess.call(  # noqa: S603 - argv-only, no shell
+        ["ai-codescan", *cache_arg, "gate-1", *gate_args],  # noqa: S607
+    )
+
+
+@app.command("install-skills")
+def install_skills() -> None:
+    """Copy bundled skills into ~/.claude/skills/."""
+    src = Path(__file__).resolve().parent / "skills" / "wide_nominator"
+    dest = Path.home() / ".claude" / "skills" / "wide_nominator"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest)
+    typer.echo(f"installed skill to {dest}")
 
 
 if __name__ == "__main__":

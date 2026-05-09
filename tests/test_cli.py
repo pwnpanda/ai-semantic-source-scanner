@@ -206,3 +206,60 @@ def test_unknown_bug_class_errors_with_suggestion(tmp_path: Path, fixtures_dir: 
     assert result.exit_code != 0
     combined = (result.stdout or "") + (result.stderr or "")
     assert "did you mean" in combined.lower()
+
+
+@pytest.mark.integration
+def test_nominate_creates_nominations_md(
+    tmp_path: Path, fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    monkeypatch.setenv("PATH", "/nonexistent")
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "nominate", "--repo-id", repo_id],
+    )
+    assert result.exit_code == 0
+    runs = sorted((cache / repo_id / "runs").iterdir())
+    assert runs
+    nominations_path = runs[-1] / "nominations.md"
+    assert nominations_path.is_file()
+    body = nominations_path.read_text()
+    assert "Stream A" in body and "Stream B" in body and "Stream C" in body
+
+
+@pytest.mark.integration
+def test_gate_1_yes_marks_all(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    runs_root = cache / repo_id / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    run_dir = runs_root / "deadbeef"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "nominations.md").write_text(
+        (fixtures_dir / "nominations-sample.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "gate-1", "--repo-id", repo_id, "--yes"],
+    )
+    assert result.exit_code == 0
+    txt = (run_dir / "nominations.md").read_text()
+    assert "y/n: y" in txt and "y/n: n" in txt
+
+
+def test_install_skills_command_runs() -> None:
+    """install-skills copies into ~/.claude/skills/ — just verify exit 0."""
+    result = runner.invoke(app, ["install-skills"])
+    assert result.exit_code == 0
+    assert "installed skill" in result.stdout
