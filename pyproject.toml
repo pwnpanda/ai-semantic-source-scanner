@@ -14,6 +14,7 @@ dependencies = [
   "xxhash>=3.5",
   "pyyaml>=6.0.2",
   "sarif-om>=1.0.4",
+  "sqlglot>=26",
 ]
 
 [project.scripts]

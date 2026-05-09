@@ -13,6 +13,7 @@ from typing import Annotated, Any
 
 import duckdb
 import typer
+import yaml
 
 from ai_codescan.analyzer import run_analyzer
 from ai_codescan.config import compute_repo_id, default_cache_root
@@ -25,6 +26,7 @@ from ai_codescan.nominator import run_nominator
 from ai_codescan.prep import run_prep
 from ai_codescan.report import write_report
 from ai_codescan.runs.state import load_or_create
+from ai_codescan.storage_taint import load_schema_yaml, run_fixpoint, save_schema_yaml
 from ai_codescan.taxonomy.loader import (
     UnknownBugClassError,
     list_classes,
@@ -709,6 +711,64 @@ def report(
         written += 1
     if written == 0:
         typer.echo("no verified findings to report (run validate first or check gate-3)")
+
+
+@app.command("taint-schema")
+def taint_schema(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    show: Annotated[bool, typer.Option("--show")] = False,
+    edit: Annotated[bool, typer.Option("--edit")] = False,
+    run: Annotated[
+        bool,
+        typer.Option("--run", help="Run the storage-taint fixpoint over the cached index."),
+    ] = False,
+) -> None:
+    """Inspect or edit ``schema.taint.yml`` (Layer 5 storage-taint annotations)."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    repo_dir = cache_root / repo_id
+    schema_path = repo_dir / "schema.taint.yml"
+
+    if run:
+        db = repo_dir / "index.duckdb"
+        if not db.is_file():
+            typer.echo("No index. Run prep first.", err=True)
+            raise typer.Exit(code=1)
+        conn = duckdb.connect(str(db))
+        try:
+            stats = run_fixpoint(conn)
+        finally:
+            conn.close()
+        typer.echo(
+            f"fixpoint: rounds={stats.rounds_run} new_flows={stats.new_flows} "
+            f"locations={stats.storage_locations}"
+        )
+        return
+
+    if show:
+        data = load_schema_yaml(schema_path)
+        if not data:
+            typer.echo("(empty schema.taint.yml — run `taint-schema --run` to seed it)")
+        else:
+            typer.echo(yaml.safe_dump(data, sort_keys=True))
+        return
+
+    if edit:
+        if not schema_path.is_file():
+            save_schema_yaml(
+                schema_path,
+                {"tables": {}, "caches": {}, "queues": {}, "files": {}, "envs": {}},
+            )
+        editor = os.environ.get("EDITOR", "vi")
+        subprocess.run(  # noqa: S603 - editor is user-controlled, no shell
+            [editor, str(schema_path)],  # noqa: S607
+            check=False,
+        )
+        return
+
+    typer.echo("specify one of --show, --edit, or --run")
+    raise typer.Exit(code=1)
 
 
 @app.command("install-skills")
