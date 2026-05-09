@@ -1,6 +1,7 @@
 """Tests for ai_codescan.cli."""
 
 import json
+import os
 from pathlib import Path
 
 import duckdb
@@ -69,6 +70,41 @@ def test_prep_idempotent_on_second_run(tmp_path: Path, fixtures_dir: Path) -> No
     assert first.exit_code == 0
     assert second.exit_code == 0
     assert "skipped" in second.stdout.lower()
+
+
+@pytest.mark.integration
+def test_prep_incremental_skip_logs_message(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    args = ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")]
+    first = runner.invoke(app, args)
+    assert first.exit_code == 0, first.stdout
+    second = runner.invoke(app, args)
+    assert second.exit_code == 0, second.stdout
+    out = second.stdout.lower()
+    assert "skipping" in out or "incremental" in out
+
+
+@pytest.mark.integration
+def test_prep_force_re_runs_everything(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    args = ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")]
+    first = runner.invoke(app, args)
+    assert first.exit_code == 0, first.stdout
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    db_path = cache / repo_id / "index.duckdb"
+    mtime_before = db_path.stat().st_mtime_ns
+    # Backdate the existing file so the post-run mtime is unambiguously newer
+    # even on filesystems with second-resolution mtime (e.g. ext4 without nsec).
+    backdated = mtime_before - 5_000_000_000  # 5s in the past
+    os.utime(db_path, ns=(backdated, backdated))
+    second = runner.invoke(app, [*args, "--force"])
+    assert second.exit_code == 0, second.stdout
+    mtime_after = db_path.stat().st_mtime_ns
+    assert mtime_after > backdated, (
+        f"--force should re-touch index.duckdb (before={backdated} after={mtime_after})"
+    )
+    out = second.stdout.lower()
+    assert "skipping" not in out and "incremental" not in out
 
 
 @pytest.mark.integration

@@ -129,15 +129,22 @@ def _run_codeql_for_projects(
             log.warning("codeql failed for %s: %s", project.name, exc)
 
 
-def run_prep(
+def run_prep(  # noqa: PLR0913 - keyword-only orchestration knobs
     target: Path,
     *,
     cache_root: Path,
     commit: str | None = None,
     bug_classes: list[BugClass] | None = None,
     engine: str = "codeql",
+    quiet: bool = False,
+    force: bool = False,
 ) -> tuple[SnapshotResult, Path]:
-    """Snapshot, detect, AST, SCIP, ingest. Returns the snapshot result and the duckdb path."""
+    """Snapshot, detect, AST, SCIP, ingest. Returns the snapshot result and the duckdb path.
+
+    When the snapshot is reused (manifest matched) and the DuckDB index already exists,
+    the AST / SCIP / CodeQL stages are short-circuited and only cheap projections
+    (sidecars + entrypoints.md) are re-emitted. Pass ``force=True`` to bypass.
+    """
     repo_dir = cache_root / compute_repo_id(target)
     snap = take_snapshot(target, cache_dir=repo_dir, commit=commit)
 
@@ -149,37 +156,46 @@ def run_prep(
     )
 
     db_path = repo_dir / "index.duckdb"
+    incremental = (not force) and snap.skipped and db_path.is_file()
+
     conn = duckdb.connect(str(db_path))
     apply_schema(conn)
 
-    scip_lookup = _build_scip_lookup(snap.snapshot_dir, projects, repo_dir)
+    if incremental:
+        if not quiet:
+            log.info("skipping AST/SCIP/CodeQL stages — cached results reused")
+    else:
+        scip_lookup = _build_scip_lookup(snap.snapshot_dir, projects, repo_dir)
 
-    for project in projects:
-        jobs = _ast_jobs_for_project(snap.snapshot_dir, project)
-        if not jobs:
-            continue
-        files: list[dict] = []
-        symbols: list[dict] = []
-        xrefs: list[dict] = []
-        for record in run_jobs(jobs):
-            t = record["type"]
-            if t == "file":
-                files.append(record)
-            elif t == "symbol":
-                symbols.append(record)
-            elif t == "xref":
-                xrefs.append(record)
-        duckdb_ingest(
-            conn,
-            files=files,
-            symbols=symbols,
-            xrefs=xrefs,
-            scip_lookup=scip_lookup,
-            project_id=project.name,
-            snapshot_root=snap.snapshot_dir,
-        )
-        entries = detect_entrypoints(xrefs=xrefs, symbols=symbols)
-        ingest_entrypoints(conn, entries)
+        for project in projects:
+            jobs = _ast_jobs_for_project(snap.snapshot_dir, project)
+            if not jobs:
+                continue
+            files: list[dict] = []
+            symbols: list[dict] = []
+            xrefs: list[dict] = []
+            for record in run_jobs(jobs):
+                t = record["type"]
+                if t == "file":
+                    files.append(record)
+                elif t == "symbol":
+                    symbols.append(record)
+                elif t == "xref":
+                    xrefs.append(record)
+            duckdb_ingest(
+                conn,
+                files=files,
+                symbols=symbols,
+                xrefs=xrefs,
+                scip_lookup=scip_lookup,
+                project_id=project.name,
+                snapshot_root=snap.snapshot_dir,
+            )
+            entries = detect_entrypoints(xrefs=xrefs, symbols=symbols)
+            ingest_entrypoints(conn, entries)
+
+        if engine == "codeql":
+            _run_codeql_for_projects(snap.snapshot_dir, projects, repo_dir, bug_classes, conn)
 
     all_entries_rows = conn.execute(
         "SELECT symbol_id, kind, signature, file, line FROM entrypoints"
@@ -199,9 +215,6 @@ def run_prep(
         render_entrypoints_md(target_name=target.name, entrypoints=all_entries),
         encoding="utf-8",
     )
-
-    if engine == "codeql":
-        _run_codeql_for_projects(snap.snapshot_dir, projects, repo_dir, bug_classes, conn)
 
     emit_sidecars(conn, snapshot_root=snap.snapshot_dir, sidecars_root=repo_dir / "sidecars")
 

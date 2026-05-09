@@ -85,7 +85,7 @@ def _root(
 
 
 @app.command(epilog="Global options: --cache-dir, --quiet, --verbose (pass before subcommand).")
-def prep(
+def prep(  # noqa: PLR0913, PLR0912 - flag plumbing matches user-visible CLI surface
     ctx: typer.Context,
     target: Annotated[Path, typer.Argument(help="Target repo to scan.")],
     commit: _CommitOption = None,
@@ -103,6 +103,13 @@ def prep(
             help="Comma-separated names or @groups (default: all).",
         ),
     ] = "",
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Bypass the incremental short-circuit and re-run AST/SCIP/CodeQL.",
+        ),
+    ] = False,
 ) -> None:
     """Snapshot, detect, AST, SCIP, then run the chosen engine(s) and ingest into DuckDB."""
     if engine not in {"codeql", "llm-heavy", "hybrid"}:
@@ -129,6 +136,8 @@ def prep(
 
     cache_root: Path = ctx.obj["cache_root"]
     quiet: bool = ctx.obj["quiet"]
+    repo_dir_pre = cache_root / compute_repo_id(target)
+    db_existed_before = (repo_dir_pre / "index.duckdb").is_file()
     snap, db_path = run_prep(
         target,
         cache_root=cache_root,
@@ -136,7 +145,12 @@ def prep(
         bug_classes=bug_classes,
         # CodeQL prep stage runs when engine ∈ {codeql, hybrid}.
         engine="codeql" if engine in {"codeql", "hybrid"} else "none",
+        quiet=quiet,
+        force=force,
     )
+    incremental_used = (not force) and snap.skipped and db_existed_before
+    if incremental_used and not quiet:
+        typer.echo("incremental: skipping AST/SCIP/CodeQL stages — cached results reused")
     if engine == "llm-heavy":
         repo_dir = cache_root / compute_repo_id(target)
         state = load_or_create(
