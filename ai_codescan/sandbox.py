@@ -1,4 +1,8 @@
-"""Hardened Docker sandbox runner for PoC execution.
+"""Hardened sandbox runner for PoC execution.
+
+Supports Docker, Podman, or no-sandbox (local) modes. The runtime is picked
+from :mod:`ai_codescan.user_config` (set at install time, overridable per-run
+with the ``--no-sandbox`` flag or the ``AICS_CONTAINER_RUNTIME`` env var).
 
 Defaults block the network, drop all capabilities, mount the work directory
 read-only, and limit memory / CPU / pids. Use only with explicitly written
@@ -13,10 +17,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_codescan.user_config import load as load_user_config
+
 DEFAULT_TIMEOUT_SEC = 60
 DEFAULT_SIGNAL = "OK_VULN"
 
-_DOCKER_HARDENING_FLAGS: tuple[str, ...] = (
+# Hardening flags shared by docker and podman (compatible CLI surface).
+_HARDENING_FLAGS: tuple[str, ...] = (
     "--rm",
     "--network=none",
     "--cap-drop=ALL",
@@ -41,6 +48,7 @@ class SandboxResult:
     duration_sec: float
     signal_seen: bool
     timed_out: bool
+    runtime: str = "docker"
 
 
 def _decode(value: bytes | str | None) -> str:
@@ -51,32 +59,49 @@ def _decode(value: bytes | str | None) -> str:
     return value
 
 
-def _ensure_docker() -> None:
-    if shutil.which("docker") is None:
+def configured_runtime() -> str:
+    """Return the runtime selected at install time (``docker``/``podman``/``none``)."""
+    return load_user_config().container_runtime
+
+
+def runtime_binary(name: str) -> str:
+    """Return the binary path for ``name`` (``docker`` or ``podman``)."""
+    if name == "none":
         raise SandboxUnavailableError(
-            "docker is not on PATH; install Docker or pass --no-sandbox to skip."
+            "container runtime is set to 'none'; PoC validation requires docker or podman."
         )
+    if name not in {"docker", "podman"}:
+        raise SandboxUnavailableError(f"unknown runtime: {name!r}")
+    if shutil.which(name) is None:
+        raise SandboxUnavailableError(
+            f"{name} is not on PATH; install it or run `bash scripts/install.sh` to pick a runtime."
+        )
+    return name
 
 
-def run_in_sandbox(
+def run_in_sandbox(  # noqa: PLR0913 - kw-only args mirror the CLI surface
     argv: list[str],
     *,
     image: str,
     work_dir: Path,
     timeout: int = DEFAULT_TIMEOUT_SEC,
     signal_pattern: str = DEFAULT_SIGNAL,
+    runtime: str | None = None,
 ) -> SandboxResult:
-    """Run ``argv`` inside a hardened ``docker run`` container.
+    """Run ``argv`` inside a hardened container using the configured runtime.
 
     ``work_dir`` is mounted read-only at ``/work``. ``argv`` is passed straight
     to the entrypoint. Stdout is scanned for ``signal_pattern``; presence
-    flips :class:`SandboxResult.signal_seen` to ``True``.
+    flips :class:`SandboxResult.signal_seen` to ``True``. ``runtime`` defaults
+    to the value stored at install time.
     """
-    _ensure_docker()
-    docker_argv = [
-        "docker",
+    chosen = runtime or configured_runtime()
+    binary = runtime_binary(chosen)
+
+    container_argv = [
+        binary,
         "run",
-        *_DOCKER_HARDENING_FLAGS,
+        *_HARDENING_FLAGS,
         "-v",
         f"{work_dir}:/work:ro",
         "--workdir",
@@ -87,7 +112,7 @@ def run_in_sandbox(
     timed_out = False
     try:
         proc = subprocess.run(  # noqa: S603 - argv-only, no shell
-            docker_argv,
+            container_argv,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -96,7 +121,7 @@ def run_in_sandbox(
         exit_code = proc.returncode
         stdout = proc.stdout
         stderr = proc.stderr
-        duration = float(timeout)  # subprocess.run doesn't expose duration; placeholder
+        duration = float(timeout)  # placeholder; subprocess.run doesn't expose elapsed
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         exit_code = 124
@@ -111,14 +136,58 @@ def run_in_sandbox(
         duration_sec=duration,
         signal_seen=signal_pattern in stdout,
         timed_out=timed_out,
+        runtime=chosen,
     )
 
 
+# ---------------------------------------------------------------------------
+# Language → image / interpreter mapping
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class LanguageProfile:
+    """How to run a PoC written in a given language."""
+
+    name: str           # canonical lang
+    extension: str      # ".py" / ".js" / …
+    image: str          # default container image
+    interpreter: str    # entrypoint binary inside the image
+
+
+_PROFILES: dict[str, LanguageProfile] = {
+    "python":     LanguageProfile("python",     ".py",  "python:3.13-alpine", "python3"),
+    "javascript": LanguageProfile("javascript", ".js",  "node:22-alpine",     "node"),
+    "typescript": LanguageProfile("typescript", ".ts",  "node:22-alpine",     "node"),
+    "php":        LanguageProfile("php",        ".php", "php:8-alpine",       "php"),
+    "ruby":       LanguageProfile("ruby",       ".rb",  "ruby:3-alpine",      "ruby"),
+    "go":         LanguageProfile("go",         ".go",  "golang:1-alpine",    "go run"),
+    "shell":      LanguageProfile("shell",      ".sh",  "alpine:3.20",        "sh"),
+}
+
+
+def profile_for_lang(lang: str) -> LanguageProfile:
+    """Return the language profile for ``lang`` (case-insensitive); python fallback."""
+    canonical = {
+        "javascript": "javascript",
+        "node": "javascript",
+        "js": "javascript",
+        "typescript": "typescript",
+        "ts": "typescript",
+        "python": "python",
+        "py": "python",
+        "php": "php",
+        "ruby": "ruby",
+        "rb": "ruby",
+        "go": "go",
+        "golang": "go",
+        "shell": "shell",
+        "sh": "shell",
+        "bash": "shell",
+    }.get(lang.lower(), "python")
+    return _PROFILES[canonical]
+
+
 def image_for_lang(lang: str) -> str:
-    """Return a sensible default image for the given language tag."""
-    lang_lc = lang.lower()
-    if lang_lc in {"javascript", "typescript", "node", "ts", "js"}:
-        return "node:22-alpine"
-    if lang_lc in {"python", "py"}:
-        return "python:3.13-alpine"
-    return "alpine:3.20"
+    """Backward-compat shim: return just the default image for ``lang``."""
+    return profile_for_lang(lang).image

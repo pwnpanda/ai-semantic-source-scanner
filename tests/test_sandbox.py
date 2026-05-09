@@ -10,7 +10,9 @@ from ai_codescan.sandbox import (
     SandboxResult,
     SandboxUnavailableError,
     image_for_lang,
+    profile_for_lang,
     run_in_sandbox,
+    runtime_binary,
 )
 
 
@@ -27,16 +29,39 @@ def test_image_for_lang_python() -> None:
     assert image_for_lang("python") == "python:3.13-alpine"
 
 
-def test_image_for_lang_default() -> None:
-    assert image_for_lang("rust") == "alpine:3.20"
+def test_image_for_lang_php() -> None:
+    assert image_for_lang("php") == "php:8-alpine"
 
 
-def test_run_in_sandbox_raises_when_docker_missing(
+def test_image_for_lang_default_falls_back_to_python() -> None:
+    # Unknown languages fall back to Python (default PoC interpreter).
+    assert image_for_lang("rust") == "python:3.13-alpine"
+
+
+def test_profile_for_lang_returns_extension_and_interpreter() -> None:
+    js = profile_for_lang("javascript")
+    assert js.extension == ".js"
+    assert js.interpreter == "node"
+    php = profile_for_lang("php")
+    assert php.extension == ".php"
+
+
+def test_runtime_binary_rejects_none() -> None:
+    with pytest.raises(SandboxUnavailableError):
+        runtime_binary("none")
+
+
+def test_runtime_binary_rejects_unknown() -> None:
+    with pytest.raises(SandboxUnavailableError):
+        runtime_binary("kubernetes")
+
+
+def test_run_in_sandbox_raises_when_runtime_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PATH", "/nonexistent")
     with pytest.raises(SandboxUnavailableError):
-        run_in_sandbox(["echo", "hi"], image="alpine:3.20", work_dir=tmp_path)
+        run_in_sandbox(["echo", "hi"], image="alpine:3.20", work_dir=tmp_path, runtime="docker")
 
 
 @pytest.mark.integration
@@ -46,6 +71,7 @@ def test_run_in_sandbox_captures_signal(tmp_path: Path) -> None:
         ["sh", "-c", f"echo {DEFAULT_SIGNAL}"],
         image="alpine:3.20",
         work_dir=tmp_path,
+        runtime="docker",
     )
     assert isinstance(result, SandboxResult)
     assert result.exit_code == 0
@@ -60,6 +86,7 @@ def test_run_in_sandbox_no_signal_when_benign(tmp_path: Path) -> None:
         ["sh", "-c", "echo BENIGN"],
         image="alpine:3.20",
         work_dir=tmp_path,
+        runtime="docker",
     )
     assert result.exit_code == 0
     assert result.signal_seen is False
