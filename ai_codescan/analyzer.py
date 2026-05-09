@@ -23,22 +23,39 @@ from ai_codescan.slice import extract_slice
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "deep_analyzer"
 
 
-def _resolve_flow_for_nomination(
-    conn: duckdb.DuckDBPyConnection, nomination_loc: str
+def _pick_flow_for_nomination(
+    conn: duckdb.DuckDBPyConnection, nomination: dict
 ) -> str | None:
-    """Heuristic: pick the first flow whose source matches the nomination's location."""
-    file_part = nomination_loc.split(":", 1)[0]
-    if not file_part:
-        return None
-    row = conn.execute(
-        """
-        SELECT f.fid FROM flows f
-        JOIN taint_sources s ON s.tid = f.tid
-        WHERE s.evidence_loc LIKE ? LIMIT 1
-        """,
-        [f"%{file_part}%"],
-    ).fetchone()
-    return row[0] if row else None
+    """Return the fid of the flow whose source location matches the nomination,
+    falling back to None when no flow is found.
+    """
+    # 1. If the queue item is Stream A and already carries `fid`, use it directly.
+    if nomination.get("stream") == "A" and nomination.get("fid"):
+        return str(nomination["fid"])
+    # 2. If we have an explicit source_loc, do an exact match.
+    src_loc = nomination.get("source_loc") or ""
+    if src_loc:
+        row = conn.execute(
+            "SELECT f.fid FROM flows f "
+            "JOIN taint_sources s ON s.tid = f.tid "
+            "WHERE s.evidence_loc = ? LIMIT 1",
+            [src_loc],
+        ).fetchone()
+        if row:
+            return str(row[0])
+    # 3. Last-resort: the original loose match by file substring (Stream B nominations
+    #    don't have an exact source_loc; we deliberately keep this fallback).
+    file_hint = nomination.get("file") or src_loc.rsplit(":", 1)[0]
+    if file_hint:
+        row = conn.execute(
+            "SELECT f.fid FROM flows f "
+            "JOIN taint_sources s ON s.tid = f.tid "
+            "WHERE s.evidence_loc LIKE ? LIMIT 1",
+            [f"{file_hint}:%"],
+        ).fetchone()
+        if row:
+            return str(row[0])
+    return None
 
 
 def _stage_slices(state: RunState, conn: duckdb.DuckDBPyConnection, items: list[QueueItem]) -> int:
@@ -47,7 +64,7 @@ def _stage_slices(state: RunState, conn: duckdb.DuckDBPyConnection, items: list[
     slices_dir.mkdir(exist_ok=True)
     written = 0
     for it in items:
-        flow_id = _resolve_flow_for_nomination(conn, it.loc)
+        flow_id = _pick_flow_for_nomination(conn, {"source_loc": it.loc})
         if not flow_id:
             continue
         bundle = extract_slice(conn, flow_id=flow_id)
