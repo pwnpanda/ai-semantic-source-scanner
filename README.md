@@ -61,3 +61,19 @@ ai-codescan query "SELECT cwe, COUNT(*) FROM flows GROUP BY cwe"
 ai-codescan entrypoints
 ai-codescan view --file /path/to/source/file.ts
 ```
+
+## Phase 1E status — Phase 1 complete
+
+End-to-end pipeline: `ai-codescan run <target>` chains prep → nominate → gate-1. Use `--yes` to skip the editor.
+
+```bash
+ai-codescan install-skills
+ai-codescan run /path/to/target --target-bug-class injection,idor --yes
+```
+
+Phase 1 deliverables:
+- Snapshot (git worktree or cp), stack detect, AST extraction (ts-morph + parse5 + tree-sitter), SCIP indexing, CodeQL DB build + analyze, SARIF flow ingestion into DuckDB
+- Per-file `*.enrich.jsonl` sidecars + `entrypoints.md` + `repo.md`
+- `view`, `entrypoints`, `query`, `flows --from/--to` inspection commands
+- Wide-nominator skill (Claude Code) with three-stream output and `y/n:` HITL gate
+- Run-state JSON + cost ledger
