@@ -18,6 +18,7 @@ import yaml
 from ai_codescan.analyzer import run_analyzer
 from ai_codescan.config import compute_repo_id, default_cache_root
 from ai_codescan.engines.codeql import run_queries
+from ai_codescan.engines.llm_heavy import run_llm_heavy_engine
 from ai_codescan.findings.model import parse_finding
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
 from ai_codescan.ingest.sarif import ingest_sarif
@@ -96,9 +97,12 @@ def prep(
         ),
     ] = "",
 ) -> None:
-    """Snapshot, detect, AST, SCIP, CodeQL, ingest into DuckDB."""
-    if engine != "codeql":
-        typer.echo(f"--engine {engine} is not supported in Phase 1.", err=True)
+    """Snapshot, detect, AST, SCIP, CodeQL or llm-heavy, ingest into DuckDB."""
+    if engine not in {"codeql", "llm-heavy"}:
+        typer.echo(
+            f"--engine {engine} is not supported. Use 'codeql' (default) or 'llm-heavy'.",
+            err=True,
+        )
         raise typer.Exit(code=2)
     if not target.is_dir():
         typer.echo(f"Target is not a directory: {target}", err=True)
@@ -122,14 +126,33 @@ def prep(
         cache_root=cache_root,
         commit=commit,
         bug_classes=bug_classes,
-        engine=engine,
+        # CodeQL prep stage runs only when engine == 'codeql'.
+        engine=engine if engine == "codeql" else "none",
     )
+    if engine == "llm-heavy":
+        repo_dir = cache_root / compute_repo_id(target)
+        state = load_or_create(
+            repo_dir,
+            engine="llm-heavy",
+            temperature=0.0,
+            target_bug_classes=[c.name for c in bug_classes],
+        )
+        n = run_llm_heavy_engine(
+            state,
+            repo_dir=repo_dir,
+            db_path=db_path,
+            target_bug_classes=[c.name for c in bug_classes],
+        )
+        if not quiet:
+            typer.echo(f"llm-heavy ingested {n} flow(s)")
+
     if not quiet:
         status_word = "skipped" if snap.skipped else "took"
         commit_label = f" @ {snap.commit_sha[:8]}" if snap.commit_sha else ""
         typer.echo(f"snapshot {status_word} ({snap.method}){commit_label}")
         typer.echo(f"index at {db_path}")
         typer.echo(f"bug classes: {', '.join(c.name for c in bug_classes)}")
+        typer.echo(f"engine: {engine}")
 
 
 @app.command("list-bug-classes")
