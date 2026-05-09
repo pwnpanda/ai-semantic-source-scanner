@@ -18,6 +18,7 @@ from ai_codescan.config import compute_repo_id, default_cache_root
 from ai_codescan.engines.codeql import run_queries
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
 from ai_codescan.ingest.sarif import ingest_sarif
+from ai_codescan.llm import LLMConfig, UnknownProviderError
 from ai_codescan.nominator import run_nominator
 from ai_codescan.prep import run_prep
 from ai_codescan.runs.state import load_or_create
@@ -349,12 +350,32 @@ def cache_gc(ctx: typer.Context) -> None:
     typer.echo("cache gc not implemented yet")
 
 
+def _build_llm_config(provider: str, model: str) -> LLMConfig:
+    """Build :class:`LLMConfig` from CLI flags, exiting cleanly on bad input."""
+    try:
+        return LLMConfig(provider=provider, model=model or None)
+    except UnknownProviderError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+
 @app.command()
-def nominate(
+def nominate(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
     ctx: typer.Context,
     repo_id: Annotated[str, typer.Option("--repo-id")] = "",
     target_bug_class: Annotated[str, typer.Option("--target-bug-class")] = "",
     temperature: Annotated[float, typer.Option("--temperature")] = 0.0,
+    llm_provider: Annotated[
+        str,
+        typer.Option(
+            "--llm-provider",
+            help="LLM CLI to invoke: claude, gemini, or codex.",
+        ),
+    ] = "claude",
+    llm_model: Annotated[
+        str,
+        typer.Option("--llm-model", help="Specific model name passed to the LLM CLI."),
+    ] = "",
 ) -> None:
     """Run the wide-pass nominator skill against the cached repo."""
     cache_root: Path = ctx.obj["cache_root"]
@@ -376,16 +397,20 @@ def nominate(
     else:
         bug_classes = list_classes()
 
+    llm = _build_llm_config(llm_provider, llm_model)
     state = load_or_create(
         repo_dir,
         engine="codeql",
         temperature=temperature,
         target_bug_classes=[c.name for c in bug_classes],
+        llm_provider=llm.provider,
+        llm_model=llm.model,
     )
     nominations_path = run_nominator(
-        state, repo_dir=repo_dir, bug_classes=bug_classes, db_path=db_path
+        state, repo_dir=repo_dir, bug_classes=bug_classes, db_path=db_path, llm=llm
     )
-    typer.echo(f"nominations at {nominations_path}")
+    llm_label = f"{llm.provider}{':' + llm.model if llm.model else ''}"
+    typer.echo(f"nominations at {nominations_path} (llm: {llm_label})")
 
 
 @app.command("gate-1")
@@ -472,6 +497,8 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
     temperature: Annotated[float, typer.Option("--temperature")] = 0.0,
     yes: Annotated[bool, typer.Option("--yes")] = False,
     commit: _CommitOption = None,
+    llm_provider: Annotated[str, typer.Option("--llm-provider")] = "claude",
+    llm_model: Annotated[str, typer.Option("--llm-model")] = "",
 ) -> None:
     """End-to-end Phase 1: prep + nominate + gate-1 in one shot."""
     flags: list[str] = []
@@ -489,7 +516,16 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
         raise typer.Exit(code=rc)
 
     repo_id = compute_repo_id(target)
-    nominate_args = ["--repo-id", repo_id, "--temperature", str(temperature)]
+    nominate_args = [
+        "--repo-id",
+        repo_id,
+        "--temperature",
+        str(temperature),
+        "--llm-provider",
+        llm_provider,
+    ]
+    if llm_model:
+        nominate_args += ["--llm-model", llm_model]
     if target_bug_class:
         nominate_args += ["--target-bug-class", target_bug_class]
     rc = subprocess.call(  # noqa: S603 - argv-only, no shell

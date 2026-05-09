@@ -1,5 +1,6 @@
 """Tests for ai_codescan.cli."""
 
+import json
 from pathlib import Path
 
 import duckdb
@@ -263,3 +264,75 @@ def test_install_skills_command_runs() -> None:
     result = runner.invoke(app, ["install-skills"])
     assert result.exit_code == 0
     assert "installed skill" in result.stdout
+
+
+def test_nominate_help_advertises_llm_flags() -> None:
+    result = runner.invoke(app, ["nominate", "--help"])
+    assert result.exit_code == 0
+    assert "--llm-provider" in result.stdout
+    assert "--llm-model" in result.stdout
+
+
+def test_run_help_advertises_llm_flags() -> None:
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--llm-provider" in result.stdout
+    assert "--llm-model" in result.stdout
+
+
+def test_nominate_rejects_unknown_provider(
+    tmp_path: Path, fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    monkeypatch.setenv("PATH", "/nonexistent")
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "nominate",
+            "--repo-id",
+            repo_id,
+            "--llm-provider",
+            "not-a-thing",
+        ],
+    )
+    assert result.exit_code != 0
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert "unknown provider" in combined.lower()
+
+
+@pytest.mark.integration
+def test_nominate_persists_llm_config_to_run_json(
+    tmp_path: Path, fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    monkeypatch.setenv("PATH", "/nonexistent")
+    runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "nominate",
+            "--repo-id",
+            repo_id,
+            "--llm-provider",
+            "gemini",
+            "--llm-model",
+            "gemini-2.5-pro",
+        ],
+    )
+    runs = sorted((cache / repo_id / "runs").iterdir())
+    run_json = json.loads((runs[-1] / "run.json").read_text(encoding="utf-8"))
+    assert run_json["llm_provider"] == "gemini"
+    assert run_json["llm_model"] == "gemini-2.5-pro"

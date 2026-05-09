@@ -22,6 +22,10 @@ class RunState:
     cost_cap_usd: float | None
     calls: list[dict[str, Any]] = field(default_factory=list)
     total_usd: float = 0.0
+    llm_provider: str = "claude"
+    llm_model: str | None = None
+    # Per-gate overrides keyed by gate name (e.g. "nominate", "gate_1")
+    gate_overrides: dict[str, dict[str, str | None]] = field(default_factory=dict)
 
 
 def _new_run_id() -> str:
@@ -36,6 +40,8 @@ def load_or_create(  # noqa: PLR0913
     target_bug_classes: list[str],
     cost_cap_usd: float | None = None,
     run_id: str | None = None,
+    llm_provider: str = "claude",
+    llm_model: str | None = None,
 ) -> RunState:
     runs_root = repo_dir / "runs"
     runs_root.mkdir(parents=True, exist_ok=True)
@@ -55,6 +61,9 @@ def load_or_create(  # noqa: PLR0913
                 cost_cap_usd=data.get("cost_cap_usd"),
                 calls=list(data.get("calls", [])),
                 total_usd=float(data.get("total_usd", 0.0)),
+                llm_provider=str(data.get("llm_provider", "claude")),
+                llm_model=data.get("llm_model"),
+                gate_overrides=dict(data.get("gate_overrides", {})),
             )
     new_id = run_id or _new_run_id()
     run_dir = runs_root / new_id
@@ -68,6 +77,8 @@ def load_or_create(  # noqa: PLR0913
         temperature=temperature,
         target_bug_classes=target_bug_classes,
         cost_cap_usd=cost_cap_usd,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
     )
     save(state)
     return state
