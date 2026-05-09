@@ -13,11 +13,14 @@ from ai_codescan.nominator import write_llm_cmd_script
 from ai_codescan.runs.state import RunState, save
 from ai_codescan.sandbox import (
     DEFAULT_SIGNAL,
+    LanguageProfile,
     SandboxResult,
     SandboxUnavailableError,
-    image_for_lang,
+    configured_runtime,
+    profile_for_lang,
     run_in_sandbox,
 )
+from ai_codescan.user_config import load as load_user_config
 
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "validator"
 
@@ -38,15 +41,34 @@ def _validation_log_row(finding_id: str, status: str, result: SandboxResult) -> 
     )
 
 
+def _local_argv(profile: LanguageProfile, poc_path: Path) -> list[str]:
+    """Argv to execute the PoC locally (no container)."""
+    if profile.name == "go":
+        return ["go", "run", str(poc_path)]
+    # Most interpreters take the script path directly.
+    return [profile.interpreter.split()[0], str(poc_path)]
+
+
+def _container_argv(profile: LanguageProfile, poc_path: Path) -> list[str]:
+    """Argv to execute the PoC inside the container at /work/<filename>."""
+    interpreter_parts = profile.interpreter.split()
+    return [*interpreter_parts, poc_path.name]
+
+
 def _run_poc(
-    poc_path: Path, *, work_dir: Path, image: str, no_sandbox: bool
+    poc_path: Path,
+    *,
+    work_dir: Path,
+    profile: LanguageProfile,
+    no_sandbox: bool,
 ) -> SandboxResult:
     if no_sandbox:
-        # Local execution — useful when Docker is unavailable but the user
-        # has accepted the risk. Same signal/exit-code conventions apply.
+        # Local execution — used when runtime=none or the user passes --no-sandbox.
+        # Same signal/exit-code conventions as the container path.
+        argv = _local_argv(profile, poc_path)
         try:
             proc = subprocess.run(  # noqa: S603 - argv-only, no shell
-                ["python3", str(poc_path)],  # noqa: S607
+                argv,  # noqa: S607 - first arg is a literal interpreter name
                 capture_output=True,
                 text=True,
                 cwd=work_dir,
@@ -60,15 +82,47 @@ def _run_poc(
                 duration_sec=0.0,
                 signal_seen=DEFAULT_SIGNAL in proc.stdout,
                 timed_out=False,
+                runtime="none",
             )
         except subprocess.TimeoutExpired:
             return SandboxResult(
-                exit_code=124, stdout="", stderr="", duration_sec=60.0,
-                signal_seen=False, timed_out=True,
+                exit_code=124,
+                stdout="",
+                stderr="",
+                duration_sec=60.0,
+                signal_seen=False,
+                timed_out=True,
+                runtime="none",
             )
     return run_in_sandbox(
-        ["python3", "poc.py"], image=image, work_dir=work_dir
+        _container_argv(profile, poc_path),
+        image=profile.image,
+        work_dir=work_dir,
     )
+
+
+def _profile_for_finding(
+    finding: Finding, *, repo_md: str | None
+) -> LanguageProfile:
+    """Pick a language profile based on user pref, finding metadata, and repo.md hints."""
+    pref = load_user_config().poc_language_preference
+    if pref != "auto":
+        return profile_for_lang(pref)
+    # The finding doc may carry a hint via the body (e.g. "lang: javascript").
+    if "lang: " in finding.body:
+        for line in finding.body.splitlines():
+            stripped = line.strip().lower()
+            if stripped.startswith("lang:"):
+                return profile_for_lang(stripped.split(":", 1)[1].strip())
+    # Otherwise, infer from repo.md's first detected language.
+    if repo_md:
+        for line in repo_md.splitlines():
+            stripped = line.strip().lower()
+            if stripped.startswith("- languages:"):
+                first = stripped.split(":", 1)[1].split(",")[0].strip()
+                if first:
+                    return profile_for_lang(first)
+    return profile_for_lang("python")
 
 
 def run_validator(
@@ -104,20 +158,46 @@ def run_validator(
         )
     _ = repo_dir  # reserved for future passes
 
+    # If runtime=none in user_config, force no_sandbox unless the caller already did.
+    if not no_sandbox and configured_runtime() == "none":
+        no_sandbox = True
+
+    # Cache the repo.md once; the validator may consult it for language hints.
+    repo_md_path = repo_dir / "repo.md"
+    repo_md = repo_md_path.read_text(encoding="utf-8") if repo_md_path.is_file() else None
+
     # Execute every PoC the skill produced.
     log_rows: list[str] = []
     for finding_path in sorted(findings_dir.glob("*.md")):
         finding = parse_finding(finding_path.read_text(encoding="utf-8"))
         if finding.status != "unverified":
             continue
-        poc_path = state.run_dir / "sandbox" / finding.finding_id / "poc.py"
-        if not poc_path.is_file():
+        # Look for poc.<ext> for any supported extension; fall back to poc.py.
+        sandbox_dir = state.run_dir / "sandbox" / finding.finding_id
+        if not sandbox_dir.is_dir():
             continue
+        poc_path = next(
+            (p for p in sandbox_dir.glob("poc.*") if p.is_file()),
+            None,
+        )
+        if poc_path is None:
+            continue
+        # Pick the language profile from the file extension first; user pref is the override.
+        ext_to_lang = {
+            ".py": "python", ".js": "javascript", ".ts": "typescript",
+            ".php": "php", ".rb": "ruby", ".go": "go", ".sh": "shell",
+        }
+        explicit_lang = ext_to_lang.get(poc_path.suffix)
+        profile = (
+            profile_for_lang(explicit_lang)
+            if explicit_lang
+            else _profile_for_finding(finding, repo_md=repo_md)
+        )
         try:
             result = _run_poc(
                 poc_path,
                 work_dir=poc_path.parent,
-                image=image_for_lang("python"),
+                profile=profile,
                 no_sandbox=no_sandbox,
             )
         except SandboxUnavailableError:
