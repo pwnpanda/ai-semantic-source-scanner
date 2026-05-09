@@ -22,6 +22,11 @@ class BugClass:
     group: str | None
     aliases: list[str]
     needs_semantic: bool = False
+    # Per-CWE proof rubric for the validator. Strings tell the PoC author
+    # what counts as ``vulnerable`` for this class (e.g. "extract data not
+    # normally accessible OR force a SQL parser error"). Empty list means
+    # default rubric: stdout signal + non-zero exit.
+    validation_hints: tuple[str, ...] = ()
 
 
 def _yaml_path() -> Path:
@@ -46,6 +51,7 @@ def list_classes() -> list[BugClass]:
                 group=body.get("group"),
                 aliases=list(body.get("aliases", [])),
                 needs_semantic=bool(body.get("needs_semantic", False)),
+                validation_hints=tuple(body.get("validation_hints", []) or []),
             )
         )
     return out

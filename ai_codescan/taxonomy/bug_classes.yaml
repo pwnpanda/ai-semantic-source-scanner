@@ -2,35 +2,56 @@ xss:
   cwes: [CWE-79]
   codeql_tags: [security/cwe/cwe-079]
   group: injection
+  validation_hints:
+    - "Render the payload through the same escaping path; assert raw `<script>` survives."
+    - "Headless browser sees attacker JS execute (e.g. `document.title` mutated)."
+    - "Response body contains the unescaped payload AND the response Content-Type allows execution."
 
 sqli:
   aliases: [sql-injection]
   cwes: [CWE-89]
   codeql_tags: [security/cwe/cwe-089]
   group: injection
+  validation_hints:
+    - "Force a SQL parser error message in the response (sqlite/mysql/postgres syntax error)."
+    - "Extract data not normally accessible (`UNION SELECT`, time-based blind, boolean-based)."
+    - "DB log shows attacker-controlled clause that wasn't parameterised."
 
 nosqli:
   aliases: [nosql-injection]
   cwes: [CWE-943]
   codeql_tags: [security/cwe/cwe-943]
   group: injection
+  validation_hints:
+    - "Operator injection ($where, $regex, $ne) yields a different result set than literal value."
+    - "Authentication bypass via `{$ne: null}` or similar operator passthrough."
 
 cmdi:
   aliases: [command-injection, os-cmdi]
   cwes: [CWE-78]
   codeql_tags: [security/cwe/cwe-078]
   group: injection
+  validation_hints:
+    - "Inject `;`, `&&`, `|`, or `$()` and observe an attacker-chosen command runs (e.g. `id`)."
+    - "Process tree shows the spawned binary that wasn't in the original argv."
+    - "File side-effect: PoC writes a known marker path; presence proves shell evaluation."
 
 code-injection:
   cwes: [CWE-94]
   codeql_tags: [security/cwe/cwe-094]
   group: injection
+  validation_hints:
+    - "Attacker-supplied source compiles + executes inside the interpreter (eval/Function/exec)."
+    - "Side-effect: import a stdlib module the original code never used."
 
 ssti:
   aliases: [template-injection]
   cwes: [CWE-1336]
   codeql_tags: [security/cwe/cwe-1336]
   group: injection
+  validation_hints:
+    - "Template syntax (`{{7*7}}`) renders the computed value `49` in the response."
+    - "Engine-specific escape (`{% debug %}`, `${T(java.lang.Runtime)...}`) yields execution markers."
 
 prompt-injection:
   cwes: [CWE-1427]
@@ -60,28 +81,42 @@ path-traversal:
   cwes: [CWE-22]
   codeql_tags: [security/cwe/cwe-022]
   group: file
+  validation_hints:
+    - "Read a file outside the documented allow-root (`/etc/hostname`, `/etc/passwd`)."
+    - "Encoded traversal (`%2e%2e%2f`, NUL-byte) bypasses the filter."
 
 lfi:
   aliases: [local-file-inclusion]
   cwes: [CWE-98]
   codeql_tags: [security/cwe/cwe-098]
   group: file
+  validation_hints:
+    - "Include and execute a local file the application doesn't normally load (e.g. log file with PHP)."
+    - "PHP wrappers (`php://filter/convert.base64-encode/resource=`) leak source code."
 
 rfi:
   aliases: [remote-file-inclusion]
   cwes: [CWE-98]
   codeql_tags: [security/cwe/cwe-098]
   group: file
+  validation_hints:
+    - "Include from attacker-controlled host (network usually disabled in sandbox; file:// scheme is the offline analogue)."
 
 ssrf:
   cwes: [CWE-918]
   codeql_tags: [security/cwe/cwe-918]
   group: request-forgery
+  validation_hints:
+    - "Out-of-band callback received on attacker-controlled DNS/HTTP beacon (interactsh)."
+    - "Response leaks content from a private IP (cloud metadata, internal service)."
 
 csrf:
   cwes: [CWE-352]
   codeql_tags: [security/cwe/cwe-352]
   group: request-forgery
+  validation_hints:
+    - "Cross-origin form/JSON POST with no anti-CSRF token succeeds in mutating state."
+    - "Server's response indicates the action ran despite the missing/forged CSRF token."
 
 idor:
   aliases: [bola]
@@ -89,6 +124,9 @@ idor:
   codeql_tags: []
   group: authz
   needs_semantic: true
+  validation_hints:
+    - "Two distinct user accounts: user A authenticates, requests user B's resource by id, gets it."
+    - "Server returns the foreign resource (200 with body) instead of 403/404."
 
 bfla:
   cwes: [CWE-862]

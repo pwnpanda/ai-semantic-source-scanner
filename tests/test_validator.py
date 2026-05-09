@@ -22,19 +22,23 @@ def _result(exit_code: int = 0, *, signal: bool = False, timed_out: bool = False
 
 
 def test_flip_verified_when_signal_seen() -> None:
-    assert _flip_status(_result(0, signal=True)) == "verified"
+    status, _ = _flip_status(_result(0, signal=True))
+    assert status == "verified"
 
 
 def test_flip_rejected_when_clean_exit_no_signal() -> None:
-    assert _flip_status(_result(0, signal=False)) == "rejected"
+    status, _ = _flip_status(_result(0, signal=False))
+    assert status == "rejected"
 
 
 def test_flip_inconclusive_when_nonzero_exit() -> None:
-    assert _flip_status(_result(1, signal=False)) == "poc_inconclusive"
+    status, _ = _flip_status(_result(1, signal=False))
+    assert status == "poc_inconclusive"
 
 
 def test_flip_inconclusive_when_timed_out() -> None:
-    assert _flip_status(_result(124, signal=False, timed_out=True)) == "poc_inconclusive"
+    status, _ = _flip_status(_result(124, signal=False, timed_out=True))
+    assert status == "poc_inconclusive"
 
 
 def test_run_validator_writes_log_when_no_pocs(
@@ -68,3 +72,94 @@ def test_run_validator_writes_log_when_no_pocs(
     # No PoC was authored, so the finding stays unverified.
     f = parse_finding((findings_dir / "F-001.md").read_text(encoding="utf-8"))
     assert f.status == "unverified"
+
+
+def test_parse_verdict_extracts_json_block() -> None:
+    from ai_codescan.validator import _parse_verdict
+
+    stdout = (
+        "running PoC...\n"
+        'observed: response body matches expected SQL error\n'
+        '{"verdict": "vulnerable", "evidence": ["sql syntax error"], "confidence": 0.92}\n'
+    )
+    parsed = _parse_verdict(stdout)
+    assert parsed is not None
+    assert parsed["verdict"] == "vulnerable"
+    assert parsed["confidence"] == 0.92
+
+
+def test_parse_verdict_returns_none_on_garbage() -> None:
+    from ai_codescan.validator import _parse_verdict
+
+    assert _parse_verdict("hello world") is None
+    assert _parse_verdict('{"oops": true}') is None
+    assert _parse_verdict("{not even json}") is None
+
+
+def test_flip_status_uses_json_verdict_when_present() -> None:
+    from ai_codescan.sandbox import SandboxResult
+    from ai_codescan.validator import _flip_status
+
+    result = SandboxResult(
+        exit_code=0,
+        stdout='{"verdict": "vulnerable", "evidence": [], "confidence": 0.7}',
+        stderr="",
+        duration_sec=0.0,
+        signal_seen=False,
+        timed_out=False,
+        runtime="docker",
+    )
+    status, parsed = _flip_status(result)
+    assert status == "verified"
+    assert parsed is not None and parsed["confidence"] == 0.7
+
+
+def test_flip_status_falls_back_to_signal_when_no_json() -> None:
+    from ai_codescan.sandbox import SandboxResult
+    from ai_codescan.validator import _flip_status
+
+    result = SandboxResult(
+        exit_code=0,
+        stdout="OK_VULN",
+        stderr="",
+        duration_sec=0.0,
+        signal_seen=True,
+        timed_out=False,
+        runtime="docker",
+    )
+    status, parsed = _flip_status(result)
+    assert status == "verified"
+    assert parsed is None
+
+
+def test_flip_status_rejected_on_clean_run_without_signal() -> None:
+    from ai_codescan.sandbox import SandboxResult
+    from ai_codescan.validator import _flip_status
+
+    result = SandboxResult(
+        exit_code=0,
+        stdout="just some output, no signal",
+        stderr="",
+        duration_sec=0.0,
+        signal_seen=False,
+        timed_out=False,
+        runtime="docker",
+    )
+    status, parsed = _flip_status(result)
+    assert status == "rejected"
+    assert parsed is None
+
+
+def test_hints_for_cwe_returns_taxonomy_hints() -> None:
+    from ai_codescan.validator import _hints_for_cwe
+
+    sqli_hints = _hints_for_cwe("CWE-89")
+    assert sqli_hints
+    assert any("sql" in h.lower() for h in sqli_hints)
+
+
+def test_hints_for_cwe_returns_empty_for_unknown() -> None:
+    from ai_codescan.validator import _hints_for_cwe
+
+    assert _hints_for_cwe("CWE-9999") == []
+    assert _hints_for_cwe(None) == []
