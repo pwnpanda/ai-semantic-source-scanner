@@ -336,3 +336,37 @@ def test_nominate_persists_llm_config_to_run_json(
     run_json = json.loads((runs[-1] / "run.json").read_text(encoding="utf-8"))
     assert run_json["llm_provider"] == "gemini"
     assert run_json["llm_model"] == "gemini-2.5-pro"
+
+
+def test_analyze_help_advertises_llm_flags() -> None:
+    result = runner.invoke(app, ["analyze", "--help"])
+    assert result.exit_code == 0
+    assert "--llm-provider" in result.stdout
+    assert "--llm-model" in result.stdout
+
+
+def test_gate_2_help_advertises_yes() -> None:
+    result = runner.invoke(app, ["gate-2", "--help"])
+    assert result.exit_code == 0
+    assert "--yes" in result.stdout
+
+
+def test_gate_2_yes_short_circuits(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    runs_root = cache / repo_id / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    run_dir = runs_root / "rrr"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "findings").mkdir()
+
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "gate-2", "--repo-id", repo_id, "--yes"],
+    )
+    assert result.exit_code == 0
+    assert "keeping all findings" in result.stdout

@@ -14,6 +14,7 @@ from typing import Annotated, Any
 import duckdb
 import typer
 
+from ai_codescan.analyzer import run_analyzer
 from ai_codescan.config import compute_repo_id, default_cache_root
 from ai_codescan.engines.codeql import run_queries
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
@@ -542,16 +543,83 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
     )
 
 
+@app.command()
+def analyze(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    llm_provider: Annotated[str, typer.Option("--llm-provider")] = "claude",
+    llm_model: Annotated[str, typer.Option("--llm-model")] = "",
+    temperature: Annotated[float, typer.Option("--temperature")] = 0.0,
+) -> None:
+    """Run the deep-analyzer skill against accepted nominations."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    repo_dir = cache_root / repo_id
+    db_path = repo_dir / "index.duckdb"
+    if not db_path.is_file():
+        typer.echo("No index. Run prep first.", err=True)
+        raise typer.Exit(code=1)
+    runs_root = repo_dir / "runs"
+    if not runs_root.is_dir() or not any(runs_root.iterdir()):
+        typer.echo("No runs. Run nominate + gate-1 first.", err=True)
+        raise typer.Exit(code=1)
+    last_run = max(runs_root.iterdir(), key=lambda p: p.stat().st_mtime)
+    state = load_or_create(
+        repo_dir,
+        engine="codeql",
+        temperature=temperature,
+        target_bug_classes=[],
+        run_id=last_run.name,
+        llm_provider=llm_provider,
+        llm_model=llm_model or None,
+    )
+    llm = _build_llm_config(llm_provider, llm_model)
+    queue = run_analyzer(state, repo_dir=repo_dir, db_path=db_path, llm=llm)
+    typer.echo(f"queue at {queue}")
+
+
+@app.command("gate-2")
+def gate_2(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+) -> None:
+    """Open findings/ for HITL pruning, or --yes to keep all 'unverified' as-is."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    runs_root = cache_root / repo_id / "runs"
+    last_run = max(runs_root.iterdir(), key=lambda p: p.stat().st_mtime)
+    findings_dir = last_run / "findings"
+    if not findings_dir.is_dir():
+        typer.echo("No findings dir. Run analyze first.", err=True)
+        raise typer.Exit(code=1)
+    if yes:
+        typer.echo(f"keeping all findings under {findings_dir} as-is")
+        return
+    editor = os.environ.get("EDITOR", "vi")
+    subprocess.run(  # noqa: S603 - editor is user-controlled, no shell
+        [editor, str(findings_dir)],  # noqa: S607
+        check=False,
+    )
+
+
 @app.command("install-skills")
 def install_skills() -> None:
     """Copy bundled skills into ~/.claude/skills/."""
-    src = Path(__file__).resolve().parent / "skills" / "wide_nominator"
-    dest = Path.home() / ".claude" / "skills" / "wide_nominator"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(src, dest)
-    typer.echo(f"installed skill to {dest}")
+    skill_root = Path(__file__).resolve().parent / "skills"
+    dest_root = Path.home() / ".claude" / "skills"
+    dest_root.mkdir(parents=True, exist_ok=True)
+    installed: list[Path] = []
+    for src in (skill_root.iterdir() if skill_root.is_dir() else []):
+        if not src.is_dir():
+            continue
+        dest = dest_root / src.name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+        installed.append(dest)
+    for d in installed:
+        typer.echo(f"installed skill to {d}")
 
 
 if __name__ == "__main__":
