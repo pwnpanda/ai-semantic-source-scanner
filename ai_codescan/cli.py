@@ -186,12 +186,16 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
         # Walk detected projects and run Semgrep (+ Joern when on PATH), then dedupe.
         repo_dir = cache_root / compute_repo_id(target)
         snapshot_root = snap.snapshot_dir
-        roots: list[tuple[Path, str]] = []
+        roots: list[tuple[Path, str, str]] = []
         for project in detect_projects(snapshot_root):
-            if project.kind is not ProjectKind.NODE:
+            if project.kind is ProjectKind.NODE:
+                language = "javascript"
+            elif project.kind is ProjectKind.PYTHON:
+                language = "python"
+            else:
                 continue
             project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
-            roots.append((snapshot_root / project.base_path, project_id))
+            roots.append((snapshot_root / project.base_path, project_id, language))
         stats = run_hybrid(
             roots,
             snapshot_root=snapshot_root,

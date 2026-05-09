@@ -29,7 +29,26 @@ _SCIP_RANGE_WITH_END_LINE = 3
 """SCIP occurrence range with [start_line, start_col, end_col] is len 3; with end_line is len 4."""
 
 
-def _files_for_project(snapshot_root: Path, project: Project) -> tuple[list[Path], list[Path]]:
+_PYTHON_SKIP_PARTS: frozenset[str] = frozenset(
+    {
+        "node_modules",
+        ".venv",
+        "venv",
+        "env",
+        "__pycache__",
+        ".tox",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "site-packages",
+    }
+)
+
+
+def _files_for_project(
+    snapshot_root: Path, project: Project
+) -> tuple[list[Path], list[Path], list[Path]]:
+    """Return (ts_files, html_files, python_files) under ``project.base_path``."""
     base = snapshot_root / project.base_path
     ts = [
         p
@@ -43,12 +62,19 @@ def _files_for_project(snapshot_root: Path, project: Project) -> tuple[list[Path
         for p in base.rglob("*")
         if p.is_file() and p.suffix in {".html", ".htm"} and "node_modules" not in p.parts
     ]
-    return ts, html
+    python = [
+        p
+        for p in base.rglob("*")
+        if p.is_file()
+        and p.suffix in {".py", ".pyi"}
+        and not any(part in _PYTHON_SKIP_PARTS for part in p.parts)
+    ]
+    return ts, html, python
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
     base = snapshot_root / project.base_path
-    ts_files, html_files = _files_for_project(snapshot_root, project)
+    ts_files, html_files, py_files = _files_for_project(snapshot_root, project)
     jobs: list[AstJob] = []
     if ts_files:
         tsconfig = base / "tsconfig.json"
@@ -62,6 +88,8 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         )
     if html_files:
         jobs.append(AstJob(kind="html", project_root=base, files=html_files))
+    if py_files and project.kind is ProjectKind.PYTHON:
+        jobs.append(AstJob(kind="python", project_root=base, files=py_files))
     return jobs
 
 
@@ -89,6 +117,17 @@ def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: 
     return lookup
 
 
+def _codeql_language_for_project(project: Project) -> str | None:
+    """Return the CodeQL language token for ``project``, or None if unsupported."""
+    if project.kind is ProjectKind.NODE and project.languages.intersection(
+        {"javascript", "typescript"}
+    ):
+        return "javascript"
+    if project.kind is ProjectKind.PYTHON and "python" in project.languages:
+        return "python"
+    return None
+
+
 def _run_codeql_for_projects(
     snapshot_root: Path,
     projects: list[Project],
@@ -101,9 +140,8 @@ def _run_codeql_for_projects(
         for c in bug_classes:
             tags.extend(c.codeql_tags)
     for project in projects:
-        if project.kind is not ProjectKind.NODE:
-            continue
-        if not project.languages.intersection({"javascript", "typescript"}):
+        language = _codeql_language_for_project(project)
+        if language is None:
             continue
         project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
         try:
@@ -111,12 +149,14 @@ def _run_codeql_for_projects(
                 snapshot_root / project.base_path,
                 cache_dir=repo_dir,
                 project_id=project_id,
+                language=language,
             )
             result = run_queries(
                 db_path,
                 cache_dir=repo_dir,
                 project_id=project_id,
                 codeql_tags=tags,
+                language=language,
             )
             ingest_sarif(
                 conn,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Worker reads one JSON job per stdin line, writes JSONL records to stdout.
-// Job: { kind: "ts" | "html" | "treesitter", projectRoot, files: [...], tsconfig?: string }
+// Job: { kind: "ts" | "html" | "treesitter" | "python", projectRoot, files: [...], tsconfig?: string }
 // Output records: { type, file, ... }; one terminator { type: "done", jobId } per job.
 
 import { createInterface } from "node:readline";
@@ -17,6 +17,10 @@ async function dispatch(job) {
     }
     case "treesitter": {
       const m = await import("./extract_treesitter.mjs");
+      return m.run(job);
+    }
+    case "python": {
+      const m = await import("./extract_python.mjs");
       return m.run(job);
     }
     default:

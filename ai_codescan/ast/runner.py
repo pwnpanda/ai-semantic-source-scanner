@@ -16,7 +16,7 @@ WORKER_DIR = Path(__file__).resolve().parent / "node_worker"
 class AstJob:
     """One worker job."""
 
-    kind: Literal["ts", "html", "treesitter"]
+    kind: Literal["ts", "html", "treesitter", "python"]
     project_root: Path
     files: list[Path] = field(default_factory=list)
     tsconfig: Path | None = None

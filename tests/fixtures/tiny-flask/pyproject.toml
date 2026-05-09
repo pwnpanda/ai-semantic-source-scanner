@@ -1,0 +1,8 @@
+[project]
+name = "tiny-flask"
+version = "0.0.1"
+description = "Minimal Flask app with a deliberate SQLi for SAST testing."
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+]

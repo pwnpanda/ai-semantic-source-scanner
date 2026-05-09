@@ -194,7 +194,7 @@ def _ingest_joern_jsonl(
 
 
 def run_hybrid(
-    project_roots: list[tuple[Path, str]],
+    project_roots: list[tuple[Path, str, str]],
     *,
     snapshot_root: Path,
     repo_dir: Path,
@@ -202,9 +202,11 @@ def run_hybrid(
 ) -> HybridStats:
     """Drive Semgrep (and Joern when available) and dedupe.
 
-    CodeQL is expected to have already populated the flows table via the
-    standard prep stage. This function adds Semgrep + Joern flows and runs
-    the dedupe pass.
+    Each ``project_roots`` entry is ``(root_path, project_id, language)``;
+    ``language`` is one of ``"javascript"`` or ``"python"`` and routes to the
+    matching Joern frontend. CodeQL is expected to have already populated the
+    flows table via the standard prep stage. This function adds Semgrep + Joern
+    flows and runs the dedupe pass.
     """
     conn = duckdb.connect(str(db_path))
     try:
@@ -212,7 +214,7 @@ def run_hybrid(
         semgrep_flows = 0
         joern_flows = 0
 
-        for project_root, project_id in project_roots:
+        for project_root, project_id, language in project_roots:
             if semgrep_eng.is_available():
                 try:
                     sarif_path = semgrep_eng.run_semgrep(
@@ -231,7 +233,10 @@ def run_hybrid(
             if joern_eng.is_available():
                 try:
                     jsonl_path = joern_eng.run_joern(
-                        project_root, cache_dir=repo_dir, project_id=project_id
+                        project_root,
+                        cache_dir=repo_dir,
+                        project_id=project_id,
+                        language=language,
                     )
                     joern_flows += _ingest_joern_jsonl(
                         conn,

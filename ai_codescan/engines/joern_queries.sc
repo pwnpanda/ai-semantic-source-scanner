@@ -34,27 +34,56 @@ import io.joern.dataflowengineoss.queryengine.EngineContext
 import java.io.{FileWriter, BufferedWriter}
 import java.security.MessageDigest
 
-@main def execScan(cpgPath: String, outPath: String) = {
+@main def execScan(cpgPath: String, outPath: String, language: String = "javascript") = {
   importCpg(cpgPath)
 
   implicit val engineCtx: EngineContext = EngineContext()
 
-  val sourceNamePattern = "(?i)(req\\.body|req\\.query|req\\.params|process\\.argv).*"
-
-  // Joern's JS frontend stores `call.name` as the bare method name
-  // (`query`, `send`, `readFile`) without the receiver. Patterns below
-  // match against `name`; the receiver context is implicit in the data-flow
-  // path — if no def→use chain exists the call is not reported.
-  val ce = "exec"
-  val cs = "spawn"
-  val sinkClasses: List[(String, String, String)] = List(
-    ("CWE-89", "sql.exec",   "(?i)query"),
-    ("CWE-89", "sql.exec",   "(?i)execute"),
-    ("CWE-78", "cmd.shell",  s"(?i)${ce}(Sync)?"),
-    ("CWE-78", "cmd.shell",  s"(?i)${cs}(Sync)?"),
-    ("CWE-79", "html.write", "(?i)(send|write|end)"),
-    ("CWE-22", "fs.read",    "(?i)(readFile|createReadStream|readFileSync)")
+  // Source/sink patterns are language-specific. Both the JS and pythonsrc
+  // frontends store `call.name` as the bare method name (e.g. "query",
+  // "execute"); receiver context is implicit in the data-flow path.
+  case class LangPatterns(
+    sourcePattern: String,
+    sinkClasses: List[(String, String, String)]
   )
+
+  val patterns: LangPatterns = language.toLowerCase match {
+    case "python" =>
+      LangPatterns(
+        sourcePattern =
+          "(?i)(request\\.args|request\\.form|request\\.json|request\\.values|" +
+          "request\\.data|request\\.cookies|request\\.headers|request\\.files|" +
+          "request\\.GET|request\\.POST|request\\.body|request\\.COOKIES|" +
+          "request\\.META|sys\\.argv).*",
+        sinkClasses = List(
+          ("CWE-89",  "sql.exec",      "(?i)execute"),
+          ("CWE-89",  "sql.exec",      "(?i)executemany"),
+          ("CWE-78",  "cmd.shell",     "(?i)(system|popen|check_output|check_call|Popen)"),
+          ("CWE-78",  "cmd.shell",     "(?i)(eval)"),
+          ("CWE-79",  "html.write",    "(?i)render_template_string"),
+          ("CWE-79",  "html.write",    "(?i)(Markup|mark_safe)"),
+          ("CWE-22",  "fs.read",       "(?i)open"),
+          ("CWE-502", "deser.unsafe",  "(?i)loads"),
+          ("CWE-502", "deser.unsafe",  "(?i)(load|full_load|unsafe_load)")
+        )
+      )
+    case _ =>
+      val ce = "exec"
+      val cs = "spawn"
+      LangPatterns(
+        sourcePattern = "(?i)(req\\.body|req\\.query|req\\.params|process\\.argv).*",
+        sinkClasses = List(
+          ("CWE-89", "sql.exec",   "(?i)query"),
+          ("CWE-89", "sql.exec",   "(?i)execute"),
+          ("CWE-78", "cmd.shell",  s"(?i)${ce}(Sync)?"),
+          ("CWE-78", "cmd.shell",  s"(?i)${cs}(Sync)?"),
+          ("CWE-79", "html.write", "(?i)(send|write|end)"),
+          ("CWE-22", "fs.read",    "(?i)(readFile|createReadStream|readFileSync)")
+        )
+      )
+  }
+  val sourceNamePattern = patterns.sourcePattern
+  val sinkClasses = patterns.sinkClasses
 
   def sha1Short(s: String): String = {
     val md = MessageDigest.getInstance("SHA-1")

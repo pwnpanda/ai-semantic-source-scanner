@@ -1,6 +1,6 @@
 # ai-semantic-source-scanner (`ai-codescan`)
 
-AI-driven SAST pipeline for JavaScript / TypeScript / HTML codebases. Combines deterministic static analysis (AST, SCIP, CodeQL, Semgrep, optional Joern) with LLM agents that nominate bug candidates, write per-finding reports, and validate exploits in a hardened Docker sandbox.
+AI-driven SAST pipeline for JavaScript / TypeScript / Python / HTML codebases. Combines deterministic static analysis (AST, SCIP, CodeQL, Semgrep, optional Joern) with LLM agents that nominate bug candidates, write per-finding reports, and validate exploits in a hardened Docker sandbox.
 
 Five-stage pipeline with human-in-the-loop gates between every stage. Swappable LLM provider (`claude`, `gemini`, or `codex`).
 
@@ -227,4 +227,10 @@ Quality gates: zero ruff warnings, zero ty errors, all tests green. ~158 tests, 
 
 ## Status
 
-Phases 1, 2, and 3 are complete and tagged. Joern engine integration is wired but defers the binary install to opt-in. See [TRADEOFFS.md](TRADEOFFS.md) for the full list of autonomous decisions and what's still on the roadmap.
+Phases 1, 2, and 3 are complete and tagged. Joern engine integration is wired but defers the binary install to opt-in. Python language support landed in phase 4: stack-detect, CodeQL (`python-security-extended.qls`), Joern via `pysrc2cpg`, tree-sitter-python AST extraction, and Python idiom regexes for storage-taint. See [TRADEOFFS.md](TRADEOFFS.md) for the full list of autonomous decisions and what's still on the roadmap.
+
+## Claude Sessions
+
+| Session | Summary | Date |
+|---------|---------|------|
+| `python-language-support` | Added full-parity Python language support: stack_detect (pyproject/setup/requirements + framework + pkg-mgr detection), CodeQL Python query suite, Joern pysrc2cpg + Python source/sink patterns, tree-sitter-python AST worker, Python idiom regexes in storage_taint, tiny-flask fixture, end-to-end smoke test. | 2026-05-09 |

@@ -58,6 +58,21 @@ def test_classify_call_returns_none_for_random() -> None:
     assert classify_call("Math.random") is None
 
 
+def test_classify_call_recognises_python_cursor_execute() -> None:
+    assert classify_call("cursor.execute") == ("sql_column", "unknown")
+    assert classify_call("cur.executemany") == ("sql_column", "unknown")
+
+
+def test_classify_call_recognises_python_redis_set() -> None:
+    assert classify_call("r.set") == ("cache_key", "write")
+    assert classify_call("r.hgetall") == ("cache_key", "read")
+
+
+def test_classify_call_recognises_celery_send_task() -> None:
+    assert classify_call("celery.send_task") == ("queue_topic", "write")
+    assert classify_call("celery.apply_async") == ("queue_topic", "write")
+
+
 def test_load_save_schema_yaml_roundtrip(tmp_path: Path) -> None:
     target = tmp_path / "schema.taint.yml"
     data = {"tables": {"users": {"columns": {"bio": {"taint": "dirty"}}}}}

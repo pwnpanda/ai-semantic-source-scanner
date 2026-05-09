@@ -33,19 +33,31 @@ _SQL_READ_VERBS = {"select"}
 
 _FIXPOINT_MAX_ROUNDS = 5
 
-# Heuristic detection of storage operations by callee text.
+# Heuristic detection of storage operations by callee text. Patterns cover both
+# JS/TS idioms (``db.query``, ``redis.set``) and Python idioms (``cursor.execute``,
+# ``r.set``, ``celery.send_task``); matched against the full callee string and
+# anchored at the end so partial-name false matches don't bleed in.
 _SQL_CALL = re.compile(
-    r"\b(?:db|conn|client|pool|knex)\.(?:query|execute|run|raw)$",
+    r"\b(?:db|conn|client|pool|knex|cursor|cur|session|engine)\."
+    r"(?:query|execute|executemany|run|raw)$",
     re.IGNORECASE,
 )
-_CACHE_SET = re.compile(r"\b(?:cache|redis|client)\.(?:set|hset|setex)$", re.IGNORECASE)
-_CACHE_GET = re.compile(r"\b(?:cache|redis|client)\.(?:get|hget|mget)$", re.IGNORECASE)
+_CACHE_SET = re.compile(
+    r"\b(?:cache|redis|client|r|kv|memcache|mc)\.(?:set|hset|setex|mset|hmset|psetex)$",
+    re.IGNORECASE,
+)
+_CACHE_GET = re.compile(
+    r"\b(?:cache|redis|client|r|kv|memcache|mc)\.(?:get|hget|mget|hgetall|get_multi)$",
+    re.IGNORECASE,
+)
 _QUEUE_PUBLISH = re.compile(
-    r"\b(?:queue|jobs|publisher|producer|kafka|amqp)\.(?:publish|emit|add|send)$",
+    r"\b(?:queue|jobs|publisher|producer|kafka|amqp|celery|sqs|rabbit)\."
+    r"(?:publish|emit|add|send|send_task|apply_async|delay|send_message)$",
     re.IGNORECASE,
 )
 _QUEUE_CONSUME = re.compile(
-    r"\b(?:queue|worker|consumer|subscriber)\.(?:process|consume|subscribe|on)$",
+    r"\b(?:queue|worker|consumer|subscriber|task)\."
+    r"(?:process|consume|subscribe|on|receive_messages|task)$",
     re.IGNORECASE,
 )
 
@@ -238,7 +250,7 @@ def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
 # or quoted strings. Round-2 detection is intentionally textual (regex + sqlglot
 # parse) rather than AST-based — it mirrors the round-1 SQL-string discovery
 # already used upstream.
-_JS_TS_GLOBS = ("**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx")
+_JS_TS_GLOBS = ("**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.py")
 _SELECT_STRING = re.compile(
     r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",
     re.IGNORECASE | re.DOTALL,
@@ -615,15 +627,16 @@ def run_full_fixpoint(
 
 
 _DYNAMIC_READ_CALL = re.compile(
-    r"\b(?:cache|redis|client)\.(?:get|hget|mget)\s*\(",
+    r"\b(?:cache|redis|client|r|kv|memcache|mc)\.(?:get|hget|mget|hgetall|get_multi)\s*\(",
     re.IGNORECASE,
 )
 _DYNAMIC_WRITE_CALL = re.compile(
-    r"\b(?:cache|redis|client)\.(?:set|hset|setex)\s*\(",
+    r"\b(?:cache|redis|client|r|kv|memcache|mc)\.(?:set|hset|setex|mset|hmset|psetex)\s*\(",
     re.IGNORECASE,
 )
 _QUEUE_CONSUME_CALL = re.compile(
-    r"\b(?:queue|worker|consumer|subscriber)\.(?:process|consume|subscribe|on)\s*\(",
+    r"\b(?:queue|worker|consumer|subscriber|task)\."
+    r"(?:process|consume|subscribe|on|receive_messages|task)\s*\(",
     re.IGNORECASE,
 )
 
@@ -801,18 +814,36 @@ def _scan_dynamic_calls(  # noqa: PLR0913 - keyword-only fan-in is the cleanest 
 # ---------------------------------------------------------------------------
 
 
-_DYNAMIC_TEMPLATE = re.compile(r"\$\{[^}]+\}|\+\s*[A-Za-z_]\w*|`[^`]*\$")
+# Dynamic-key tells: JS template ``${...}`` interpolation, ``+ name`` concat,
+# opening backtick + ``$``, OR Python ``f"...{x}..."`` / ``"..." % x`` /
+# ``"...".format(x)`` patterns.
+_DYNAMIC_TEMPLATE = re.compile(
+    r"\$\{[^}]+\}"  # JS ${...}
+    r"|\+\s*[A-Za-z_]\w*"  # JS string + ident
+    r"|`[^`]*\$"  # JS backtick template
+    r"|\bf[\"'][^\"']*\{[^}]+\}"  # Python f"...{x}..."
+    r"|[\"'][^\"']*[\"']\s*%\s*"  # Python "%s" %
+    r"|\.format\("  # Python .format(...)
+)
 
 # Line-scoped variants of the original callee regexes (no end-of-string anchor)
 # for searching whole snippets rather than isolated callee strings.
-_CACHE_SET_LINE = re.compile(r"\b(?:cache|redis|client)\.(?:set|hset|setex)\b", re.IGNORECASE)
-_CACHE_GET_LINE = re.compile(r"\b(?:cache|redis|client)\.(?:get|hget|mget)\b", re.IGNORECASE)
+_CACHE_SET_LINE = re.compile(
+    r"\b(?:cache|redis|client|r|kv|memcache|mc)\.(?:set|hset|setex|mset|hmset|psetex)\b",
+    re.IGNORECASE,
+)
+_CACHE_GET_LINE = re.compile(
+    r"\b(?:cache|redis|client|r|kv|memcache|mc)\.(?:get|hget|mget|hgetall|get_multi)\b",
+    re.IGNORECASE,
+)
 _QUEUE_PUBLISH_LINE = re.compile(
-    r"\b(?:queue|jobs|publisher|producer|kafka|amqp)\.(?:publish|emit|add|send)\b",
+    r"\b(?:queue|jobs|publisher|producer|kafka|amqp|celery|sqs|rabbit)\."
+    r"(?:publish|emit|add|send|send_task|apply_async|delay|send_message)\b",
     re.IGNORECASE,
 )
 _QUEUE_CONSUME_LINE = re.compile(
-    r"\b(?:queue|worker|consumer|subscriber)\.(?:process|consume|subscribe|on)\b",
+    r"\b(?:queue|worker|consumer|subscriber|task)\."
+    r"(?:process|consume|subscribe|on|receive_messages|task)\b",
     re.IGNORECASE,
 )
 

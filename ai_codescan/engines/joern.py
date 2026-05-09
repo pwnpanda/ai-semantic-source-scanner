@@ -28,6 +28,19 @@ from pathlib import Path
 
 QUERIES_SCRIPT = Path(__file__).resolve().parent / "joern_queries.sc"
 
+_JOERN_LANGUAGE_FLAG: dict[str, str] = {
+    # Token passed to ``joern-parse --language``.
+    # `pythonsrc` selects the modern pysrc2cpg frontend; `python` is the
+    # legacy python2cpg and produces a less faithful CPG.
+    "javascript": "javascript",
+    "python": "pythonsrc",
+}
+
+_SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
+    "javascript": frozenset({".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"}),
+    "python": frozenset({".py", ".pyi"}),
+}
+
 
 class JoernUnavailableError(RuntimeError):
     """Raised when ``joern`` isn't on PATH."""
@@ -38,23 +51,28 @@ def is_available() -> bool:
     return all(shutil.which(b) is not None for b in ("joern", "joern-parse"))
 
 
-def _build_cpg(project_root: Path, *, cache_dir: Path, project_id: str) -> Path:
+def _build_cpg(
+    project_root: Path,
+    *,
+    cache_dir: Path,
+    project_id: str,
+    language: str = "javascript",
+) -> Path:
     """Run ``joern-parse`` to produce ``<cache>/joern/<project_id>.cpg.bin``.
 
     Cached: re-uses an existing CPG when its mtime is newer than every source
     file under ``project_root``. CPG builds are slow (30-90s on a 50k-LOC repo).
     """
+    if language not in _JOERN_LANGUAGE_FLAG:
+        raise ValueError(f"unsupported joern language: {language!r}")
     out_dir = cache_dir / "joern"
     out_dir.mkdir(parents=True, exist_ok=True)
     cpg_path = out_dir / f"{project_id}.cpg.bin"
 
+    source_exts = _SOURCE_EXTS_BY_LANGUAGE[language]
     if cpg_path.is_file():
         cpg_mtime = cpg_path.stat().st_mtime
-        sources = (
-            p
-            for p in project_root.rglob("*")
-            if p.is_file() and p.suffix in {".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"}
-        )
+        sources = (p for p in project_root.rglob("*") if p.is_file() and p.suffix in source_exts)
         if all(p.stat().st_mtime <= cpg_mtime for p in sources):
             return cpg_path
 
@@ -63,7 +81,7 @@ def _build_cpg(project_root: Path, *, cache_dir: Path, project_id: str) -> Path:
             "joern-parse",
             str(project_root),
             "--language",
-            "javascript",
+            _JOERN_LANGUAGE_FLAG[language],
             "-o",
             str(cpg_path),
         ],
@@ -74,8 +92,12 @@ def _build_cpg(project_root: Path, *, cache_dir: Path, project_id: str) -> Path:
     return cpg_path
 
 
-def _run_query_script(cpg_path: Path, *, cache_dir: Path, project_id: str) -> Path:
-    """Run the bundled Joern query script against ``cpg_path``; return JSONL path."""
+def _run_query_script(cpg_path: Path, *, cache_dir: Path, project_id: str, language: str) -> Path:
+    """Run the bundled Joern query script against ``cpg_path``; return JSONL path.
+
+    The script reads ``language`` to pick language-appropriate source/sink
+    patterns; flow shape and JSON keys are language-independent.
+    """
     out_dir = cache_dir / "joern"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{project_id}.flows.jsonl"
@@ -92,6 +114,8 @@ def _run_query_script(cpg_path: Path, *, cache_dir: Path, project_id: str) -> Pa
             f"cpgPath={cpg_path}",
             "--param",
             f"outPath={out_path}",
+            "--param",
+            f"language={language}",
         ],
         check=True,
         capture_output=True,
@@ -105,6 +129,7 @@ def run_joern(
     *,
     cache_dir: Path,
     project_id: str,
+    language: str = "javascript",
 ) -> Path:
     """Run Joern against ``project_root`` and emit a flows JSONL.
 
@@ -119,8 +144,12 @@ def run_joern(
             "`bash scripts/install.sh` (answer yes to the Joern prompt) or "
             "https://docs.joern.io/installation"
         )
-    cpg_path = _build_cpg(project_root, cache_dir=cache_dir, project_id=project_id)
-    return _run_query_script(cpg_path, cache_dir=cache_dir, project_id=project_id)
+    cpg_path = _build_cpg(
+        project_root, cache_dir=cache_dir, project_id=project_id, language=language
+    )
+    return _run_query_script(
+        cpg_path, cache_dir=cache_dir, project_id=project_id, language=language
+    )
 
 
 def parse_flows(jsonl_path: Path) -> list[dict[str, object]]:

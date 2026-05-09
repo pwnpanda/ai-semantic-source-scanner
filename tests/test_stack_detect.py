@@ -63,3 +63,127 @@ def test_react_and_typescript_framework_detected(fixtures_dir: Path) -> None:
 def test_fastify_in_monorepo_workspace(fixtures_dir: Path) -> None:
     api = next(p for p in detect_projects(fixtures_dir / "monorepo-pnpm") if p.name == "api")
     assert "fastify" in api.frameworks
+
+
+# ---------------------------------------------------------------------------
+# Python detection
+# ---------------------------------------------------------------------------
+
+
+def test_python_pyproject_project_detected(fixtures_dir: Path) -> None:
+    projects = detect_projects(fixtures_dir / "tiny-flask")
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.PYTHON
+    assert p.base_path == Path(".")
+    assert p.name == "tiny-flask"
+    assert "python" in p.languages
+    assert "flask" in p.frameworks
+    assert p.package_manager in {"pip", "unknown"}
+
+
+def test_python_setup_py_project_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "legacy"
+    pkg.mkdir()
+    (pkg / "setup.py").write_text(
+        "from setuptools import setup\nsetup(name='legacy-app', version='1.0')\n",
+        encoding="utf-8",
+    )
+    (pkg / "main.py").write_text("print('hi')\n", encoding="utf-8")
+    projects = detect_projects(pkg)
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.PYTHON
+    assert p.name == "legacy-app"
+    assert "python" in p.languages
+
+
+def test_python_requirements_txt_project_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "rapp"
+    pkg.mkdir()
+    (pkg / "requirements.txt").write_text("django>=4.0\nrequests\n", encoding="utf-8")
+    (pkg / "wsgi.py").write_text("# entry\n", encoding="utf-8")
+    projects = detect_projects(pkg)
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.PYTHON
+    assert "django" in p.frameworks
+    assert p.package_manager == "pip"
+
+
+def test_python_poetry_lock_marks_package_manager(tmp_path: Path) -> None:
+    pkg = tmp_path / "papp"
+    pkg.mkdir()
+    (pkg / "pyproject.toml").write_text(
+        "[tool.poetry]\nname='papp'\nversion='0.1.0'\n"
+        "[tool.poetry.dependencies]\nfastapi='^0.110'\n",
+        encoding="utf-8",
+    )
+    (pkg / "poetry.lock").write_text("# poetry lock\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert p.package_manager == "poetry"
+    assert "fastapi" in p.frameworks
+
+
+def test_python_uv_lock_marks_package_manager(tmp_path: Path) -> None:
+    pkg = tmp_path / "uapp"
+    pkg.mkdir()
+    (pkg / "pyproject.toml").write_text(
+        "[project]\nname='uapp'\nversion='0.1.0'\ndependencies=['flask']\n",
+        encoding="utf-8",
+    )
+    (pkg / "uv.lock").write_text("# uv lock\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert p.package_manager == "uv"
+
+
+def test_python_does_not_double_report_nested_packages(tmp_path: Path) -> None:
+    """Nested pyproject.toml inside an outer Python project is not a separate project."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    (outer / "pyproject.toml").write_text(
+        "[project]\nname='outer'\nversion='0.1.0'\n",
+        encoding="utf-8",
+    )
+    inner = outer / "vendored" / "inner"
+    inner.mkdir(parents=True)
+    (inner / "pyproject.toml").write_text(
+        "[project]\nname='inner'\nversion='0.1.0'\n",
+        encoding="utf-8",
+    )
+    projects = detect_projects(outer)
+    assert len(projects) == 1
+    assert projects[0].name == "outer"
+
+
+def test_python_skips_venv_dirs(tmp_path: Path) -> None:
+    """A venv inside the project doesn't create a phantom project."""
+    pkg = tmp_path / "vapp"
+    pkg.mkdir()
+    (pkg / "pyproject.toml").write_text(
+        "[project]\nname='vapp'\nversion='0.1.0'\n",
+        encoding="utf-8",
+    )
+    venv = pkg / ".venv" / "lib" / "python3.13" / "site-packages" / "noisy"
+    venv.mkdir(parents=True)
+    (venv / "setup.py").write_text("from setuptools import setup\nsetup(name='noisy')\n")
+    projects = detect_projects(pkg)
+    assert [p.name for p in projects] == ["vapp"]
+
+
+def test_node_and_python_coexist_at_same_root(tmp_path: Path) -> None:
+    """A directory with both package.json and pyproject.toml yields a Node project only.
+
+    Python detection skips a directory already claimed by Node so we don't
+    double-report when JS tooling sits next to a Python service in the same
+    folder.
+    """
+    pkg = tmp_path / "mixed"
+    pkg.mkdir()
+    (pkg / "package.json").write_text('{"name":"mixed-node"}', encoding="utf-8")
+    (pkg / "pyproject.toml").write_text(
+        "[project]\nname='mixed-py'\nversion='0.1.0'\n",
+        encoding="utf-8",
+    )
+    projects = detect_projects(pkg)
+    assert [p.kind for p in projects] == [ProjectKind.NODE]
