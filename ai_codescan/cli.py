@@ -23,6 +23,7 @@ from ai_codescan.ingest.sarif import ingest_sarif
 from ai_codescan.llm import LLMConfig, UnknownProviderError
 from ai_codescan.nominator import run_nominator
 from ai_codescan.prep import run_prep
+from ai_codescan.report import write_report
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.taxonomy.loader import (
     UnknownBugClassError,
@@ -662,6 +663,52 @@ def gate_3(
     typer.echo(f"verified findings ({len(verified)}):")
     for fp in verified:
         typer.echo(f"  - {fp}")
+
+
+@app.command()
+def report(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    report_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--report-dir",
+            help="Where to write the markdown reports (default: ./report/).",
+        ),
+    ] = None,
+    bugbounty: Annotated[
+        bool,
+        typer.Option(
+            "--bugbounty",
+            help="Drop reports under <target>/report/ per Bugbounty/CLAUDE.md convention.",
+        ),
+    ] = False,
+) -> None:
+    """Render verified findings as bug-bounty-ready markdown reports."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    runs_root = cache_root / repo_id / "runs"
+    last_run = max(runs_root.iterdir(), key=lambda p: p.stat().st_mtime)
+    findings_dir = last_run / "findings"
+    if not findings_dir.is_dir():
+        typer.echo("No findings dir. Run validate first.", err=True)
+        raise typer.Exit(code=1)
+
+    out_dir = report_dir if report_dir is not None else Path.cwd() / "report"
+    if bugbounty:
+        # Bugbounty mode reuses ./report/ at CWD per workspace convention.
+        out_dir = Path.cwd() / "report"
+
+    written = 0
+    for fp in sorted(findings_dir.glob("*.md")):
+        f = parse_finding(fp.read_text(encoding="utf-8"))
+        if f.status != "verified":
+            continue
+        target = write_report(f, report_dir=out_dir)
+        typer.echo(f"wrote {target}")
+        written += 1
+    if written == 0:
+        typer.echo("no verified findings to report (run validate first or check gate-3)")
 
 
 @app.command("install-skills")

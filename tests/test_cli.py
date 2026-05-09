@@ -383,3 +383,48 @@ def test_gate_3_help_advertises_yes() -> None:
     result = runner.invoke(app, ["gate-3", "--help"])
     assert result.exit_code == 0
     assert "--yes" in result.stdout
+
+
+def test_report_help_advertises_flags() -> None:
+    result = runner.invoke(app, ["report", "--help"])
+    assert result.exit_code == 0
+    assert "--report-dir" in result.stdout
+    assert "--bugbounty" in result.stdout
+
+
+def test_report_writes_for_verified_finding(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    runs_root = cache / repo_id / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    run_dir = runs_root / "rrr"
+    findings_dir = run_dir / "findings"
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    (findings_dir / "F-001.md").write_text(
+        "---\nfinding_id: F-001\nnomination_id: N-001\nflow_id: F1\n"
+        "cwe: CWE-89\nstatus: verified\ntitle: SQLi in users.ts:42\n---\n\n"
+        "Concrete details about the bug.\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "report",
+            "--repo-id",
+            repo_id,
+            "--report-dir",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    files = list(out.glob("*.md"))
+    assert files, result.stdout
+    assert "critical" in files[0].name
+    assert "sqli" in files[0].name
