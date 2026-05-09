@@ -17,6 +17,7 @@ import typer
 from ai_codescan.analyzer import run_analyzer
 from ai_codescan.config import compute_repo_id, default_cache_root
 from ai_codescan.engines.codeql import run_queries
+from ai_codescan.findings.model import parse_finding
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
 from ai_codescan.ingest.sarif import ingest_sarif
 from ai_codescan.llm import LLMConfig, UnknownProviderError
@@ -28,6 +29,7 @@ from ai_codescan.taxonomy.loader import (
     list_classes,
     resolve_classes,
 )
+from ai_codescan.validator import run_validator
 from ai_codescan.views import render_file_view
 
 _BYTES_PER_KIB = 1024
@@ -601,6 +603,65 @@ def gate_2(
         [editor, str(findings_dir)],  # noqa: S607
         check=False,
     )
+
+
+@app.command()
+def validate(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    no_sandbox: Annotated[bool, typer.Option("--no-sandbox")] = False,
+    llm_provider: Annotated[str, typer.Option("--llm-provider")] = "claude",
+    llm_model: Annotated[str, typer.Option("--llm-model")] = "",
+) -> None:
+    """Run the validator skill: PoC author + sandbox executor + status flip."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    repo_dir = cache_root / repo_id
+    runs_root = repo_dir / "runs"
+    if not runs_root.is_dir() or not any(runs_root.iterdir()):
+        typer.echo("No runs.", err=True)
+        raise typer.Exit(code=1)
+    last_run = max(runs_root.iterdir(), key=lambda p: p.stat().st_mtime)
+    state = load_or_create(
+        repo_dir,
+        engine="codeql",
+        temperature=0.0,
+        target_bug_classes=[],
+        run_id=last_run.name,
+        llm_provider=llm_provider,
+        llm_model=llm_model or None,
+    )
+    llm = _build_llm_config(llm_provider, llm_model)
+    log_path = run_validator(state, repo_dir=repo_dir, llm=llm, no_sandbox=no_sandbox)
+    typer.echo(f"validation log at {log_path}")
+
+
+@app.command("gate-3")
+def gate_3(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+) -> None:
+    """Print verified findings for sign-off, or auto-confirm with --yes."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    runs_root = cache_root / repo_id / "runs"
+    last_run = max(runs_root.iterdir(), key=lambda p: p.stat().st_mtime)
+    findings_dir = last_run / "findings"
+    if not findings_dir.is_dir():
+        typer.echo("No findings dir. Run validate first.", err=True)
+        raise typer.Exit(code=1)
+    verified: list[Path] = []
+    for fp in sorted(findings_dir.glob("*.md")):
+        f = parse_finding(fp.read_text(encoding="utf-8"))
+        if f.status == "verified":
+            verified.append(fp)
+    if yes:
+        typer.echo(f"signed off on {len(verified)} verified finding(s)")
+        return
+    typer.echo(f"verified findings ({len(verified)}):")
+    for fp in verified:
+        typer.echo(f"  - {fp}")
 
 
 @app.command("install-skills")

@@ -370,3 +370,16 @@ def test_gate_2_yes_short_circuits(tmp_path: Path, fixtures_dir: Path) -> None:
     )
     assert result.exit_code == 0
     assert "keeping all findings" in result.stdout
+
+
+def test_validate_help_advertises_no_sandbox() -> None:
+    result = runner.invoke(app, ["validate", "--help"])
+    assert result.exit_code == 0
+    assert "--no-sandbox" in result.stdout
+    assert "--llm-provider" in result.stdout
+
+
+def test_gate_3_help_advertises_yes() -> None:
+    result = runner.invoke(app, ["gate-3", "--help"])
+    assert result.exit_code == 0
+    assert "--yes" in result.stdout
