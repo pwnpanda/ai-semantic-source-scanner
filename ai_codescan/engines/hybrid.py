@@ -8,8 +8,10 @@ and remember the union of engines in the ``engine`` column (e.g.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,6 +98,75 @@ def _count_flows(conn: duckdb.DuckDBPyConnection, *, engine_like: str) -> int:
     return int(row[0]) if row else 0
 
 
+def _stable_id(prefix: str, *parts: str) -> str:
+    blob = "|".join(parts)
+    return f"{prefix}:{hashlib.sha1(blob.encode('utf-8'), usedforsecurity=False).hexdigest()[:16]}"
+
+
+def _ingest_joern_jsonl(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    jsonl_path: Path,
+    project_id: str,
+    snapshot_root: Path,
+) -> int:
+    """Read Joern's JSONL output and merge into the ``flows`` table.
+
+    Joern records are intentionally simpler than SARIF: a flat dict per flow
+    with source/sink file:line, names, CWE, and sink_class. We build matching
+    ``taint_sources``, ``taint_sinks``, and ``flows`` rows under
+    ``engine='joern'`` so the dedupe pass can collapse duplicates against
+    CodeQL/Semgrep.
+    """
+    flows = joern_eng.parse_flows(jsonl_path)
+    inserted = 0
+    for f in flows:
+        source_file = str(f.get("source_file") or "")
+        source_line_raw = f.get("source_line")
+        source_line = int(source_line_raw) if isinstance(source_line_raw, int | str) else 0
+        sink_file = str(f.get("sink_file") or "")
+        sink_line_raw = f.get("sink_line")
+        sink_line = int(sink_line_raw) if isinstance(sink_line_raw, int | str) else 0
+        cwe = str(f.get("cwe") or "")
+        sink_class = str(f.get("sink_class") or "unknown")
+        sink_name = str(f.get("sink_name") or "")
+        # Resolve relative paths to the snapshot root for cross-engine join.
+        if not source_file.startswith("/"):
+            source_file = str(snapshot_root / source_file)
+        if not sink_file.startswith("/"):
+            sink_file = str(snapshot_root / sink_file)
+
+        tid = _stable_id("source", project_id, source_file, str(source_line), cwe)
+        sid = _stable_id("sink", project_id, sink_file, str(sink_line), sink_name)
+        fid = str(f.get("fid") or _stable_id("flow", project_id, tid, sid))
+
+        evidence_loc = f"{source_file}:{source_line}"
+        conn.execute(
+            "INSERT OR REPLACE INTO taint_sources VALUES (?, ?, ?, ?, ?)",
+            [
+                tid,
+                None,
+                "tainted-input",
+                str(f.get("source_name") or ""),
+                evidence_loc,
+            ],
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO taint_sinks VALUES (?, ?, ?, ?, ?, ?)",
+            [sid, None, sink_class, sink_name, str(f.get("parameterization") or "unknown"), "[]"],
+        )
+        steps_json = json.dumps([
+            [source_file, source_line, source_line],
+            [sink_file, sink_line, sink_line],
+        ])
+        conn.execute(
+            "INSERT OR REPLACE INTO flows VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [fid, tid, sid, cwe, "joern", steps_json, str(jsonl_path), "inferred"],
+        )
+        inserted += 1
+    return inserted
+
+
 def run_hybrid(
     project_roots: list[tuple[Path, str]],
     *,
@@ -133,13 +204,19 @@ def run_hybrid(
 
             if joern_eng.is_available():
                 try:
-                    joern_eng.run_joern(
+                    jsonl_path = joern_eng.run_joern(
                         project_root, cache_dir=repo_dir, project_id=project_id
                     )
-                    # Joern integration stub — real ingest lands when the .sc
-                    # query is implemented (see joern.py docstring).
+                    joern_flows += _ingest_joern_jsonl(
+                        conn,
+                        jsonl_path=jsonl_path,
+                        project_id=project_id,
+                        snapshot_root=snapshot_root,
+                    )
                 except joern_eng.JoernUnavailableError as exc:
                     log.warning("joern skipped for %s: %s", project_id, exc)
+                except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                    log.warning("joern failed for %s: %s", project_id, exc)
 
         deduped = dedupe_flows(conn)
     finally:
