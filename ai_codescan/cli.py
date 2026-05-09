@@ -33,6 +33,13 @@ from ai_codescan.runs.state import load_or_create
 from ai_codescan.server import serve as start_server
 from ai_codescan.stack_detect import ProjectKind, detect_projects
 from ai_codescan.storage_taint import load_schema_yaml, run_full_fixpoint, save_schema_yaml
+from ai_codescan.taxonomy.diff import (
+    apply_diff,
+    days_since_last_check,
+    diff_against_installed_codeql,
+    mark_taxonomy_checked,
+    maybe_run_periodic_check,
+)
 from ai_codescan.taxonomy.loader import (
     UnknownBugClassError,
     list_classes,
@@ -85,7 +92,7 @@ def _root(
 
 
 @app.command(epilog="Global options: --cache-dir, --quiet, --verbose (pass before subcommand).")
-def prep(  # noqa: PLR0913, PLR0912 - flag plumbing matches user-visible CLI surface
+def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orchestration
     ctx: typer.Context,
     target: Annotated[Path, typer.Argument(help="Target repo to scan.")],
     commit: _CommitOption = None,
@@ -199,6 +206,14 @@ def prep(  # noqa: PLR0913, PLR0912 - flag plumbing matches user-visible CLI sur
         typer.echo(f"bug classes: {', '.join(c.name for c in bug_classes)}")
         typer.echo(f"engine: {engine}")
 
+        # Periodic taxonomy stale-check (cheap; weekly cadence by default).
+        check = maybe_run_periodic_check()
+        if check is not None and check.missing_tags:
+            typer.echo(
+                f"note: taxonomy may be stale — {len(check.missing_tags)} CodeQL "
+                "tag(s) not in bug_classes.yaml. Run `ai-codescan taxonomy diff`."
+            )
+
 
 @app.command("list-bug-classes")
 def list_bug_classes() -> None:
@@ -208,6 +223,48 @@ def list_bug_classes() -> None:
         aliases = f" ({', '.join(c.aliases)})" if c.aliases else ""
         cwes = ", ".join(c.cwes)
         typer.echo(f"{c.name}{aliases}\t{c.group}\t{cwes}")
+
+
+taxonomy_app = typer.Typer(
+    name="taxonomy", help="Maintain bug-class taxonomy.", no_args_is_help=True
+)
+app.add_typer(taxonomy_app)
+
+
+@taxonomy_app.command("diff")
+def taxonomy_diff(
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Append suggested stubs to bug_classes.yaml."),
+    ] = False,
+) -> None:
+    """Diff our taxonomy against installed CodeQL packs."""
+    diff = diff_against_installed_codeql()
+    mark_taxonomy_checked()
+    if diff.is_empty:
+        typer.echo("taxonomy is up to date with installed CodeQL packs")
+        return
+    typer.echo(f"missing tags: {len(diff.missing_tags)}")
+    for tag in diff.missing_tags:
+        typer.echo(f"  - {tag}")
+    if apply:
+        appended = apply_diff(diff)
+        typer.echo(
+            f"appended {appended} stub entries to bug_classes.yaml; review and rename"
+        )
+    else:
+        typer.echo("\nSuggested stubs (run with --apply to merge):\n")
+        typer.echo(diff.suggested_stubs_yaml)
+
+
+@taxonomy_app.command("check")
+def taxonomy_check() -> None:
+    """One-line status: how stale is the taxonomy + how many missing tags."""
+    days = days_since_last_check()
+    age = f"{days}d ago" if days is not None else "never"
+    diff = diff_against_installed_codeql()
+    missing = len(diff.missing_tags)
+    typer.echo(f"taxonomy: last checked {age}, missing tags: {missing}")
 
 
 def _format_rows(columns: list[str], rows: list[tuple[Any, ...]]) -> str:

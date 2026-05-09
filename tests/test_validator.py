@@ -7,7 +7,7 @@ import pytest
 from ai_codescan.findings.model import Finding, parse_finding, render_finding
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.sandbox import SandboxResult
-from ai_codescan.validator import _flip_status, run_validator
+from ai_codescan.validator import _flip_status, _hints_for_cwe, _parse_verdict, run_validator
 
 
 def _result(exit_code: int = 0, *, signal: bool = False, timed_out: bool = False) -> SandboxResult:
@@ -75,7 +75,6 @@ def test_run_validator_writes_log_when_no_pocs(
 
 
 def test_parse_verdict_extracts_json_block() -> None:
-    from ai_codescan.validator import _parse_verdict
 
     stdout = (
         "running PoC...\n"
@@ -89,7 +88,6 @@ def test_parse_verdict_extracts_json_block() -> None:
 
 
 def test_parse_verdict_returns_none_on_garbage() -> None:
-    from ai_codescan.validator import _parse_verdict
 
     assert _parse_verdict("hello world") is None
     assert _parse_verdict('{"oops": true}') is None
@@ -97,9 +95,6 @@ def test_parse_verdict_returns_none_on_garbage() -> None:
 
 
 def test_flip_status_uses_json_verdict_when_present() -> None:
-    from ai_codescan.sandbox import SandboxResult
-    from ai_codescan.validator import _flip_status
-
     result = SandboxResult(
         exit_code=0,
         stdout='{"verdict": "vulnerable", "evidence": [], "confidence": 0.7}',
@@ -115,9 +110,6 @@ def test_flip_status_uses_json_verdict_when_present() -> None:
 
 
 def test_flip_status_falls_back_to_signal_when_no_json() -> None:
-    from ai_codescan.sandbox import SandboxResult
-    from ai_codescan.validator import _flip_status
-
     result = SandboxResult(
         exit_code=0,
         stdout="OK_VULN",
@@ -133,9 +125,6 @@ def test_flip_status_falls_back_to_signal_when_no_json() -> None:
 
 
 def test_flip_status_rejected_on_clean_run_without_signal() -> None:
-    from ai_codescan.sandbox import SandboxResult
-    from ai_codescan.validator import _flip_status
-
     result = SandboxResult(
         exit_code=0,
         stdout="just some output, no signal",
@@ -151,7 +140,6 @@ def test_flip_status_rejected_on_clean_run_without_signal() -> None:
 
 
 def test_hints_for_cwe_returns_taxonomy_hints() -> None:
-    from ai_codescan.validator import _hints_for_cwe
 
     sqli_hints = _hints_for_cwe("CWE-89")
     assert sqli_hints
@@ -159,7 +147,6 @@ def test_hints_for_cwe_returns_taxonomy_hints() -> None:
 
 
 def test_hints_for_cwe_returns_empty_for_unknown() -> None:
-    from ai_codescan.validator import _hints_for_cwe
 
     assert _hints_for_cwe("CWE-9999") == []
     assert _hints_for_cwe(None) == []
