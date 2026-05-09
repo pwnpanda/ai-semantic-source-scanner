@@ -77,3 +77,14 @@ Phase 1 deliverables:
 - `view`, `entrypoints`, `query`, `flows --from/--to` inspection commands
 - Wide-nominator skill (Claude Code) with three-stream output and `y/n:` HITL gate
 - Run-state JSON + cost ledger
+
+### Swappable LLM provider
+
+Pick the LLM CLI per scan. All three (`claude`, `gemini`, `codex`) must be installed and on PATH for whichever you use; defaults to `claude`.
+
+```bash
+ai-codescan run /path/to/target --llm-provider gemini --llm-model gemini-2.5-pro --yes
+ai-codescan nominate --llm-provider codex --llm-model o3
+```
+
+The selection is persisted to `runs/<run_id>/run.json` for auditability and re-runs.
