@@ -1,8 +1,8 @@
-# ai-codescan
+# ai-semantic-source-scanner (`ai-codescan`)
 
 AI-driven SAST pipeline. Phase 1 = deterministic prep + wide-pass nominator with HITL gate.
 
-See `docs/superpowers/specs/2026-05-08-ai-codescan-phase1-design.md` for the full design.
+See `docs/superpowers/specs/2026-05-08-ai-codescan-phase1-design.md` for the full design and `docs/superpowers/plans/` for the per-phase implementation plans.
 
 ## Install (development)
 
