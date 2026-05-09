@@ -38,24 +38,36 @@ _FIXPOINT_MAX_ROUNDS = 5
 # ``r.set``, ``celery.send_task``), and Java idioms (``stmt.executeQuery``,
 # ``jdbcTemplate.queryForList``); matched against the full callee string and
 # anchored at the end so partial-name false matches don't bleed in.
+# Two flavors: the broad cross-language SQL receiver+method match, and a
+# narrow Go-specific match for ``sqlx.Get`` / ``sqlx.Select`` style calls
+# whose method name (``Get``/``Select``) collides with cache reads on
+# generic receivers like ``client.get``.
 _SQL_CALL = re.compile(
-    r"\b(?:db|conn|client|pool|knex|cursor|cur|session|engine|stmt|"
-    r"statement|preparedStatement|jdbcTemplate|entityManager|em)\."
+    r"\b(?:db|conn|pool|knex|cursor|cur|session|engine|stmt|statement|"
+    r"preparedStatement|jdbcTemplate|entityManager|em|tx)\."
     r"(?:query|execute|executemany|executeQuery|executeUpdate|"
     r"prepareStatement|createQuery|createNativeQuery|queryForList|"
-    r"queryForObject|run|raw)$",
+    r"queryForObject|run|raw|"
+    r"Exec|ExecContext|Query|QueryContext|QueryRow|QueryRowContext|"
+    r"Prepare|PrepareContext|Raw)$"
+    r"|\b(?:client|c)\."
+    r"(?:query|execute|executemany|executeQuery|executeUpdate|run|raw|"
+    r"Query|QueryContext|Exec|ExecContext|Prepare|PrepareContext|Raw)$"
+    r"|\bsqlx\.(?:Get|Select|NamedExec|Exec|Query|QueryRow)$",
     re.IGNORECASE,
 )
 _CACHE_SET = re.compile(
     r"\b(?:cache|redis|client|r|kv|memcache|mc|redisTemplate|jedis|"
-    r"valueOps|opsForValue)\."
-    r"(?:set|hset|setex|mset|hmset|psetex|opsForValue|setIfAbsent|put)$",
+    r"valueOps|opsForValue|rdb)\."
+    r"(?:set|hset|setex|mset|hmset|psetex|opsForValue|setIfAbsent|put|"
+    r"Set|HSet|SetNX|SetEX|MSet|HMSet)$",
     re.IGNORECASE,
 )
 _CACHE_GET = re.compile(
     r"\b(?:cache|redis|client|r|kv|memcache|mc|redisTemplate|jedis|"
-    r"valueOps|opsForValue)\."
-    r"(?:get|hget|mget|hgetall|get_multi|getAndExpire)$",
+    r"valueOps|opsForValue|rdb)\."
+    r"(?:get|hget|mget|hgetall|get_multi|getAndExpire|"
+    r"Get|HGet|MGet|HGetAll)$",
     re.IGNORECASE,
 )
 _QUEUE_PUBLISH = re.compile(
@@ -267,6 +279,7 @@ _JS_TS_GLOBS = (
     "**/*.tsx",
     "**/*.py",
     "**/*.java",
+    "**/*.go",
 )
 _SELECT_STRING = re.compile(
     r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",

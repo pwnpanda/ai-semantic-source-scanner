@@ -1,11 +1,13 @@
-"""Detect logical projects (each with one ``package.json``, Python manifest, or JVM build file).
+"""Detect logical projects inside a snapshot.
 
 Enumerates projects and labels their language(s), package manager, and
 detected web frameworks. Supports JS/TS (Node), Python, Java (Maven/Gradle),
-and HTML-only fallback.
+Go (modules), and HTML-only fallback.
 
-  * Python projects: any of pyproject.toml, setup.py, setup.cfg, requirements.txt.
-  * Java projects: pom.xml (Maven), build.gradle, build.gradle.kts (Gradle).
+  * Node projects: any directory with package.json.
+  * Python projects: pyproject.toml / setup.py / setup.cfg / requirements.txt.
+  * Java projects: pom.xml (Maven) / build.gradle / build.gradle.kts (Gradle).
+  * Go projects: go.mod (single module) or go.work (multi-module workspace).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ class ProjectKind(StrEnum):
     NODE = "node"  # has a package.json
     PYTHON = "python"  # has pyproject.toml / setup.py / setup.cfg / requirements.txt
     JAVA = "java"  # has pom.xml or build.gradle(.kts)
+    GO = "go"  # has go.mod (or go.work)
     HTML_ONLY = "html"  # no package.json, but contains HTML
 
 
@@ -98,6 +101,7 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".java", "java"),
     (".kt", "kotlin"),
     (".kts", "kotlin"),
+    (".go", "go"),
     (".html", "html"),
     (".htm", "html"),
     (".vue", "vue"),
@@ -346,6 +350,59 @@ def _detect_java_package_manager(pkg_dir: Path) -> str:
     return "unknown"
 
 
+_GO_FRAMEWORK_DEPS: dict[str, str] = {
+    # Match by Go module path substrings inside go.mod.
+    "github.com/gin-gonic/gin": "gin",
+    "github.com/labstack/echo": "echo",
+    "github.com/go-chi/chi": "chi",
+    "github.com/gofiber/fiber": "fiber",
+    "github.com/beego/beego": "beego",
+    "github.com/kataras/iris": "iris",
+    "github.com/gorilla/mux": "gorilla-mux",
+    "github.com/julienschmidt/httprouter": "httprouter",
+    "github.com/labstack/echo/v4": "echo",
+    "github.com/valyala/fasthttp": "fasthttp",
+}
+
+_GO_MODULE_RE = re.compile(r"^module\s+(\S+)\s*$", re.MULTILINE)
+
+
+def _go_manifest(pkg_dir: Path) -> Path | None:
+    """Return go.mod (single module) or go.work (workspace), preferring go.mod."""
+    for name in ("go.mod", "go.work"):
+        candidate = pkg_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _project_name_go(manifest: Path) -> str:
+    """Best-effort Go module name; fall back to dir name."""
+    parent_name = manifest.parent.name or "go"
+    if manifest.name == "go.mod":
+        match = _GO_MODULE_RE.search(manifest.read_text(encoding="utf-8", errors="replace"))
+        if match:
+            # ``module github.com/owner/repo`` — keep just the last segment as the name.
+            return match.group(1).rsplit("/", 1)[-1]
+    return parent_name
+
+
+def _detect_go_frameworks(pkg_dir: Path) -> set[str]:
+    go_mod = pkg_dir / "go.mod"
+    if not go_mod.is_file():
+        return set()
+    text = go_mod.read_text(encoding="utf-8", errors="replace")
+    return {label for needle, label in _GO_FRAMEWORK_DEPS.items() if needle in text}
+
+
+def _detect_go_package_manager(pkg_dir: Path) -> str:
+    if (pkg_dir / "go.work").is_file():
+        return "go-workspace"
+    if (pkg_dir / "go.mod").is_file():
+        return "go-modules"
+    return "unknown"
+
+
 def _detect_python_package_manager(pkg_dir: Path) -> str:
     if (pkg_dir / "poetry.lock").is_file():
         return "poetry"
@@ -469,6 +526,55 @@ def _detect_java_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     return projects
 
 
+def _detect_go_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+    """Find Go projects (one per directory containing go.mod or go.work).
+
+    Multi-module Go workspaces (``go.work`` at the repo root with several
+    ``use`` directives) emit one project per ``use``-listed module rather
+    than collapsing to the workspace root, so each module's deps and
+    framework footprint surface independently. Outside of workspaces the
+    behaviour mirrors Python/Java: outermost ``go.mod`` only.
+    """
+    candidates: list[Path] = []
+    for name in ("go.mod", "go.work"):
+        for path in root.rglob(name):
+            rel = path.relative_to(root)
+            if any(part in _SKIP_DIRS for part in rel.parts):
+                continue
+            candidates.append(path.parent)
+    candidates = sorted({c for c in candidates}, key=lambda p: len(p.parts))
+
+    selected: list[Path] = []
+    for cand in candidates:
+        rel = cand.relative_to(root)
+        if rel in claimed_dirs:
+            continue
+        if any(_is_descendant(rel, sel) for sel in selected):
+            continue
+        selected.append(rel)
+
+    projects: list[Project] = []
+    for rel in selected:
+        pkg_dir = root / rel
+        manifest = _go_manifest(pkg_dir)
+        if manifest is None:
+            continue
+        projects.append(
+            Project(
+                name=_project_name_go(manifest),
+                kind=ProjectKind.GO,
+                base_path=rel,
+                languages=_detect_languages(pkg_dir),
+                has_tsconfig=False,
+                is_workspace_member=False,
+                workspace_root=None,
+                frameworks=_detect_go_frameworks(pkg_dir),
+                package_manager=_detect_go_package_manager(pkg_dir),
+            )
+        )
+    return projects
+
+
 def _is_descendant(rel: Path, ancestor: Path) -> bool:
     if ancestor == Path("."):
         return rel != Path(".")
@@ -516,6 +622,7 @@ def detect_projects(root: Path) -> list[Project]:
 
     projects.extend(_detect_python_projects(root, claimed_dirs))
     projects.extend(_detect_java_projects(root, claimed_dirs))
+    projects.extend(_detect_go_projects(root, claimed_dirs))
 
     if not projects and (any(_iter_files(root, ".html")) or any(_iter_files(root, ".htm"))):
         projects.append(

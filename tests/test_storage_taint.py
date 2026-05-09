@@ -87,6 +87,17 @@ def test_classify_call_recognises_spring_kafka_template() -> None:
     assert classify_call("kafkaTemplate.convertAndSend") == ("queue_topic", "write")
 
 
+def test_classify_call_recognises_go_database_sql() -> None:
+    assert classify_call("db.Query") == ("sql_column", "unknown")
+    assert classify_call("db.QueryContext") == ("sql_column", "unknown")
+    assert classify_call("tx.Exec") == ("sql_column", "unknown")
+
+
+def test_classify_call_recognises_go_redis_set() -> None:
+    assert classify_call("rdb.Set") == ("cache_key", "write")
+    assert classify_call("rdb.Get") == ("cache_key", "read")
+
+
 def test_load_save_schema_yaml_roundtrip(tmp_path: Path) -> None:
     target = tmp_path / "schema.taint.yml"
     data = {"tables": {"users": {"columns": {"bio": {"taint": "dirty"}}}}}

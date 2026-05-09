@@ -272,6 +272,65 @@ def test_java_skips_target_dir(tmp_path: Path) -> None:
     assert [p.name for p in detect_projects(pkg)] == ["tapp"]
 
 
+# ---------------------------------------------------------------------------
+# Go detection
+# ---------------------------------------------------------------------------
+
+
+def test_go_module_project_detected(fixtures_dir: Path) -> None:
+    projects = detect_projects(fixtures_dir / "tiny-gin")
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.GO
+    assert p.name == "tiny-gin"
+    assert "go" in p.languages
+    assert "gin" in p.frameworks
+    assert p.package_manager == "go-modules"
+
+
+def test_go_workspace_detected_as_workspace(tmp_path: Path) -> None:
+    work = tmp_path / "wapp"
+    work.mkdir()
+    (work / "go.work").write_text("go 1.22\nuse ./svc\n", encoding="utf-8")
+    svc = work / "svc"
+    svc.mkdir()
+    (svc / "go.mod").write_text(
+        "module example.com/svc\n\ngo 1.22\n",
+        encoding="utf-8",
+    )
+    projects = detect_projects(work)
+    # Outermost-only: a workspace at the root collapses nested go.mod files.
+    assert [p.name for p in projects] == ["wapp"]
+    assert projects[0].package_manager == "go-workspace"
+
+
+def test_go_echo_framework_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "eapp"
+    pkg.mkdir()
+    (pkg / "go.mod").write_text(
+        "module example.com/eapp\n\ngo 1.22\n\nrequire (\n"
+        "\tgithub.com/labstack/echo/v4 v4.12.0\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.GO
+    assert "echo" in p.frameworks
+
+
+def test_go_nested_module_inside_outer_skipped(tmp_path: Path) -> None:
+    """An outer go.mod swallows a nested go.mod (vendored module)."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    (outer / "go.mod").write_text("module example.com/outer\n\ngo 1.22\n")
+    inner = outer / "vendor" / "example.com" / "inner"
+    inner.mkdir(parents=True)
+    (inner / "go.mod").write_text("module example.com/inner\n\ngo 1.22\n")
+    # vendor/ isn't in our skip list; rely on outermost-only selection.
+    projects = detect_projects(outer)
+    assert [p.name for p in projects] == ["outer"]
+
+
 def test_node_and_python_coexist_at_same_root(tmp_path: Path) -> None:
     """A directory with both package.json and pyproject.toml yields a Node project only.
 

@@ -61,6 +61,30 @@ _QUEUE_CONSUMER = re.compile(
     re.IGNORECASE,
 )
 
+# --- Go callee patterns -----------------------------------------------------
+
+# stdlib net/http registration: ``http.HandleFunc(pattern, handler)`` and
+# ``http.Handle(...)``; matched via the bare callee shape, anchored at end.
+_GO_HTTP_STDLIB = re.compile(
+    r"\b(?:http|mux|router|m|r|sm)\.(?:HandleFunc|Handle)\b",
+)
+# Gin / Echo / Chi / Fiber / gorilla method registrations on a router-ish
+# receiver. The Go convention is uppercase HTTP-method names so this stays
+# narrow without colliding with arbitrary library calls.
+_GO_ROUTER_METHOD = re.compile(
+    r"\b(?:r|router|app|e|engine|api|grp|group)\."
+    r"(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|Connect|Trace|"
+    r"Get|Post|Put|Patch|Delete|Options|Head|Handle|Group|Route)\b",
+)
+# Goroutine / queue consumers: typically ``consumer.Consume(...)`` or
+# ``sub.Subscribe(...)`` on Kafka/NATS/Redis Streams clients.
+_GO_QUEUE_CONSUMER = re.compile(
+    r"\b(?:consumer|subscriber|sub|reader|nc)\."
+    r"(?:Consume|Subscribe|Receive|FetchMessage|ReadMessage)\b",
+)
+# CLI entrypoints: ``flag.Parse()``, ``cobra.Command{}.Execute()`` etc.
+_GO_CLI_ARGV = re.compile(r"\b(?:os\.Args|flag\.Parse)\b")
+
 # --- Java callee patterns ---------------------------------------------------
 
 # Spring annotations on classes / handler methods (org.springframework.web.bind.annotation.*).
@@ -154,12 +178,24 @@ def _classify_callee_java(callee: str) -> EntrypointKind | None:
     return None
 
 
+def _classify_callee_go(callee: str) -> EntrypointKind | None:
+    if _GO_HTTP_STDLIB.search(callee) or _GO_ROUTER_METHOD.search(callee):
+        return "http_route"
+    if _GO_QUEUE_CONSUMER.search(callee):
+        return "message_consumer"
+    if _GO_CLI_ARGV.search(callee):
+        return "cli"
+    return None
+
+
 def _classify_callee(callee: str, file: str) -> EntrypointKind | None:
     """Return the entrypoint kind for a single callee-text from any language."""
     if file.endswith((".py", ".pyi")):
         return _classify_callee_py(callee, file)
     if file.endswith(".java"):
         return _classify_callee_java(callee)
+    if file.endswith(".go"):
+        return _classify_callee_go(callee)
     return _classify_callee_js(callee)
 
 

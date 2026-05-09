@@ -51,6 +51,33 @@ import java.security.MessageDigest
   )
 
   val patterns: LangPatterns = language.toLowerCase match {
+    case "go" | "golang" =>
+      LangPatterns(
+        sourcePattern =
+          "(?i)(c\\.Query|c\\.QueryArray|c\\.PostForm|c\\.GetHeader|c\\.Param|" +
+          "c\\.GetRawData|c\\.FormValue|c\\.Cookie|" +
+          "ctx\\.Query|ctx\\.QueryParam|ctx\\.FormValue|ctx\\.Param|" +
+          "ctx\\.Cookie|ctx\\.Header|ctx\\.Body|" +
+          "r\\.URL\\.Query|r\\.FormValue|r\\.PostFormValue|r\\.Header\\.Get|" +
+          "r\\.Cookie|r\\.Body).*",
+        sinkClasses = List(
+          ("CWE-89",  "sql.exec",      "(?i)Exec"),
+          ("CWE-89",  "sql.exec",      "(?i)Query"),
+          ("CWE-89",  "sql.exec",      "(?i)QueryRow"),
+          ("CWE-89",  "sql.exec",      "(?i)Prepare"),
+          ("CWE-89",  "sql.exec",      "(?i)Raw"),
+          ("CWE-78",  "cmd.shell",     "(?i)Command"),
+          ("CWE-78",  "cmd.shell",     "(?i)CommandContext"),
+          ("CWE-79",  "html.write",    "(?i)Fprint"),
+          ("CWE-79",  "html.write",    "(?i)Fprintln"),
+          ("CWE-79",  "html.write",    "(?i)Fprintf"),
+          ("CWE-22",  "fs.read",       "(?i)Open"),
+          ("CWE-22",  "fs.read",       "(?i)OpenFile"),
+          ("CWE-22",  "fs.read",       "(?i)ReadFile"),
+          ("CWE-502", "deser.unsafe",  "(?i)Decode"),
+          ("CWE-502", "deser.unsafe",  "(?i)Unmarshal")
+        )
+      )
     case "java" =>
       LangPatterns(
         sourcePattern =
@@ -152,6 +179,13 @@ import java.security.MessageDigest
           .filter(p => p.code != null && srcRegex.findFirstIn(p.code).isDefined)
           .l
       baseRawSources ++ javaParamSources
+    } else if (language.toLowerCase == "go" || language.toLowerCase == "golang") {
+      // Go's request data lands via method calls on the request/context
+      // object (``c.Query("id")``, ``r.URL.Query()``); the *call result* is
+      // the taint source, so include matching call nodes alongside
+      // identifier/fieldAccess reads.
+      val goCallSources = cpg.call.code(sourceNamePattern).l
+      baseRawSources ++ goCallSources
     } else baseRawSources
 
   val sourcesByFile = scala.collection.mutable.HashMap.empty[String, List[SourceLoc]]
@@ -166,9 +200,12 @@ import java.security.MessageDigest
 
   val MAX_DISTANCE_LINES = 200
 
-  // Track (file, line, cwe) tuples already emitted so the fallback does not
-  // double-report a flow that the data-flow engine already produced.
+  // Track (src_file, src_line, sink_file, sink_line, cwe) tuples already
+  // emitted so the fallback does not double-report a flow that the data-flow
+  // engine already produced. The per-sink set lets the co-location fallback
+  // run only for sinks the engine couldn't link to *any* source.
   val emitted = scala.collection.mutable.HashSet.empty[(String, Int, String, Int, String)]
+  val pass1HitSinks = scala.collection.mutable.HashSet.empty[(String, Int, String)]
 
   // For JS XSS sinks the bare-name pattern (?i)(send|write|end) over-matches —
   // it picks up Promise.end, Array.send, Stream.write etc. Filter the sink set
@@ -205,26 +242,46 @@ import java.security.MessageDigest
           val srcFile = fileOf(srcNode)
           val srcLine = lineOf(srcNode)
           val srcCode = srcNode.code
-          val key = (srcFile, srcLine, sinkFile, sinkLine, cwe)
-          if (!emitted.contains(key)) {
-            emitted.add(key)
-            val fid = "joern-" + sha1Short(s"$srcFile:$srcLine:$sinkFile:$sinkLine:$cwe")
-            val js =
-              s"""{"fid":"$fid","source_file":"${escape(srcFile)}",""" +
-              s""""source_line":$srcLine,"sink_file":"${escape(sinkFile)}",""" +
-              s""""sink_line":$sinkLine,"source_name":"${escape(srcCode)}",""" +
-              s""""sink_name":"${escape(call.name)}","cwe":"$cwe",""" +
-              s""""sink_class":"$sinkClass","parameterization":"unknown"}"""
-            w.write(js)
-            w.newLine()
+          // Suppress self-loops: when a source and a sink share the exact
+          // same file+line they're almost certainly the same call (e.g.
+          // ``c.Query("id")`` matched as both a Go request source and a
+          // ``Query`` SQL sink). Real flows always cross at least one line.
+          if (srcFile == sinkFile && srcLine == sinkLine) {
+            // skip — self-loop
+          } else {
+            val key = (srcFile, srcLine, sinkFile, sinkLine, cwe)
+            if (!emitted.contains(key)) {
+              emitted.add(key)
+              pass1HitSinks.add((sinkFile, sinkLine, cwe))
+              val fid = "joern-" + sha1Short(s"$srcFile:$srcLine:$sinkFile:$sinkLine:$cwe")
+              val js =
+                s"""{"fid":"$fid","source_file":"${escape(srcFile)}",""" +
+                s""""source_line":$srcLine,"sink_file":"${escape(sinkFile)}",""" +
+                s""""sink_line":$sinkLine,"source_name":"${escape(srcCode)}",""" +
+                s""""sink_name":"${escape(call.name)}","cwe":"$cwe",""" +
+                s""""sink_class":"$sinkClass","parameterization":"unknown"}"""
+              w.write(js)
+              w.newLine()
+            }
           }
         }
       }
 
-      // ---- Pass 2: co-location fallback for sinks the engine missed ----
-      for (sink <- sinkCalls) {
+      // ---- Pass 2: co-location fallback for sinks Pass 1 missed entirely ----
+      // The fallback exists for closure-captured JS handlers where def/use
+      // links are weak. For Python, Java, and Go the data-flow engine is
+      // mature enough that the heuristic produces more noise than signal —
+      // gate the fallback on JS only.
+      val fallbackEnabled = language.toLowerCase != "python" &&
+                            language.toLowerCase != "java" &&
+                            language.toLowerCase != "go" &&
+                            language.toLowerCase != "golang"
+      for (sink <- sinkCalls if fallbackEnabled) {
         val sinkFile = fileOf(sink)
         val sinkLine = lineOf(sink)
+        if (pass1HitSinks.contains((sinkFile, sinkLine, cwe))) {
+          // already covered by data-flow engine; don't fall back
+        } else {
         val candidates: List[SourceLoc] = sourcesByFile.getOrElse(sinkFile, Nil)
         val nearby = candidates.filter(s => Math.abs(sinkLine - s.line) <= MAX_DISTANCE_LINES)
         if (nearby.nonEmpty) {
@@ -243,6 +300,7 @@ import java.security.MessageDigest
             w.newLine()
           }
         }
+        }  // end else (pass1 didn't cover this sink)
       }
     }
   } finally {

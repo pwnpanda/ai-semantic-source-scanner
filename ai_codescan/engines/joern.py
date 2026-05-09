@@ -38,12 +38,14 @@ _JOERN_LANGUAGE_FLAG: dict[str, str] = {
     "javascript": "javascript",
     "python": "pythonsrc",
     "java": "JAVASRC",
+    "go": "GOLANG",
 }
 
 _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
     "javascript": frozenset({".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"}),
     "python": frozenset({".py", ".pyi"}),
     "java": frozenset({".java"}),
+    "go": frozenset({".go"}),
 }
 
 

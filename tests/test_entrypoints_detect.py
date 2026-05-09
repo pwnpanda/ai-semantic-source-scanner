@@ -318,6 +318,79 @@ def test_spring_scheduled_detected_as_cron() -> None:
     assert any(e.kind == "cron" for e in eps)
 
 
+# --- Go framework patterns ---
+
+
+def test_go_http_handlefunc_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/main.go",
+            "line": 10,
+            "calleeText": 'http.HandleFunc("/u", handler)',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_go_gin_get_route_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/main.go",
+            "line": 25,
+            "calleeText": 'r.GET("/u", func(c *gin.Context) {...})',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_go_chi_get_route_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/main.go",
+            "line": 12,
+            "calleeText": 'r.Get("/api", handler)',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_go_kafka_consume_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/worker.go",
+            "line": 30,
+            "calleeText": 'consumer.Consume(ctx, []string{"orders"}, &h)',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "message_consumer" for e in eps)
+
+
+def test_go_flag_parse_detected_as_cli() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/cmd.go",
+            "line": 7,
+            "calleeText": "flag.Parse()",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "cli" for e in eps)
+
+
 def test_python_sys_argv_detected() -> None:
     xrefs = [
         {

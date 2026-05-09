@@ -28,6 +28,10 @@ async function dispatch(job) {
       const m = await import("./extract_java.mjs");
       return m.run(job);
     }
+    case "go": {
+      const m = await import("./extract_go.mjs");
+      return m.run(job);
+    }
     default:
       throw new Error(`unknown kind: ${job.kind}`);
   }
