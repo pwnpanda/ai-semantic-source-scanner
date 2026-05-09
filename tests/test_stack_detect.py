@@ -331,6 +331,66 @@ def test_go_nested_module_inside_outer_skipped(tmp_path: Path) -> None:
     assert [p.name for p in projects] == ["outer"]
 
 
+# ---------------------------------------------------------------------------
+# Ruby detection
+# ---------------------------------------------------------------------------
+
+
+def test_ruby_sinatra_project_detected(fixtures_dir: Path) -> None:
+    projects = detect_projects(fixtures_dir / "tiny-sinatra")
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.RUBY
+    assert p.name == "tiny-sinatra"
+    assert "ruby" in p.languages
+    assert "sinatra" in p.frameworks
+    assert p.package_manager == "bundler"
+
+
+def test_ruby_rails_app_detected_from_application_rb(tmp_path: Path) -> None:
+    """An app with config/application.rb but no Gemfile is still a Rails project."""
+    pkg = tmp_path / "rapp"
+    cfg = pkg / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "application.rb").write_text(
+        "module Rapp\n  class Application < Rails::Application\n  end\nend\n",
+        encoding="utf-8",
+    )
+    (pkg / "Gemfile").write_text(
+        "source 'https://rubygems.org'\ngem 'rails'\n",
+        encoding="utf-8",
+    )
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.RUBY
+    assert "rails" in p.frameworks
+
+
+def test_ruby_gemspec_project_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "gemlib"
+    pkg.mkdir()
+    (pkg / "gemlib.gemspec").write_text(
+        'Gem::Specification.new do |s|\n  s.name = "gemlib"\n  s.version = "0.0.1"\nend\n',
+        encoding="utf-8",
+    )
+    (pkg / "lib" / "gemlib.rb").parent.mkdir(parents=True)
+    (pkg / "lib" / "gemlib.rb").write_text("module Gemlib; end\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.RUBY
+    assert p.name == "gemlib"
+
+
+def test_ruby_grape_framework_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "gapp"
+    pkg.mkdir()
+    (pkg / "Gemfile").write_text(
+        "source 'https://rubygems.org'\ngem 'grape'\n",
+        encoding="utf-8",
+    )
+    (pkg / "api.rb").write_text("require 'grape'\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert "grape" in p.frameworks
+
+
 def test_node_and_python_coexist_at_same_root(tmp_path: Path) -> None:
     """A directory with both package.json and pyproject.toml yields a Node project only.
 

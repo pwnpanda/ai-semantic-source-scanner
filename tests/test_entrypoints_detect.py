@@ -391,6 +391,80 @@ def test_go_flag_parse_detected_as_cli() -> None:
     assert any(e.kind == "cli" for e in eps)
 
 
+# --- Ruby framework patterns ---
+
+
+def test_rails_routes_get_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/config/routes.rb",
+            "line": 5,
+            "calleeText": "get '/users', to: 'users#index'",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_rails_routes_resources_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/config/routes.rb",
+            "line": 8,
+            "calleeText": "resources :users",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_rails_get_outside_routes_rb_skipped() -> None:
+    """A bare ``get`` call outside Rails routes.rb is not an entrypoint."""
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/app/controllers/foo.rb",
+            "line": 3,
+            "calleeText": "get :index",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert eps == []
+
+
+def test_sinatra_route_get_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/app.rb",
+            "line": 12,
+            "calleeText": "get '/u' do",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_sidekiq_worker_include_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/app/workers/foo_worker.rb",
+            "line": 2,
+            "calleeText": "include Sidekiq::Job",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "message_consumer" for e in eps)
+
+
 def test_python_sys_argv_detected() -> None:
     xrefs = [
         {

@@ -12,7 +12,8 @@
     "tree-sitter-typescript": "0.23.2",
     "tree-sitter-python": "0.23.6",
     "tree-sitter-java": "0.23.5",
-    "tree-sitter-go": "0.23.4"
+    "tree-sitter-go": "0.23.4",
+    "tree-sitter-ruby": "0.23.1"
   },
   "scripts": {
     "worker": "node worker.mjs"
@@ -24,7 +25,8 @@
       "tree-sitter-typescript",
       "tree-sitter-python",
       "tree-sitter-java",
-      "tree-sitter-go"
+      "tree-sitter-go",
+      "tree-sitter-ruby"
     ]
   }
 }

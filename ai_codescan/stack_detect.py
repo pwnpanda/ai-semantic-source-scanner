@@ -53,6 +53,7 @@ class ProjectKind(StrEnum):
     PYTHON = "python"  # has pyproject.toml / setup.py / setup.cfg / requirements.txt
     JAVA = "java"  # has pom.xml or build.gradle(.kts)
     GO = "go"  # has go.mod (or go.work)
+    RUBY = "ruby"  # has Gemfile or *.gemspec
     HTML_ONLY = "html"  # no package.json, but contains HTML
 
 
@@ -102,6 +103,9 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".kt", "kotlin"),
     (".kts", "kotlin"),
     (".go", "go"),
+    (".rb", "ruby"),
+    (".rake", "ruby"),
+    (".gemspec", "ruby"),
     (".html", "html"),
     (".htm", "html"),
     (".vue", "vue"),
@@ -403,6 +407,79 @@ def _detect_go_package_manager(pkg_dir: Path) -> str:
     return "unknown"
 
 
+_RUBY_FRAMEWORK_GEMS: dict[str, str] = {
+    "rails": "rails",
+    "sinatra": "sinatra",
+    "hanami": "hanami",
+    "grape": "grape",
+    "roda": "roda",
+    "padrino": "padrino",
+    "rack": "rack",
+    "sidekiq": "sidekiq",
+    "good_job": "good_job",
+    "solid_queue": "solid_queue",
+    "resque": "resque",
+}
+
+_GEMFILE_GEM_RE = re.compile(
+    r"""^\s*gem\s+['"]([A-Za-z0-9_\-]+)['"]""",
+    re.MULTILINE,
+)
+
+
+def _ruby_manifest(pkg_dir: Path) -> Path | None:
+    """Return the most authoritative Ruby manifest in ``pkg_dir``.
+
+    Preference order: ``Gemfile`` (Bundler — most common) > ``*.gemspec`` (gem
+    library) > ``config/application.rb`` (Rails project without Gemfile, rare).
+    """
+    if (pkg_dir / "Gemfile").is_file():
+        return pkg_dir / "Gemfile"
+    for gemspec in pkg_dir.glob("*.gemspec"):
+        if gemspec.is_file():
+            return gemspec
+    if (pkg_dir / "config" / "application.rb").is_file():
+        return pkg_dir / "config" / "application.rb"
+    return None
+
+
+def _project_name_ruby(manifest: Path) -> str:
+    """Best-effort Ruby project name from .gemspec or directory."""
+    parent_name = manifest.parent.name or "ruby"
+    if manifest.suffix == ".gemspec":
+        # ``.gemspec`` files are Ruby — the canonical pattern is
+        # ``s.name = 'name'`` or ``spec.name = "name"``.
+        match = re.search(
+            r"""\.name\s*=\s*['"]([A-Za-z0-9_.\-]+)['"]""",
+            manifest.read_text(encoding="utf-8", errors="replace"),
+        )
+        if match:
+            return match.group(1)
+    return parent_name
+
+
+def _detect_ruby_frameworks(pkg_dir: Path) -> set[str]:
+    gemfile = pkg_dir / "Gemfile"
+    if not gemfile.is_file():
+        return set()
+    text = gemfile.read_text(encoding="utf-8", errors="replace")
+    declared = {m.lower() for m in _GEMFILE_GEM_RE.findall(text)}
+    frameworks = {label for gem, label in _RUBY_FRAMEWORK_GEMS.items() if gem in declared}
+    if (pkg_dir / "config" / "application.rb").is_file() and "rails" not in frameworks:
+        # An ``application.rb`` under config/ implies a Rails app even when
+        # the Gemfile doesn't pin rails directly (e.g. via a meta-gem).
+        frameworks.add("rails")
+    return frameworks
+
+
+def _detect_ruby_package_manager(pkg_dir: Path) -> str:
+    if (pkg_dir / "Gemfile.lock").is_file():
+        return "bundler"
+    if (pkg_dir / "Gemfile").is_file():
+        return "bundler"
+    return "unknown"
+
+
 def _detect_python_package_manager(pkg_dir: Path) -> str:
     if (pkg_dir / "poetry.lock").is_file():
         return "poetry"
@@ -575,6 +652,54 @@ def _detect_go_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     return projects
 
 
+def _detect_ruby_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+    """Find Ruby projects: one per Gemfile / ``*.gemspec`` / ``config/application.rb``."""
+    candidates: list[Path] = []
+    for needle in ("Gemfile", "*.gemspec"):
+        for path in root.rglob(needle):
+            rel = path.relative_to(root)
+            if any(part in _SKIP_DIRS for part in rel.parts):
+                continue
+            candidates.append(path.parent)
+    # Rails apps without a Gemfile in the repo root (rare but possible).
+    for path in root.rglob("config/application.rb"):
+        rel = path.relative_to(root)
+        if any(part in _SKIP_DIRS for part in rel.parts):
+            continue
+        candidates.append(path.parent.parent)
+    candidates = sorted({c for c in candidates}, key=lambda p: len(p.parts))
+
+    selected: list[Path] = []
+    for cand in candidates:
+        rel = cand.relative_to(root)
+        if rel in claimed_dirs:
+            continue
+        if any(_is_descendant(rel, sel) for sel in selected):
+            continue
+        selected.append(rel)
+
+    projects: list[Project] = []
+    for rel in selected:
+        pkg_dir = root / rel
+        manifest = _ruby_manifest(pkg_dir)
+        if manifest is None:
+            continue
+        projects.append(
+            Project(
+                name=_project_name_ruby(manifest),
+                kind=ProjectKind.RUBY,
+                base_path=rel,
+                languages=_detect_languages(pkg_dir),
+                has_tsconfig=False,
+                is_workspace_member=False,
+                workspace_root=None,
+                frameworks=_detect_ruby_frameworks(pkg_dir),
+                package_manager=_detect_ruby_package_manager(pkg_dir),
+            )
+        )
+    return projects
+
+
 def _is_descendant(rel: Path, ancestor: Path) -> bool:
     if ancestor == Path("."):
         return rel != Path(".")
@@ -623,6 +748,7 @@ def detect_projects(root: Path) -> list[Project]:
     projects.extend(_detect_python_projects(root, claimed_dirs))
     projects.extend(_detect_java_projects(root, claimed_dirs))
     projects.extend(_detect_go_projects(root, claimed_dirs))
+    projects.extend(_detect_ruby_projects(root, claimed_dirs))
 
     if not projects and (any(_iter_files(root, ".html")) or any(_iter_files(root, ".htm"))):
         projects.append(

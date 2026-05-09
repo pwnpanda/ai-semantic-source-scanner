@@ -15,6 +15,7 @@ _QUERY_SUITES: dict[str, str] = {
     "python": "codeql/python-queries:codeql-suites/python-security-extended.qls",
     "java": "codeql/java-queries:codeql-suites/java-security-extended.qls",
     "go": "codeql/go-queries:codeql-suites/go-security-extended.qls",
+    "ruby": "codeql/ruby-queries:codeql-suites/ruby-security-extended.qls",
 }
 """Per-language default suite — security-extended is the broadest stable set.
 
@@ -28,16 +29,19 @@ _QUERY_PACKS: dict[str, str] = {
     "python": "codeql/python-queries",
     "java": "codeql/java-queries",
     "go": "codeql/go-queries",
+    "ruby": "codeql/ruby-queries",
 }
 
 _CODEQL_LANGUAGE_FLAG: dict[str, str] = {
     # Value passed to ``codeql database create --language=...``.
     # JS and TS share an extractor; Python is its own language; Java's
-    # extractor analyses Kotlin too when present; Go is a single token.
+    # extractor analyses Kotlin too when present; Go is a single token;
+    # Ruby is bare-source (no toolchain on host required).
     "javascript": "javascript-typescript",
     "python": "python",
     "java": "java-kotlin",
     "go": "go",
+    "ruby": "ruby",
 }
 
 # Languages whose extractor needs ``--build-mode=none`` to extract source

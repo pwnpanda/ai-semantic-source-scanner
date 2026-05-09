@@ -61,6 +61,35 @@ _QUEUE_CONSUMER = re.compile(
     re.IGNORECASE,
 )
 
+# --- Ruby callee patterns ---------------------------------------------------
+
+# Rails routes DSL methods. Detection is scoped to ``config/routes.rb`` (or
+# nested ``routes/*.rb``) so a bare ``get`` call elsewhere doesn't fire.
+_RUBY_RAILS_ROUTE = re.compile(
+    r"^\s*(?:get|post|put|patch|delete|match|root|resources|resource)\b",
+)
+# Sinatra / Grape: ``get '/path' do``, ``post '/path' do``, etc. — the DSL
+# is the same shape but lives anywhere (``config.ru``, app.rb, api.rb...).
+_RUBY_HTTP_DSL = re.compile(
+    r"^\s*(?:get|post|put|patch|delete|head|options)\s+['\"]/",
+)
+# Background-job ``perform`` methods are entrypoints when the enclosing
+# class includes ``Sidekiq::Job`` / ``Sidekiq::Worker`` / inherits
+# ``ApplicationJob`` (ActiveJob). Detected as ``include Sidekiq::Job`` /
+# ``< ApplicationJob`` xref calls.
+_RUBY_QUEUE_INCLUDE = re.compile(
+    r"^\s*include\s+Sidekiq::(?:Job|Worker)\b|"
+    r"<\s*ApplicationJob\b|<\s*ActiveJob::Base\b",
+)
+# CLI entrypoints: ARGV reads or OptionParser.
+_RUBY_CLI_ARGV = re.compile(r"\bARGV\b|\bOptionParser\.new\b")
+
+
+def _looks_like_rails_routes(file: str) -> bool:
+    """Return True for Rails-style routing files (``.../config/routes.rb``)."""
+    return file.endswith("config/routes.rb") or "/config/routes/" in file
+
+
 # --- Go callee patterns -----------------------------------------------------
 
 # stdlib net/http registration: ``http.HandleFunc(pattern, handler)`` and
@@ -188,6 +217,18 @@ def _classify_callee_go(callee: str) -> EntrypointKind | None:
     return None
 
 
+def _classify_callee_ruby(callee: str, file: str) -> EntrypointKind | None:
+    if _looks_like_rails_routes(file) and _RUBY_RAILS_ROUTE.search(callee):
+        return "http_route"
+    if _RUBY_HTTP_DSL.search(callee):
+        return "http_route"
+    if _RUBY_QUEUE_INCLUDE.search(callee):
+        return "message_consumer"
+    if _RUBY_CLI_ARGV.search(callee):
+        return "cli"
+    return None
+
+
 def _classify_callee(callee: str, file: str) -> EntrypointKind | None:
     """Return the entrypoint kind for a single callee-text from any language."""
     if file.endswith((".py", ".pyi")):
@@ -196,6 +237,8 @@ def _classify_callee(callee: str, file: str) -> EntrypointKind | None:
         return _classify_callee_java(callee)
     if file.endswith(".go"):
         return _classify_callee_go(callee)
+    if file.endswith((".rb", ".rake")):
+        return _classify_callee_ruby(callee, file)
     return _classify_callee_js(callee)
 
 

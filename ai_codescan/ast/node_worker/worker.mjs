@@ -32,6 +32,10 @@ async function dispatch(job) {
       const m = await import("./extract_go.mjs");
       return m.run(job);
     }
+    case "ruby": {
+      const m = await import("./extract_ruby.mjs");
+      return m.run(job);
+    }
     default:
       throw new Error(`unknown kind: ${job.kind}`);
   }

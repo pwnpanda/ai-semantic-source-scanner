@@ -98,6 +98,12 @@ def test_classify_call_recognises_go_redis_set() -> None:
     assert classify_call("rdb.Get") == ("cache_key", "read")
 
 
+def test_classify_call_recognises_ruby_active_record_where() -> None:
+    assert classify_call("ActiveRecord::Base.where") == ("sql_column", "unknown")
+    assert classify_call("connection.execute") == ("sql_column", "unknown")
+    assert classify_call("SQLite3::Database.execute") == ("sql_column", "unknown")
+
+
 def test_load_save_schema_yaml_roundtrip(tmp_path: Path) -> None:
     target = tmp_path / "schema.taint.yml"
     data = {"tables": {"users": {"columns": {"bio": {"taint": "dirty"}}}}}

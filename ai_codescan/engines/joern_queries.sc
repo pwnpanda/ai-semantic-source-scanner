@@ -51,6 +51,34 @@ import java.security.MessageDigest
   )
 
   val patterns: LangPatterns = language.toLowerCase match {
+    case "ruby" | "rubysrc" =>
+      LangPatterns(
+        sourcePattern =
+          "(?i)(params|request\\.params|request\\.body|request\\.GET|" +
+          "request\\.POST|request\\.cookies|request\\.headers|" +
+          "session|cookies|env).*",
+        sinkClasses = List(
+          ("CWE-89",  "sql.exec",      "(?i)where"),
+          ("CWE-89",  "sql.exec",      "(?i)find_by_sql"),
+          ("CWE-89",  "sql.exec",      "(?i)exec_query"),
+          ("CWE-89",  "sql.exec",      "(?i)execute"),
+          ("CWE-89",  "sql.exec",      "(?i)select_all"),
+          ("CWE-78",  "cmd.shell",     "(?i)system"),
+          ("CWE-78",  "cmd.shell",     "(?i)spawn"),
+          ("CWE-78",  "cmd.shell",     "(?i)popen"),
+          ("CWE-78",  "cmd.shell",     "(?i)Open3"),
+          ("CWE-79",  "html.write",    "(?i)html_safe"),
+          ("CWE-79",  "html.write",    "(?i)raw"),
+          ("CWE-22",  "fs.read",       "(?i)read"),
+          ("CWE-22",  "fs.read",       "(?i)open"),
+          ("CWE-22",  "fs.read",       "(?i)binread"),
+          ("CWE-502", "deser.unsafe",  "(?i)load"),
+          ("CWE-502", "deser.unsafe",  "(?i)restore"),
+          ("CWE-94",  "code.exec",     "(?i)eval"),
+          ("CWE-94",  "code.exec",     "(?i)instance_eval"),
+          ("CWE-94",  "code.exec",     "(?i)class_eval")
+        )
+      )
     case "go" | "golang" =>
       LangPatterns(
         sourcePattern =

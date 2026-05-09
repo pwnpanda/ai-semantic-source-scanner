@@ -10,6 +10,9 @@ _LANG_FENCE_BY_SUFFIX: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".ts", ".tsx"), "typescript"),
     ((".js", ".jsx", ".mjs", ".cjs"), "javascript"),
     ((".py", ".pyi"), "python"),
+    ((".java",), "java"),
+    ((".go",), "go"),
+    ((".rb", ".rake", ".gemspec"), "ruby"),
     ((".html", ".htm"), "html"),
 )
 
@@ -28,7 +31,7 @@ def _comment_marker(fence: str) -> str:
     the highlighted language. Languages with no obvious leader fall back to
     ``//`` to preserve the existing behaviour.
     """
-    if fence == "python":
+    if fence in {"python", "ruby"}:
         return "#"
     return "//"
 

@@ -39,6 +39,13 @@ _JOERN_LANGUAGE_FLAG: dict[str, str] = {
     "python": "pythonsrc",
     "java": "JAVASRC",
     "go": "GOLANG",
+    # Joern's rubysrc2cpg frontend is officially marked as beta — it parses
+    # most modern Ruby (1.8 through 3.2) via the parser gem but produces less
+    # complete CPGs than the JS/Python/Java frontends; metaprogramming
+    # (``send``, ``method_missing``, ``define_method``) routinely shows up
+    # as unresolved call edges. The wiring is identical to the others; the
+    # caller is responsible for handling parse failures gracefully.
+    "ruby": "RUBYSRC",
 }
 
 _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
@@ -46,6 +53,7 @@ _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
     "python": frozenset({".py", ".pyi"}),
     "java": frozenset({".java"}),
     "go": frozenset({".go"}),
+    "ruby": frozenset({".rb", ".rake"}),
 }
 
 

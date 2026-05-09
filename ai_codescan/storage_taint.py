@@ -53,7 +53,11 @@ _SQL_CALL = re.compile(
     r"|\b(?:client|c)\."
     r"(?:query|execute|executemany|executeQuery|executeUpdate|run|raw|"
     r"Query|QueryContext|Exec|ExecContext|Prepare|PrepareContext|Raw)$"
-    r"|\bsqlx\.(?:Get|Select|NamedExec|Exec|Query|QueryRow)$",
+    r"|\bsqlx\.(?:Get|Select|NamedExec|Exec|Query|QueryRow)$"
+    # Ruby ActiveRecord and raw drivers.
+    r"|\b(?:ActiveRecord::Base|connection|Mysql2::Client|PG::Connection|"
+    r"SQLite3::Database)\."
+    r"(?:where|find_by_sql|exec_query|execute|select_all|query)$",
     re.IGNORECASE,
 )
 _CACHE_SET = re.compile(
@@ -280,6 +284,8 @@ _JS_TS_GLOBS = (
     "**/*.py",
     "**/*.java",
     "**/*.go",
+    "**/*.rb",
+    "**/*.rake",
 )
 _SELECT_STRING = re.compile(
     r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",
