@@ -205,7 +205,7 @@ def test_unknown_bug_class_errors_with_suggestion(tmp_path: Path, fixtures_dir: 
         ],
     )
     assert result.exit_code != 0
-    combined = (result.stdout or "") + (result.stderr or "")
+    combined = result.output or ""
     assert "did you mean" in combined.lower()
 
 
@@ -303,7 +303,7 @@ def test_nominate_rejects_unknown_provider(
         ],
     )
     assert result.exit_code != 0
-    combined = (result.stdout or "") + (result.stderr or "")
+    combined = result.output or ""
     assert "unknown provider" in combined.lower()
 
 
@@ -428,3 +428,38 @@ def test_report_writes_for_verified_finding(tmp_path: Path, fixtures_dir: Path) 
     assert files, result.stdout
     assert "critical" in files[0].name
     assert "sqli" in files[0].name
+
+
+def test_visualize_help_advertises_flags() -> None:
+    result = runner.invoke(app, ["visualize", "--help"])
+    assert result.exit_code == 0
+    assert "--fmt" in result.stdout
+    assert "--cwe" in result.stdout
+    assert "--limit" in result.stdout
+
+
+def test_visualize_writes_dot(tmp_path: Path, fixtures_dir: Path) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
+    out = tmp_path / "flows.dot"
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "visualize",
+            "--repo-id",
+            repo_id,
+            "--out",
+            str(out),
+            "--fmt",
+            "dot",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert out.is_file()
+    assert "digraph" in out.read_text()

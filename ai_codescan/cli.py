@@ -10,6 +10,7 @@ import stat as stat_mod
 import subprocess
 from pathlib import Path
 from typing import Annotated, Any
+from typing import cast as _cast
 
 import duckdb
 import typer
@@ -37,6 +38,8 @@ from ai_codescan.taxonomy.loader import (
 )
 from ai_codescan.validator import run_validator
 from ai_codescan.views import render_file_view
+from ai_codescan.visualize import OutputFormat
+from ai_codescan.visualize import render as render_graph
 
 _BYTES_PER_KIB = 1024
 
@@ -818,6 +821,49 @@ def taint_schema(
 
     typer.echo("specify one of --show, --edit, or --run")
     raise typer.Exit(code=1)
+
+
+@app.command()
+def visualize(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id")] = "",
+    out: Annotated[
+        Path,
+        typer.Option("--out", help="Output file path (extension or --fmt picks the format)."),
+    ] = Path("flows.svg"),
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--fmt",
+            help="Output format: dot, svg, or png.",
+        ),
+    ] = "svg",
+    cwe: Annotated[str, typer.Option("--cwe", help="Filter to a single CWE.")] = "",
+    limit: Annotated[int, typer.Option("--limit", help="Maximum flows to render.")] = 200,
+) -> None:
+    """Render flows as a Graphviz graph (svg / png / dot)."""
+    if fmt not in {"dot", "svg", "png"}:
+        typer.echo(f"--fmt {fmt} is not supported (choose dot, svg, or png).", err=True)
+        raise typer.Exit(code=2)
+
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    db = cache_root / repo_id / "index.duckdb"
+    if not db.is_file():
+        typer.echo("No index. Run prep first.", err=True)
+        raise typer.Exit(code=1)
+    conn = duckdb.connect(str(db), read_only=True)
+    try:
+        target = render_graph(
+            conn,
+            out_path=out,
+            fmt=_cast(OutputFormat, fmt),
+            cwe=cwe or None,
+            limit=limit,
+        )
+    finally:
+        conn.close()
+    typer.echo(f"wrote {target}")
 
 
 @app.command("install-skills")
