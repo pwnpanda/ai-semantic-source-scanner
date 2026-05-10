@@ -52,7 +52,19 @@ _NEST_DECORATOR = re.compile(
 )
 # Listeners (DOM, EventEmitter, etc.). Anchored on bare method to avoid
 # matching ``.on`` style identifiers in other contexts.
-_LISTENER = re.compile(r"\.(?:on|once|addListener|addEventListener)$")
+# Listeners that mark a *server-side* event source. ``.addEventListener``
+# and ``.addListener`` are unambiguous (DOM / Node EventEmitter); ``.on``
+# / ``.once`` are heavily overloaded — React (``button.on(...)`` is rare
+# but RxJS / chartjs / dnd-kit all expose ``.on``) so require a receiver
+# that smells like a server-side bus (``server``/``socket``/``io``/
+# ``emitter``/``bus``/``broker``). Otherwise a single-page-app produces
+# dozens of false positives at the entrypoints summary.
+_LISTENER = re.compile(
+    r"\b(?:emitter|bus|broker|server|socket|io|client|stream|process|child)"
+    r"\.(?:on|once)$"
+    r"|\.(?:addListener|addEventListener)$",
+    re.IGNORECASE,
+)
 _CRON = re.compile(r"\b(?:cron|node-cron|node-schedule)\.(?:schedule|job)$|@Cron\(")
 _CLI_ARGV = re.compile(r"\bprocess\.argv\b")
 _QUEUE_CONSUMER = re.compile(

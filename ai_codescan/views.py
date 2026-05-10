@@ -44,6 +44,17 @@ def _comment_marker(fence: str) -> str:
     return "//"
 
 
+_SOURCE_PER_LINE_LIMIT = 1
+"""Cap distinct ``[tid] SOURCE`` markers shown per line. Many flows share
+a source line; showing every taint-source id is noisy and adds nothing
+the user can act on. We keep one and append a count."""
+
+_FLOW_PER_LINE_LIMIT = 3
+"""Same idea for ``FLOW <fid> (CWE-XX)`` markers — one line of code can
+fan out into dozens of flow records (one per distinct sink). Show a few
+representative flow ids per CWE plus an aggregate count."""
+
+
 def _annotations_by_line(conn: duckdb.DuckDBPyConnection, file: str) -> dict[int, list[str]]:
     by_line: dict[int, list[str]] = {}
 
@@ -53,13 +64,28 @@ def _annotations_by_line(conn: duckdb.DuckDBPyConnection, file: str) -> dict[int
     ).fetchall():
         by_line.setdefault(range_start, []).append(f"[{sym_id}] symbol {display_name}")
 
+    # Group taint sources per line so a line that's reused as a source for
+    # many flows produces a single ``SOURCE x N`` marker rather than N
+    # markers, one per ``tid``.
+    sources_by_line: dict[int, list[str]] = {}
     for tid, evidence in conn.execute(
         "SELECT tid, evidence_loc FROM taint_sources WHERE evidence_loc LIKE ?",
         [f"{file}:%"],
     ).fetchall():
         line = int(evidence.rsplit(":", 1)[1])
-        by_line.setdefault(line, []).append(f"[{tid}] SOURCE")
+        sources_by_line.setdefault(line, []).append(tid)
+    for line, tids in sources_by_line.items():
+        if len(tids) <= _SOURCE_PER_LINE_LIMIT:
+            for tid in tids:
+                by_line.setdefault(line, []).append(f"[{tid}] SOURCE")
+        else:
+            head = tids[0]
+            extra = len(tids) - 1
+            by_line.setdefault(line, []).append(f"[{head}] SOURCE (+{extra} more)")
 
+    # Group flows per (line, cwe). Sample a few fids and keep an
+    # aggregate count so the per-line annotation stays scannable.
+    flows_by_line_cwe: dict[tuple[int, str], list[str]] = {}
     for fid, tid, _sid, cwe in conn.execute(
         """
         SELECT f.fid, f.tid, f.sid, f.cwe
@@ -75,7 +101,15 @@ def _annotations_by_line(conn: duckdb.DuckDBPyConnection, file: str) -> dict[int
         if not evidence:
             continue
         line = int(evidence[0].rsplit(":", 1)[1])
-        by_line.setdefault(line, []).append(f"FLOW {fid} ({cwe})")
+        flows_by_line_cwe.setdefault((line, cwe), []).append(fid)
+    for (line, cwe), fids in flows_by_line_cwe.items():
+        if len(fids) <= _FLOW_PER_LINE_LIMIT:
+            for fid in fids:
+                by_line.setdefault(line, []).append(f"FLOW {fid} ({cwe})")
+        else:
+            head = ", ".join(fids[:_FLOW_PER_LINE_LIMIT])
+            extra = len(fids) - _FLOW_PER_LINE_LIMIT
+            by_line.setdefault(line, []).append(f"FLOW {head} (+{extra} more) [{cwe}]")
 
     return by_line
 

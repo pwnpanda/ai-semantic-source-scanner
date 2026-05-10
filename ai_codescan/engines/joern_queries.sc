@@ -249,14 +249,33 @@ import java.security.MessageDigest
       val ce = "exec"
       val cs = "spawn"
       LangPatterns(
-        sourcePattern = "(?i)(req\\.body|req\\.query|req\\.params|process\\.argv).*",
+        // JS sources cover Express/Koa/Fastify (``req.body``/``req.query``/
+        // ``req.params``/``req.headers``/``req.cookies``), Firebase Cloud
+        // Functions Callable (``request.data``/``request.auth``) and
+        // raw onRequest (``req.rawBody``), and CLI ``process.argv``.
+        // The ``\\.body`` etc. tail-matches help when Joern's JS frontend
+        // lowers ``req.body`` through a temp variable (``_tmp_N.body``).
+        sourcePattern = "(?i)(" +
+          "req\\.body|req\\.query|req\\.params|req\\.headers|req\\.cookies|" +
+          "req\\.rawBody|req\\.url|" +
+          "request\\.data|request\\.body|request\\.query|request\\.params|" +
+          "request\\.headers|request\\.auth|" +
+          "process\\.argv" +
+          ").*",
         sinkClasses = List(
-          ("CWE-89", "sql.exec",   "(?i)query"),
-          ("CWE-89", "sql.exec",   "(?i)execute"),
-          ("CWE-78", "cmd.shell",  s"(?i)${ce}(Sync)?"),
-          ("CWE-78", "cmd.shell",  s"(?i)${cs}(Sync)?"),
-          ("CWE-79", "html.write", "(?i)(send|write|end)"),
-          ("CWE-22", "fs.read",    "(?i)(readFile|createReadStream|readFileSync)")
+          ("CWE-89", "sql.exec",     "(?i)query"),
+          ("CWE-89", "sql.exec",     "(?i)execute"),
+          ("CWE-78", "cmd.shell",    s"(?i)${ce}(Sync)?"),
+          ("CWE-78", "cmd.shell",    s"(?i)${cs}(Sync)?"),
+          ("CWE-79", "html.write",   "(?i)(send|write|end)"),
+          ("CWE-22", "fs.read",      "(?i)(readFile|createReadStream|readFileSync)"),
+          // Firestore document operations. ``doc(<id>)`` with attacker-
+          // controlled id is the IDOR shape; ``set``/``update`` with
+          // attacker-controlled bodies enable mass-assignment style
+          // privilege escalation when rules don't restrict fields.
+          ("CWE-639", "firestore.idor",   "(?i)^doc$"),
+          ("CWE-915", "firestore.write",  "(?i)^(set|update|create)$"),
+          ("CWE-943", "firestore.query",  "(?i)^(where|orderBy)$")
         )
       )
   }

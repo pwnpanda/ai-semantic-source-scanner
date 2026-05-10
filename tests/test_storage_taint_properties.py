@@ -39,9 +39,49 @@ def test_detect_sql_storage_ids_never_raises(garbage: str) -> None:
         assert isinstance(item, str)
 
 
+# A small set of SQL reserved words that the property-test generators must
+# exclude — any of these used as a bare table/column name produces
+# malformed SQL even though they pass the ``[a-z][a-z_0-9]*`` regex.
+_SQL_RESERVED = frozenset(
+    {
+        "as",
+        "is",
+        "in",
+        "on",
+        "or",
+        "and",
+        "not",
+        "select",
+        "from",
+        "where",
+        "table",
+        "by",
+        "to",
+        "of",
+        "if",
+        "case",
+        "then",
+        "else",
+        "end",
+        "for",
+        "all",
+        "any",
+        "between",
+        "like",
+        "null",
+        "true",
+        "false",
+    }
+)
+
+
 @given(
-    table=st.from_regex(r"\A[a-z][a-z_0-9]{0,16}\Z", fullmatch=True),
-    column=st.from_regex(r"\A[a-z][a-z_0-9]{0,16}\Z", fullmatch=True),
+    table=st.from_regex(r"\A[a-z][a-z_0-9]{0,16}\Z", fullmatch=True).filter(
+        lambda s: s not in _SQL_RESERVED
+    ),
+    column=st.from_regex(r"\A[a-z][a-z_0-9]{0,16}\Z", fullmatch=True).filter(
+        lambda s: s not in _SQL_RESERVED
+    ),
 )
 @settings(max_examples=200, deadline=2000)
 def test_detect_sql_storage_ids_canonicalises_select(table: str, column: str) -> None:
@@ -52,8 +92,12 @@ def test_detect_sql_storage_ids_canonicalises_select(table: str, column: str) ->
 
 
 @given(
-    table=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True),
-    column=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True),
+    table=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True).filter(
+        lambda s: s not in _SQL_RESERVED
+    ),
+    column=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True).filter(
+        lambda s: s not in _SQL_RESERVED
+    ),
 )
 @settings(max_examples=200, deadline=2000)
 def test_detect_sql_storage_ids_results_are_lowercased(table: str, column: str) -> None:
@@ -80,8 +124,12 @@ def test_classify_sql_op_returns_known_or_none(text: str) -> None:
 
 
 @given(
-    table=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True),
-    column=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True),
+    table=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True).filter(
+        lambda s: s not in _SQL_RESERVED
+    ),
+    column=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True).filter(
+        lambda s: s not in _SQL_RESERVED
+    ),
 )
 @settings(max_examples=100, deadline=2000)
 def test_classify_sql_op_select_is_read(table: str, column: str) -> None:
@@ -89,8 +137,12 @@ def test_classify_sql_op_select_is_read(table: str, column: str) -> None:
 
 
 @given(
-    table=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True),
-    column=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True),
+    table=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True).filter(
+        lambda s: s not in _SQL_RESERVED
+    ),
+    column=st.from_regex(r"\A[a-z][a-z_0-9]{0,12}\Z", fullmatch=True).filter(
+        lambda s: s not in _SQL_RESERVED
+    ),
 )
 @settings(max_examples=100, deadline=2000)
 def test_classify_sql_op_update_is_write(table: str, column: str) -> None:

@@ -1071,6 +1071,13 @@ def visualize(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
         typer.echo(f"--fmt {fmt} is not supported (choose dot, svg, or png).", err=True)
         raise typer.Exit(code=2)
 
+    # Default ``--out flows.svg`` carries the wrong extension when the user
+    # passes ``--fmt dot`` (or ``png``) without overriding ``--out``. If
+    # ``out`` is the default and ``fmt`` differs from the default's suffix,
+    # rewrite the extension so the filename matches the content.
+    if out == Path("flows.svg") and fmt != "svg":
+        out = out.with_suffix(f".{fmt}")
+
     cache_root: Path = ctx.obj["cache_root"]
     repo_id = _resolve_repo_id(cache_root, repo_id)
     db = cache_root / repo_id / "index.duckdb"

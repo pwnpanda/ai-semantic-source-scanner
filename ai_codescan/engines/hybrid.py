@@ -127,12 +127,13 @@ def _stable_id(prefix: str, *parts: str) -> str:
     return f"{prefix}:{hashlib.sha1(blob.encode('utf-8'), usedforsecurity=False).hexdigest()[:16]}"
 
 
-def _ingest_joern_jsonl(
+def _ingest_joern_jsonl(  # noqa: PLR0913 - keyword-only fan-in is the cleanest expression here
     conn: duckdb.DuckDBPyConnection,
     *,
     jsonl_path: Path,
     project_id: str,
     snapshot_root: Path,
+    project_root: Path | None = None,
 ) -> int:
     """Read Joern's JSONL output and merge into the ``flows`` table.
 
@@ -141,8 +142,18 @@ def _ingest_joern_jsonl(
     ``taint_sources``, ``taint_sinks``, and ``flows`` rows under
     ``engine='joern'`` so the dedupe pass can collapse duplicates against
     CodeQL/Semgrep.
+
+    Joern emits source/sink paths relative to the **project root** it parsed
+    (passed as ``project_root``), not the snapshot root. In a polyglot repo
+    where a parent project (e.g. a React app at the repo root) and a nested
+    project (``functions/`` Cloud Functions) overlap, scanning both produces
+    the same flow under two different relative paths — which then keys
+    differently in dedupe and shows up as duplicates. Canonicalising every
+    path against ``snapshot_root`` (resolving ``project_root`` first) makes
+    the absolute path stable regardless of which project's run produced it.
     """
     flows = joern_eng.parse_flows(jsonl_path)
+    base = project_root if project_root is not None else snapshot_root
     inserted = 0
     for f in flows:
         source_file = str(f.get("source_file") or "")
@@ -154,15 +165,21 @@ def _ingest_joern_jsonl(
         cwe = str(f.get("cwe") or "")
         sink_class = str(f.get("sink_class") or "unknown")
         sink_name = str(f.get("sink_name") or "")
-        # Resolve relative paths to the snapshot root for cross-engine join.
+        # Resolve relative paths against the project's own root so flows from
+        # nested projects collapse with overlapping flows from the parent
+        # project. ``str(Path(...).resolve())`` collapses any ``..`` /
+        # symlinks too.
         if not source_file.startswith("/"):
-            source_file = str(snapshot_root / source_file)
+            source_file = str((base / source_file).resolve())
         if not sink_file.startswith("/"):
-            sink_file = str(snapshot_root / sink_file)
+            sink_file = str((base / sink_file).resolve())
 
-        tid = _stable_id("source", project_id, source_file, str(source_line), cwe)
-        sid = _stable_id("sink", project_id, sink_file, str(sink_line), sink_name)
-        fid = str(f.get("fid") or _stable_id("flow", project_id, tid, sid))
+        # ``project_id`` deliberately omitted from the stable-id keys so
+        # cross-project duplicates collapse on identical (file, line)
+        # tuples rather than fanning out per project.
+        tid = _stable_id("source", source_file, str(source_line), cwe)
+        sid = _stable_id("sink", sink_file, str(sink_line), sink_name)
+        fid = str(f.get("fid") or _stable_id("flow", tid, sid))
 
         evidence_loc = f"{source_file}:{source_line}"
         conn.execute(
@@ -243,6 +260,7 @@ def run_hybrid(
                         jsonl_path=jsonl_path,
                         project_id=project_id,
                         snapshot_root=snapshot_root,
+                        project_root=project_root,
                     )
                 except joern_eng.JoernUnavailableError as exc:
                     log.warning("joern skipped for %s: %s", project_id, exc)
