@@ -45,11 +45,19 @@ class _IngestCtx:
     snapshot_root: Path
     engine: str
     sarif_path: Path
+    rule_tags: dict[str, list[str]]
+    """``rule_id`` → tags collected from ``tool.driver.rules[*].properties.tags``.
+    Semgrep stores rule-level metadata (e.g. CWE-208) on the rule definition
+    rather than on each result, so per-result ``properties.tags`` is often
+    empty even when the rule clearly carries a CWE label. Looking the rule up
+    here lets ``_extract_cwe`` find it."""
 
 
 def _ingest_result(conn: duckdb.DuckDBPyConnection, result: dict[str, Any], ctx: _IngestCtx) -> int:
     tags = (result.get("properties", {}) or {}).get("tags", []) or []
     rule_id = result.get("ruleId", "")
+    if not tags:
+        tags = ctx.rule_tags.get(rule_id, [])
     cwe = _extract_cwe(rule_id, tags)
     sink_loc = result.get("locations", [{}])[0].get("physicalLocation", {})
     sink_file, sink_start, _sink_end = _physical_to_loc(sink_loc, ctx.snapshot_root)
@@ -88,6 +96,27 @@ def _ingest_result(conn: duckdb.DuckDBPyConnection, result: dict[str, Any], ctx:
                 [fid, tid, sid, cwe, ctx.engine, steps_json, str(ctx.sarif_path), "definite"],
             )
             flows_inserted += 1
+
+    # Pattern-only / non-taint rules (e.g. Semgrep's plain ``patterns`` mode,
+    # CodeQL ``problem`` queries) emit results with a single ``locations``
+    # entry and no ``codeFlows`` array. Treat the primary location as both
+    # source and sink so the finding still lands in the ``flows`` table; the
+    # downstream nominator sees one-step paths exactly the same as multi-step
+    # ones.
+    if flows_inserted == 0 and sink_file:
+        tid = _stable_id("source", ctx.project_id, sink_file, str(sink_start), rule_id)
+        msg = result.get("message", {}).get("text", "")
+        conn.execute(
+            "INSERT OR REPLACE INTO taint_sources VALUES (?, ?, ?, ?, ?)",
+            [tid, None, "pattern", msg, f"{sink_file}:{sink_start}"],
+        )
+        fid = _stable_id("flow", ctx.project_id, tid, sid)
+        steps_json = json.dumps([[sink_file, sink_start, sink_start]])
+        conn.execute(
+            "INSERT OR REPLACE INTO flows VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [fid, tid, sid, cwe, ctx.engine, steps_json, str(ctx.sarif_path), "definite"],
+        )
+        flows_inserted = 1
     return flows_inserted
 
 
@@ -104,14 +133,22 @@ def ingest_sarif(
     Idempotent: re-ingesting the same SARIF leaves the DB unchanged.
     """
     data = json.loads(sarif_path.read_text(encoding="utf-8"))
-    ctx = _IngestCtx(
-        project_id=project_id,
-        snapshot_root=snapshot_root,
-        engine=engine,
-        sarif_path=sarif_path,
-    )
     flows_inserted = 0
     for run in data.get("runs", []):
+        rule_tags: dict[str, list[str]] = {}
+        for rule in run.get("tool", {}).get("driver", {}).get("rules", []) or []:
+            rid = rule.get("id", "")
+            if not rid:
+                continue
+            tags = (rule.get("properties", {}) or {}).get("tags", []) or []
+            rule_tags[rid] = list(tags)
+        ctx = _IngestCtx(
+            project_id=project_id,
+            snapshot_root=snapshot_root,
+            engine=engine,
+            sarif_path=sarif_path,
+            rule_tags=rule_tags,
+        )
         for result in run.get("results", []):
             flows_inserted += _ingest_result(conn, result, ctx)
     return flows_inserted

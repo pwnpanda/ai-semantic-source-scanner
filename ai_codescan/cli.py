@@ -714,6 +714,16 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
             help="Forwarded to the report stage; writes reports under <cwd>/report/.",
         ),
     ] = False,
+    engine: Annotated[
+        str,
+        typer.Option(
+            "--engine",
+            help=(
+                "Static engine for the prep stage: 'hybrid' (CodeQL + Semgrep + Joern, "
+                "deduped — recommended), 'codeql', or 'llm-heavy'."
+            ),
+        ),
+    ] = "hybrid",
 ) -> None:
     """End-to-end pipeline driver.
 
@@ -754,6 +764,7 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
             yes=yes,
             no_sandbox=no_sandbox,
             bugbounty=bugbounty,
+            engine=engine,
         )
     )
     if rc != 0:

@@ -82,6 +82,11 @@ def build_queue(
             }
         )
 
+    # Pull every symbol whose name suggests it gates access. The original
+    # set (``authoriz``/``authent``/``permission``) missed common naming
+    # conventions like ``verifyAdminKey``, ``apiKey``, ``requireRole``,
+    # ``hasAccess``, ``isOwner``, etc., so the wide nominator skipped real
+    # auth callsites entirely on codebases that don't spell things out.
     auth_rows = conn.execute(
         """
         SELECT id, file, range_start, display_name
@@ -89,6 +94,28 @@ def build_queue(
         WHERE display_name ILIKE '%authoriz%'
            OR display_name ILIKE '%authent%'
            OR display_name ILIKE '%permission%'
+           OR display_name ILIKE '%verify%'
+           OR display_name ILIKE '%require%role%'
+           OR display_name ILIKE '%require%auth%'
+           OR display_name ILIKE '%require%admin%'
+           OR display_name ILIKE '%require%login%'
+           OR display_name ILIKE '%api_key%'
+           OR display_name ILIKE '%apikey%'
+           OR display_name ILIKE '%admin_key%'
+           OR display_name ILIKE '%adminkey%'
+           OR display_name ILIKE '%has_access%'
+           OR display_name ILIKE '%hasaccess%'
+           OR display_name ILIKE '%has_role%'
+           OR display_name ILIKE '%hasrole%'
+           OR display_name ILIKE '%is_owner%'
+           OR display_name ILIKE '%isowner%'
+           OR display_name ILIKE '%is_admin%'
+           OR display_name ILIKE '%isadmin%'
+           OR display_name ILIKE '%check_role%'
+           OR display_name ILIKE '%checkrole%'
+           OR display_name ILIKE '%check_auth%'
+           OR display_name ILIKE '%checkauth%'
+           OR display_name ILIKE '%guard%'
         """
     ).fetchall()
     for sym_id, file, line, name in auth_rows:

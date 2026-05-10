@@ -294,10 +294,11 @@ def _argv_for(  # noqa: PLR0911, PLR0912, PLR0913 - direct mapping; flattening h
     yes: bool,
     no_sandbox: bool,
     bugbounty: bool,
+    engine: str = "hybrid",
 ) -> list[str]:
     base = ["ai-codescan", "--cache-dir", str(cache_root)]
     if stage == "prep":
-        argv = [*base, "prep", str(target)]
+        argv = [*base, "prep", str(target), "--engine", engine]
         if commit:
             argv += ["--commit", commit]
         if target_bug_class:
@@ -391,6 +392,7 @@ class DriveOptions:
     yes: bool
     no_sandbox: bool
     bugbounty: bool
+    engine: str = "hybrid"
 
 
 _ABORT = "abort"
@@ -400,6 +402,7 @@ _CONTINUE = "continue"
 def _build_argv(stage: str, opts: DriveOptions) -> list[str]:
     return _argv_for(
         stage,
+        engine=opts.engine,
         cache_root=opts.cache_root,
         target=opts.target,
         repo_id=opts.repo_id,

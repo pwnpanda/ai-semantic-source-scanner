@@ -1,0 +1,38 @@
+rules:
+  - id: js-timing-attack-secret-compare
+    mode: taint
+    message: |
+      An environment-variable secret (treated as taint source) flows into a
+      plain string equality comparison. ``===`` / ``!==`` short-circuit on the
+      first mismatching byte, so an attacker can extract the secret one byte at
+      a time by measuring response latency. Use ``crypto.timingSafeEqual`` with
+      equal-length buffers (or hash both sides first) instead.
+    severity: WARNING
+    languages: [javascript, typescript]
+    metadata:
+      cwe:
+        - "CWE-208: Observable Timing Discrepancy"
+      category: security
+      confidence: HIGH
+      likelihood: LOW
+      impact: LOW
+      technology:
+        - nodejs
+      references:
+        - https://nodejs.org/api/crypto.html#cryptotimingsafeequala-b
+    pattern-sources:
+      # Reading from process.env is the secret source. Variants cover both
+      # member access (``process.env.FOO``) and bracket access
+      # (``process.env['FOO']``).
+      - pattern: process.env.$KEY
+      - pattern: process.env[$KEY]
+    pattern-sinks:
+      - pattern: $A === $B
+      - pattern: $A !== $B
+      - pattern: $A == $B
+      - pattern: $A != $B
+    pattern-sanitizers:
+      # If a constant-time comparison primitive is used, the flow stops being
+      # a finding.
+      - pattern: crypto.timingSafeEqual(...)
+      - pattern: timingSafeEqual(...)

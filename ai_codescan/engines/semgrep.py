@@ -11,6 +11,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
+_BUNDLED_RULES_DIR = Path(__file__).parent / "semgrep_rules"
+"""Directory of project-specific rules shipped with ai-codescan. Always
+passed to semgrep alongside ``--config=auto`` so we extend (not replace)
+the community ruleset with patterns the OSS pack misses (e.g. CWE-208
+timing-attack on env-var secrets)."""
+
 
 class SemgrepUnavailableError(RuntimeError):
     """Raised when ``semgrep`` isn't on PATH."""
@@ -31,7 +37,10 @@ def run_semgrep(
     """Run semgrep against ``project_root``; emit SARIF to the cache.
 
     Returns the path to the SARIF file. ``config='auto'`` uses Semgrep's
-    default rule registry (Semgrep CE; OSS rules only).
+    default rule registry (Semgrep CE; OSS rules only). The bundled
+    rules under ``semgrep_rules/`` are appended so security gaps in the
+    community pack (e.g. CWE-208 timing-attack on ``process.env``) get
+    matched too.
     """
     if not is_available():
         raise SemgrepUnavailableError(
@@ -40,16 +49,19 @@ def run_semgrep(
     sarif_dir = cache_dir / "semgrep"
     sarif_dir.mkdir(parents=True, exist_ok=True)
     sarif_path = sarif_dir / f"{project_id}.sarif"
+    cmd = [
+        "semgrep",
+        "scan",
+        f"--config={config}",
+        "--sarif",
+        "--output",
+        str(sarif_path),
+    ]
+    if _BUNDLED_RULES_DIR.is_dir() and any(_BUNDLED_RULES_DIR.glob("*.yaml")):
+        cmd.append(f"--config={_BUNDLED_RULES_DIR}")
+    cmd.append(str(project_root))
     subprocess.run(  # noqa: S603 - argv-only, no shell
-        [  # noqa: S607
-            "semgrep",
-            "scan",
-            f"--config={config}",
-            "--sarif",
-            "--output",
-            str(sarif_path),
-            str(project_root),
-        ],
+        cmd,  # noqa: S607
         check=False,  # semgrep exits non-zero on findings; that's not an error
         capture_output=True,
         timeout=timeout,
