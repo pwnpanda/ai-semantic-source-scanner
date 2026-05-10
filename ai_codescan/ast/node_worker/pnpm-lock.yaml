@@ -14,6 +14,9 @@ importers:
       tree-sitter:
         specifier: 0.22.4
         version: 0.22.4
+      tree-sitter-bash:
+        specifier: 0.21.0
+        version: 0.21.0(tree-sitter@0.22.4)
       tree-sitter-c-sharp:
         specifier: 0.21.3
         version: 0.21.3(tree-sitter@0.22.4)
@@ -159,6 +162,15 @@ packages:
     resolution: {integrity: sha512-65P7iz6X5yEr1cwcgvQxbbIw7Uk3gOy5dIdtZ4rDveLqhrdJP+Li/Hx6tyK0NEb+2GCyneCMJiGqrADCSNk8sQ==}
     engines: {node: '>=8.0'}
 
+  tree-sitter-bash@0.21.0:
+    resolution: {integrity: sha512-UuXf+wliu1mmS/O2Iz7OQghExM4a+lk+GaVPndZVpAJnFuzanaN33UcHOsrmngHxaOXHz5JSZrwp6i2qM/PKag==}
+    peerDependencies:
+      tree-sitter: ^0.21.0
+      tree_sitter: '*'
+    peerDependenciesMeta:
+      tree_sitter:
+        optional: true
+
   tree-sitter-c-sharp@0.21.3:
     resolution: {integrity: sha512-TVsl5EhmqetO/mhzDPVnMK6TPFnpNMKP0OTNuAQIprshk5Hx672ODRxoIoG5WqvUUlsnBu8J0zmn35hmJqelsA==}
     peerDependencies:
@@ -244,6 +256,9 @@ packages:
     resolution: {integrity: sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==}
     engines: {node: '>=14.17'}
     hasBin: true
+
+  web-tree-sitter@0.21.0:
+    resolution: {integrity: sha512-iJ+QJ6ikN9D9cG7Kh6q3KtAstYFUQbYZ8OjuPEJYWfj2kLrmp5I3C2n6WjE1Y3jvj7nJbkcrJytJGWUEhCxn+g==}
 
 snapshots:
 
@@ -346,6 +361,13 @@ snapshots:
     dependencies:
       is-number: 7.0.0
 
+  tree-sitter-bash@0.21.0(tree-sitter@0.22.4):
+    dependencies:
+      node-addon-api: 7.1.1
+      node-gyp-build: 4.8.4
+      tree-sitter: 0.22.4
+      web-tree-sitter: 0.21.0
+
   tree-sitter-c-sharp@0.21.3(tree-sitter@0.22.4):
     dependencies:
       node-addon-api: 8.7.0
@@ -419,3 +441,5 @@ snapshots:
       code-block-writer: 13.0.3
 
   typescript@5.7.3: {}
+
+  web-tree-sitter@0.21.0: {}

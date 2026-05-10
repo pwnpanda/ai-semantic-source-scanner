@@ -16,7 +16,8 @@
     "tree-sitter-ruby": "0.23.1",
     "tree-sitter-php": "0.22.8",
     "tree-sitter-c-sharp": "0.21.3",
-    "tree-sitter-kotlin": "0.3.8"
+    "tree-sitter-kotlin": "0.3.8",
+    "tree-sitter-bash": "0.21.0"
   },
   "scripts": {
     "worker": "node worker.mjs"
@@ -32,7 +33,8 @@
       "tree-sitter-ruby",
       "tree-sitter-php",
       "tree-sitter-c-sharp",
-      "tree-sitter-kotlin"
+      "tree-sitter-kotlin",
+      "tree-sitter-bash"
     ]
   }
 }

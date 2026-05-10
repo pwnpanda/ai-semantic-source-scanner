@@ -554,6 +554,15 @@ def test_csharp_skips_bin_obj_dirs(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_bare_bash_files_detected(fixtures_dir: Path) -> None:
+    """Bare shell scripts (no manifest) detect as a BASH-kind project."""
+    p = detect_projects(fixtures_dir / "tiny-bash")[0]
+    assert p.kind is ProjectKind.BASH
+    assert "bash" in p.languages
+    assert p.frameworks == set()
+    assert p.package_manager == "unknown"
+
+
 def test_bare_python_files_detected_without_manifest(tmp_path: Path) -> None:
     pkg = tmp_path / "snippet"
     pkg.mkdir()

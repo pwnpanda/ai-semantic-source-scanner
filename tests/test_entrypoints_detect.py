@@ -538,6 +538,52 @@ def test_wp_cli_add_command_detected() -> None:
     assert any(e.kind == "cli" for e in eps)
 
 
+# --- Bash / shell patterns ---
+
+
+def test_bash_getopts_marks_cli_entry() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/scripts/lookup.sh",
+            "line": 12,
+            "calleeText": 'getopts "h:n:" opt',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "cli" for e in eps)
+
+
+def test_bash_eval_marks_cli_entry() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/scripts/lookup.sh",
+            "line": 13,
+            "calleeText": 'eval "echo $1"',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "cli" for e in eps)
+
+
+def test_bash_plain_command_skipped() -> None:
+    """A plain ``echo`` shell command is not an entrypoint."""
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/scripts/lookup.sh",
+            "line": 5,
+            "calleeText": 'echo "hello"',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert eps == []
+
+
 # --- Kotlin / Ktor patterns ---
 
 

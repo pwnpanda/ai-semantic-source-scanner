@@ -102,13 +102,16 @@ def _files_for_project(
     list[Path],
     list[Path],
     list[Path],
+    list[Path],
 ]:
     """Return per-language file lists under ``project.base_path``.
 
-    Order: ``(ts, html, python, java, go, ruby, php, csharp, kotlin)``.
+    Order: ``(ts, html, python, java, go, ruby, php, csharp, kotlin, bash)``.
     Kotlin shares JVM tooling with Java, so a JAVA-kind project that also
     contains ``.kt`` / ``.kts`` files emits both a ``java`` and a
-    ``kotlin`` AST job.
+    ``kotlin`` AST job. Bash scripts emit their own AST job whenever the
+    project carries ``.sh`` / ``.bash`` files (CI / glue scripts in
+    polyglot repos count too).
     """
     base = snapshot_root / project.base_path
     ts = [
@@ -172,7 +175,12 @@ def _files_for_project(
         and p.suffix == ".cs"
         and not any(part in _CSHARP_SKIP_PARTS for part in p.relative_to(base).parts)
     ]
-    return ts, html, python, java, go, ruby, php, csharp, kotlin
+    bash = [
+        p
+        for p in base.rglob("*")
+        if p.is_file() and p.suffix in {".sh", ".bash"} and "node_modules" not in p.parts
+    ]
+    return ts, html, python, java, go, ruby, php, csharp, kotlin, bash
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
@@ -187,6 +195,7 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         php_files,
         csharp_files,
         kotlin_files,
+        bash_files,
     ) = _files_for_project(snapshot_root, project)
     jobs: list[AstJob] = []
     if ts_files:
@@ -218,6 +227,12 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
     # land in the index alongside any .java siblings.
     if kotlin_files and project.kind is ProjectKind.JAVA:
         jobs.append(AstJob(kind="kotlin", project_root=base, files=kotlin_files))
+    # Bash scripts: emit a ``bash`` AST job for any project that contains
+    # them — glue scripts in polyglot repos (e.g. CI helpers in a Node
+    # repo) also benefit from xrefs and symbol indexing. Bare-source
+    # detection covers BASH-kind projects on its own.
+    if bash_files:
+        jobs.append(AstJob(kind="bash", project_root=base, files=bash_files))
     return jobs
 
 

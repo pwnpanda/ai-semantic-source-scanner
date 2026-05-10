@@ -17,7 +17,17 @@ class AstJob:
     """One worker job."""
 
     kind: Literal[
-        "ts", "html", "treesitter", "python", "java", "go", "ruby", "php", "csharp", "kotlin"
+        "ts",
+        "html",
+        "treesitter",
+        "python",
+        "java",
+        "go",
+        "ruby",
+        "php",
+        "csharp",
+        "kotlin",
+        "bash",
     ]
     project_root: Path
     files: list[Path] = field(default_factory=list)

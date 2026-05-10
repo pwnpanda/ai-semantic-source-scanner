@@ -61,6 +61,19 @@ _QUEUE_CONSUMER = re.compile(
     re.IGNORECASE,
 )
 
+# --- Bash / shell callee patterns -------------------------------------------
+
+# Shell scripts typically don't have a single conventional entrypoint —
+# the whole script is invoked. But two patterns are worth surfacing:
+#   * argument readers: ``getopts`` and ``read`` (especially with -p)
+#     mark CLI-style entry points where attacker-controlled input lands.
+#   * dynamic execution: ``eval`` / ``source`` / ``bash -c`` — these are
+#     code-execution sinks but also count as "code dispatch" markers worth
+#     flagging from the entrypoint side so reviewers see them in the
+#     entrypoints summary.
+_BASH_CLI_READ = re.compile(r"^(?:getopts|read\s+(?:-p|-r))\b")
+_BASH_DYNAMIC_EXEC = re.compile(r"^(?:eval|source|\.\s|bash\s+-c)\b")
+
 # --- Kotlin callee patterns -------------------------------------------------
 
 # Ktor's routing DSL: ``routing { get("/u") { ... }; post("/u") { ... } }``.
@@ -303,6 +316,18 @@ def _classify_callee_php(callee: str) -> EntrypointKind | None:
     return None
 
 
+def _classify_callee_bash(callee: str) -> EntrypointKind | None:
+    if _BASH_CLI_READ.search(callee):
+        return "cli"
+    if _BASH_DYNAMIC_EXEC.search(callee):
+        # Dynamic execution: surface these as ``cli`` so reviewers see
+        # them in the entrypoints summary even when the script has no
+        # ``main`` function. Pure sink-side reporting still happens via
+        # storage_taint and Semgrep.
+        return "cli"
+    return None
+
+
 def _classify_callee_kotlin(callee: str) -> EntrypointKind | None:
     if _KOTLIN_KTOR_ROUTE.search(callee) or _KOTLIN_KTOR_ROUTING.search(callee):
         return "http_route"
@@ -341,6 +366,8 @@ def _classify_callee(callee: str, file: str) -> EntrypointKind | None:  # noqa: 
         return _classify_callee_csharp(callee)
     if file.endswith((".kt", ".kts")):
         return _classify_callee_kotlin(callee)
+    if file.endswith((".sh", ".bash")):
+        return _classify_callee_bash(callee)
     return _classify_callee_js(callee)
 
 

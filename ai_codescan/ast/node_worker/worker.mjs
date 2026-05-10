@@ -48,6 +48,10 @@ async function dispatch(job) {
       const m = await import("./extract_kotlin.mjs");
       return m.run(job);
     }
+    case "bash": {
+      const m = await import("./extract_bash.mjs");
+      return m.run(job);
+    }
     default:
       throw new Error(`unknown kind: ${job.kind}`);
   }

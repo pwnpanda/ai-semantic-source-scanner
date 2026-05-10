@@ -54,11 +54,12 @@ class ProjectKind(StrEnum):
 
     NODE = "node"  # has a package.json
     PYTHON = "python"  # has pyproject.toml / setup.py / setup.cfg / requirements.txt
-    JAVA = "java"  # has pom.xml or build.gradle(.kts)
+    JAVA = "java"  # has pom.xml or build.gradle(.kts) (covers Kotlin too)
     GO = "go"  # has go.mod (or go.work)
     RUBY = "ruby"  # has Gemfile or *.gemspec
     PHP = "php"  # has composer.json, wp-config.php, or Drupal markers
     CSHARP = "csharp"  # has *.csproj, *.sln, or Directory.Build.props
+    BASH = "bash"  # bare shell scripts (no manifest); detected via .sh files
     HTML_ONLY = "html"  # no package.json, but contains HTML
 
 
@@ -116,6 +117,8 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".cs", "csharp"),
     (".cshtml", "csharp"),
     (".razor", "csharp"),
+    (".sh", "bash"),
+    (".bash", "bash"),
     (".html", "html"),
     (".htm", "html"),
     (".vue", "vue"),
@@ -1079,6 +1082,7 @@ _BARE_SOURCE_KIND_BY_EXT: tuple[tuple[str, ProjectKind, str], ...] = (
     (".rb", ProjectKind.RUBY, "ruby"),
     (".php", ProjectKind.PHP, "php"),
     (".cs", ProjectKind.CSHARP, "csharp"),
+    (".sh", ProjectKind.BASH, "bash"),
 )
 
 
