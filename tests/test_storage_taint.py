@@ -128,6 +128,13 @@ def test_classify_call_recognises_csharp_ef_core_raw() -> None:
     assert classify_call("dbContext.FromSqlRaw") == ("sql_column", "unknown")
 
 
+def test_classify_call_recognises_kotlin_exposed_orm() -> None:
+    """Kotlin Exposed ORM raw-SQL escape hatches surface as SQL sinks."""
+    # ``Transaction.exec(sql)`` runs an arbitrary SQL string under Exposed.
+    assert classify_call("transaction.exec") == ("sql_column", "unknown")
+    assert classify_call("Database.exec") == ("sql_column", "unknown")
+
+
 def test_load_save_schema_yaml_roundtrip(tmp_path: Path) -> None:
     target = tmp_path / "schema.taint.yml"
     data = {"tables": {"users": {"columns": {"bio": {"taint": "dirty"}}}}}

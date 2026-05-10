@@ -101,10 +101,14 @@ def _files_for_project(
     list[Path],
     list[Path],
     list[Path],
+    list[Path],
 ]:
     """Return per-language file lists under ``project.base_path``.
 
-    Order: ``(ts, html, python, java, go, ruby, php, csharp)``.
+    Order: ``(ts, html, python, java, go, ruby, php, csharp, kotlin)``.
+    Kotlin shares JVM tooling with Java, so a JAVA-kind project that also
+    contains ``.kt`` / ``.kts`` files emits both a ``java`` and a
+    ``kotlin`` AST job.
     """
     base = snapshot_root / project.base_path
     ts = [
@@ -131,6 +135,13 @@ def _files_for_project(
         for p in base.rglob("*")
         if p.is_file()
         and p.suffix == ".java"
+        and not any(part in _JAVA_SKIP_PARTS for part in p.parts)
+    ]
+    kotlin = [
+        p
+        for p in base.rglob("*")
+        if p.is_file()
+        and p.suffix in {".kt", ".kts"}
         and not any(part in _JAVA_SKIP_PARTS for part in p.parts)
     ]
     go = [
@@ -161,7 +172,7 @@ def _files_for_project(
         and p.suffix == ".cs"
         and not any(part in _CSHARP_SKIP_PARTS for part in p.relative_to(base).parts)
     ]
-    return ts, html, python, java, go, ruby, php, csharp
+    return ts, html, python, java, go, ruby, php, csharp, kotlin
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
@@ -175,6 +186,7 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         ruby_files,
         php_files,
         csharp_files,
+        kotlin_files,
     ) = _files_for_project(snapshot_root, project)
     jobs: list[AstJob] = []
     if ts_files:
@@ -201,6 +213,11 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         jobs.append(AstJob(kind="php", project_root=base, files=php_files))
     if csharp_files and project.kind is ProjectKind.CSHARP:
         jobs.append(AstJob(kind="csharp", project_root=base, files=csharp_files))
+    # Kotlin files inside a JVM project share the project's manifest and
+    # CodeQL extractor; emit a ``kotlin`` AST job so .kt / .kts symbols
+    # land in the index alongside any .java siblings.
+    if kotlin_files and project.kind is ProjectKind.JAVA:
+        jobs.append(AstJob(kind="kotlin", project_root=base, files=kotlin_files))
     return jobs
 
 

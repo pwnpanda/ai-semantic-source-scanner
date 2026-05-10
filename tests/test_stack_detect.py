@@ -253,6 +253,15 @@ def test_java_multi_module_only_outermost_reported(tmp_path: Path) -> None:
     assert [p.name for p in projects] == ["monorepo"]
 
 
+def test_kotlin_ktor_project_detected_as_java_kind(fixtures_dir: Path) -> None:
+    """Kotlin project with build.gradle.kts is a JAVA-kind project."""
+    p = detect_projects(fixtures_dir / "tiny-ktor")[0]
+    assert p.kind is ProjectKind.JAVA
+    assert "kotlin" in p.languages
+    assert p.name == "tiny-ktor"
+    assert p.package_manager == "gradle-kts"
+
+
 def test_java_skips_target_dir(tmp_path: Path) -> None:
     """Maven's ``target/`` (build output) must not pollute project detection."""
     pkg = tmp_path / "tapp"

@@ -538,6 +538,67 @@ def test_wp_cli_add_command_detected() -> None:
     assert any(e.kind == "cli" for e in eps)
 
 
+# --- Kotlin / Ktor patterns ---
+
+
+def test_ktor_get_route_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/src/main/kotlin/App.kt",
+            "line": 20,
+            "calleeText": 'get("/u")',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_ktor_routing_block_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/src/main/kotlin/App.kt",
+            "line": 19,
+            "calleeText": "routing { ... }",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_kotlin_get_without_path_arg_skipped() -> None:
+    """A bare ``get`` call (e.g. map.get()) should NOT be a route."""
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/src/main/kotlin/Helper.kt",
+            "line": 5,
+            "calleeText": "map.get(key)",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert eps == []
+
+
+def test_spring_on_kotlin_get_mapping_detected() -> None:
+    """Spring annotations on .kt files match the same regex as .java."""
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/src/main/kotlin/UserController.kt",
+            "line": 14,
+            "calleeText": '@GetMapping("/u")',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
 # --- C# / .NET framework patterns ---
 
 

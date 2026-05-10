@@ -61,6 +61,23 @@ _QUEUE_CONSUMER = re.compile(
     re.IGNORECASE,
 )
 
+# --- Kotlin callee patterns -------------------------------------------------
+
+# Ktor's routing DSL: ``routing { get("/u") { ... }; post("/u") { ... } }``.
+# The grammar emits ``get("/u")`` / ``post("/u")`` as call_expressions whose
+# text starts with the bare HTTP-verb name. We require a string-literal
+# argument so generic helper methods named ``get``/``post`` (e.g.
+# ``map.get("foo")``) don't collide.
+_KOTLIN_KTOR_ROUTE = re.compile(
+    r"^(?:get|post|put|patch|delete|head|options)\s*\(\s*['\"]",
+    re.IGNORECASE,
+)
+# ``routing { ... }`` block as a Ktor entrypoint marker.
+_KOTLIN_KTOR_ROUTING = re.compile(r"^routing\s*\{", re.IGNORECASE)
+# Spring on Kotlin uses the same annotations as Java (``@RestController``,
+# ``@GetMapping(...)``, etc.); the existing ``_JAVA_SPRING_ROUTE`` regex
+# matches Kotlin annotation text the same way and is reused below.
+
 # --- C# / .NET callee patterns ----------------------------------------------
 
 # ASP.NET Core attribute routing on controller actions. Tree-sitter-c-sharp
@@ -286,6 +303,18 @@ def _classify_callee_php(callee: str) -> EntrypointKind | None:
     return None
 
 
+def _classify_callee_kotlin(callee: str) -> EntrypointKind | None:
+    if _KOTLIN_KTOR_ROUTE.search(callee) or _KOTLIN_KTOR_ROUTING.search(callee):
+        return "http_route"
+    if _JAVA_SPRING_ROUTE.search(callee) or _JAVA_JAXRS_ROUTE.search(callee):
+        return "http_route"
+    if _JAVA_QUEUE_CONSUMER.search(callee):
+        return "message_consumer"
+    if _JAVA_CRON.search(callee):
+        return "cron"
+    return None
+
+
 def _classify_callee_csharp(callee: str) -> EntrypointKind | None:
     if _CSHARP_ASPNET_ATTRIBUTE.search(callee):
         return "http_route"
@@ -310,6 +339,8 @@ def _classify_callee(callee: str, file: str) -> EntrypointKind | None:  # noqa: 
         return _classify_callee_php(callee)
     if file.endswith((".cs", ".cshtml", ".razor")):
         return _classify_callee_csharp(callee)
+    if file.endswith((".kt", ".kts")):
+        return _classify_callee_kotlin(callee)
     return _classify_callee_js(callee)
 
 

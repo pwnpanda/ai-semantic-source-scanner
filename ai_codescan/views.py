@@ -11,6 +11,7 @@ _LANG_FENCE_BY_SUFFIX: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".js", ".jsx", ".mjs", ".cjs"), "javascript"),
     ((".py", ".pyi"), "python"),
     ((".java",), "java"),
+    ((".kt", ".kts"), "kotlin"),
     ((".go",), "go"),
     ((".rb", ".rake", ".gemspec"), "ruby"),
     ((".php", ".phtml"), "php"),

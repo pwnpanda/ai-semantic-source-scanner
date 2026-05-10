@@ -72,7 +72,11 @@ _SQL_CALL = re.compile(
     r"|\b(?:cmd|command|sqlCommand|conn|connection|db|Database|dbContext)\."
     r"(?:ExecuteNonQuery|ExecuteScalar|ExecuteReader|"
     r"ExecuteNonQueryAsync|ExecuteScalarAsync|ExecuteReaderAsync|"
-    r"ExecuteSqlRaw|ExecuteSqlRawAsync|FromSqlRaw|SqlQueryRaw)$",
+    r"ExecuteSqlRaw|ExecuteSqlRawAsync|FromSqlRaw|SqlQueryRaw)$"
+    # Kotlin Exposed ORM raw-SQL escape hatches. ``Transaction.exec`` /
+    # ``Database.exec`` execute arbitrary SQL strings.
+    r"|\b(?:transaction|tx|Transaction|TransactionManager|Database)\."
+    r"(?:exec|execInBatch|execAndMap)$",
     re.IGNORECASE,
 )
 _CACHE_SET = re.compile(
@@ -305,6 +309,8 @@ _JS_TS_GLOBS = (
     "**/*.phtml",
     "**/*.cs",
     "**/*.cshtml",
+    "**/*.kt",
+    "**/*.kts",
 )
 _SELECT_STRING = re.compile(
     r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",
