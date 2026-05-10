@@ -29,6 +29,13 @@ from ai_codescan.llm import LLMConfig, UnknownProviderError, is_available
 from ai_codescan.nominator import run_nominator, write_llm_cmd_script
 from ai_codescan.prep import run_prep
 from ai_codescan.report import write_report
+from ai_codescan.runs.orchestrator import (
+    PIPELINE_STAGES,
+    DriveOptions,
+    drive_pipeline,
+    preflight_llm_choice,
+    select_phases,
+)
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.server import serve as start_server
 from ai_codescan.stack_detect import ProjectKind, detect_projects
@@ -652,51 +659,103 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
     target: Annotated[Path, typer.Argument(help="Target repo to scan end-to-end.")],
     target_bug_class: Annotated[str, typer.Option("--target-bug-class")] = "",
     temperature: Annotated[float, typer.Option("--temperature")] = 0.0,
-    yes: Annotated[bool, typer.Option("--yes")] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            help="Auto-confirm every interactive prompt (LLM choice, HITL gates, "
+            "zero-output retries, rate-limit handling).",
+        ),
+    ] = False,
     commit: _CommitOption = None,
-    llm_provider: Annotated[str, typer.Option("--llm-provider")] = "claude",
-    llm_model: Annotated[str, typer.Option("--llm-model")] = "",
+    llm_provider: Annotated[
+        str | None,
+        typer.Option("--llm-provider", help="LLM CLI: claude, gemini, or codex."),
+    ] = None,
+    llm_model: Annotated[
+        str | None,
+        typer.Option("--llm-model", help="Specific model passed through to the LLM CLI."),
+    ] = None,
+    phases: Annotated[
+        str,
+        typer.Option(
+            "--phases",
+            help=(
+                "Comma-separated subset of stages to run "
+                f"(default: all of {','.join(PIPELINE_STAGES)})."
+            ),
+        ),
+    ] = "",
+    start_at: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="Start the pipeline at this stage (inclusive). Ignored when --phases is set.",
+        ),
+    ] = "",
+    stop_at: Annotated[
+        str,
+        typer.Option(
+            "--to",
+            help="Stop after this stage (inclusive). Ignored when --phases is set.",
+        ),
+    ] = "",
+    no_sandbox: Annotated[
+        bool,
+        typer.Option(
+            "--no-sandbox",
+            help="Forwarded to the validate stage; runs PoCs without the container sandbox.",
+        ),
+    ] = False,
+    bugbounty: Annotated[
+        bool,
+        typer.Option(
+            "--bugbounty",
+            help="Forwarded to the report stage; writes reports under <cwd>/report/.",
+        ),
+    ] = False,
 ) -> None:
-    """End-to-end Phase 1: prep + nominate + gate-1 in one shot."""
-    flags: list[str] = []
-    if target_bug_class:
-        flags += ["--target-bug-class", target_bug_class]
-    if commit:
-        flags += ["--commit", commit]
+    """End-to-end pipeline: prep → nominate → gate-1 → analyze → gate-2 → validate → gate-3 → report.
 
+    Re-running the same target resumes after the last completed stage
+    (state lives at ``<cache>/<repo_id>/run.state.json``). Use ``--phases``
+    or ``--from``/``--to`` to slice the pipeline; ``--yes`` runs unattended.
+    """
     cache_root: Path = ctx.obj["cache_root"]
-    cache_arg = ["--cache-dir", str(cache_root)]
-    rc = subprocess.call(  # noqa: S603 - argv-only, no shell
-        ["ai-codescan", *cache_arg, "prep", str(target), *flags],  # noqa: S607
+
+    try:
+        wanted_phases = select_phases(phases=phases, start_at=start_at, stop_at=stop_at)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+    provider_override, model_override = preflight_llm_choice(
+        provider_supplied=llm_provider is not None,
+        model_supplied=llm_model is not None,
+        yes=yes,
     )
-    if rc != 0:
-        raise typer.Exit(code=rc)
+    resolved_provider = provider_override or llm_provider or "claude"
+    resolved_model = model_override or llm_model or ""
 
     repo_id = compute_repo_id(target)
-    nominate_args = [
-        "--repo-id",
-        repo_id,
-        "--temperature",
-        str(temperature),
-        "--llm-provider",
-        llm_provider,
-    ]
-    if llm_model:
-        nominate_args += ["--llm-model", llm_model]
-    if target_bug_class:
-        nominate_args += ["--target-bug-class", target_bug_class]
-    rc = subprocess.call(  # noqa: S603 - argv-only, no shell
-        ["ai-codescan", *cache_arg, "nominate", *nominate_args],  # noqa: S607
+    rc = drive_pipeline(
+        DriveOptions(
+            cache_root=cache_root,
+            target=target,
+            repo_id=repo_id,
+            phases=wanted_phases,
+            llm_provider=resolved_provider,
+            llm_model=resolved_model,
+            temperature=temperature,
+            target_bug_class=target_bug_class,
+            commit=commit or "",
+            yes=yes,
+            no_sandbox=no_sandbox,
+            bugbounty=bugbounty,
+        )
     )
     if rc != 0:
         raise typer.Exit(code=rc)
-
-    gate_args = ["--repo-id", repo_id]
-    if yes:
-        gate_args.append("--yes")
-    subprocess.call(  # noqa: S603 - argv-only, no shell
-        ["ai-codescan", *cache_arg, "gate-1", *gate_args],  # noqa: S607
-    )
 
 
 @app.command()

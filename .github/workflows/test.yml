@@ -50,6 +50,13 @@ jobs:
           cache: pnpm
           cache-dependency-path: ai_codescan/ast/node_worker/pnpm-lock.yaml
 
+      # ``tree-sitter-kotlin`` 0.3.8 ships no prebuilt binaries, so the
+      # postinstall hook falls back to ``node-gyp rebuild``. Node 22 on
+      # ubuntu-latest doesn't expose ``node-gyp`` on PATH; install it
+      # globally before the workspace install so the build succeeds.
+      - name: Install node-gyp (Kotlin grammar compiles from source)
+        run: npm install -g node-gyp@^11
+
       - name: Install Node AST worker deps
         working-directory: ai_codescan/ast/node_worker
         run: pnpm install --frozen-lockfile
