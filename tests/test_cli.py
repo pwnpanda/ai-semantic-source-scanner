@@ -538,3 +538,38 @@ def test_install_skills_skips_protected(tmp_path: Path, monkeypatch: pytest.Monk
     result = runner.invoke(app, ["install-skills"])
     assert "skipped deep_analyzer" in result.stdout
     assert target.read_text() == "CUSTOM USER VERSION\n"
+
+
+def test_taint_schema_init_seeds_from_example(tmp_path: Path) -> None:
+    """``taint-schema --init`` copies the bundled example into the repo cache."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    repo = cache / "myrepo"
+    repo.mkdir()
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "taint-schema", "--repo-id", "myrepo", "--init"],
+    )
+    assert result.exit_code == 0
+    schema = repo / "schema.taint.yml"
+    assert schema.is_file()
+    text = schema.read_text(encoding="utf-8")
+    assert "llm_suggested:" in text
+    assert "cache:user:*:profile" in text
+
+
+def test_taint_schema_init_preserves_existing(tmp_path: Path) -> None:
+    """Re-running ``--init`` does not clobber a hand-edited schema file."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    repo = cache / "myrepo"
+    repo.mkdir()
+    custom = repo / "schema.taint.yml"
+    custom.write_text("custom: true\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "taint-schema", "--repo-id", "myrepo", "--init"],
+    )
+    assert result.exit_code == 0
+    assert "already exists" in result.stdout
+    assert custom.read_text() == "custom: true\n"

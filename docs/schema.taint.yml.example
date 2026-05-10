@@ -1,0 +1,91 @@
+# Example schema.taint.yml — copy to <cache>/<repo-id>/schema.taint.yml
+# (created automatically when ``ai-codescan taint-schema --resolve`` runs).
+#
+# This file is the persistent annotation store for Layer-5 storage taint.
+# Each entry under ``llm_suggested:`` is a (storage_id → metadata) pair
+# discovered by the LLM resolver skill; ``ai-codescan taint-schema --run``
+# seeds these into the storage_locations / storage_taint tables and the
+# round-2 fixpoint produces synthetic flows for matching read sites.
+#
+# Pattern syntax: ``<kind>:<template>`` where holes are ``*``.
+#   * kind ∈ {cache_key, queue_topic, sql_column, file_path, env_var}
+#   * template uses ``*`` for runtime values you can't pin down (typically
+#     user-controlled IDs).
+#
+# Cross-language storage_ids are deliberately language-agnostic: a Redis
+# key written from Python and read from Go shares the same canonical
+# pattern. Round-2 fixpoint correlates writes/reads across languages.
+
+llm_suggested:
+  # ---- cache_key (Redis / Memcached / Rails.cache / IMemoryCache / etc) ----
+
+  "cache:user:*:profile":
+    kind: cache_key
+    confidence: 0.9
+    rationale: |
+      Standard "user profile" cache key written by Express/Flask/Rails/Laravel
+      handlers; keyed on the user id. Often the read site is a different
+      service in the same repo.
+    call_id: S-example-1
+
+  "cache:auth:*:token":
+    kind: cache_key
+    confidence: 0.9
+    rationale: |
+      Auth/session token cache. Found in Go (rdb.Set), Java (RedisTemplate),
+      and Node (redis-cache). Reads typically happen in middleware.
+    call_id: S-example-2
+
+  "cache:orders:*":
+    kind: cache_key
+    confidence: 0.85
+    rationale: |
+      Per-order cache, keyed on order id. Common across e-commerce repos.
+    call_id: S-example-3
+
+  # ---- queue_topic (Kafka / RabbitMQ / SQS / Service Bus / Sidekiq) ----
+
+  "queue:notifications-*":
+    kind: queue_topic
+    confidence: 0.85
+    rationale: |
+      Kafka topic name with a tenant or environment suffix. Spring Kafka
+      and Confluent.Kafka both produce/consume this shape.
+    call_id: S-example-4
+
+  "queue:tenant-*":
+    kind: queue_topic
+    confidence: 0.85
+    rationale: |
+      Azure Service Bus or SQS queue per tenant. Sender lives in API code,
+      consumer in a worker service.
+    call_id: S-example-5
+
+  "queue:high_priority":
+    kind: queue_topic
+    confidence: 0.95
+    rationale: |
+      Static Sidekiq / Hangfire queue name. Producer scattered across
+      controllers; consumer lives in a worker class with ``perform``.
+    call_id: S-example-6
+
+  # ---- sql_column (parameterless storage of identity columns) ----
+
+  "sql:users.id":
+    kind: sql_column
+    confidence: 1.0
+    rationale: |
+      Primary identity column. Round-1 detection picks this up
+      automatically from any UPDATE/INSERT site; this entry serves as a
+      reference for cross-engine correlation.
+    call_id: S-example-7
+
+  # ---- env_var (sources read at startup; rarely sinks) ----
+
+  "env:DATABASE_URL":
+    kind: env_var
+    confidence: 0.95
+    rationale: |
+      Connection string read by every service. Useful as a *source* of
+      contained-credentials taint when downstream code logs the URL.
+    call_id: S-example-8

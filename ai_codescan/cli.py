@@ -857,7 +857,7 @@ def report(
 
 
 @app.command("taint-schema")
-def taint_schema(  # noqa: PLR0913, PLR0912, PLR0915 - CLI orchestrator
+def taint_schema(  # noqa: PLR0911, PLR0913, PLR0912, PLR0915 - CLI orchestrator
     ctx: typer.Context,
     repo_id: Annotated[str, typer.Option("--repo-id")] = "",
     show: Annotated[bool, typer.Option("--show")] = False,
@@ -877,6 +877,18 @@ def taint_schema(  # noqa: PLR0913, PLR0912, PLR0915 - CLI orchestrator
             ),
         ),
     ] = False,
+    init: Annotated[
+        bool,
+        typer.Option(
+            "--init",
+            help=(
+                "Seed schema.taint.yml from the bundled docs/schema.taint.yml.example "
+                "if it doesn't exist yet. The example demonstrates the supported "
+                "kinds (cache_key/queue_topic/sql_column/env_var) and shows "
+                "cross-language storage_id patterns."
+            ),
+        ),
+    ] = False,
     llm_provider: Annotated[str, typer.Option("--llm-provider")] = "",
     llm_model: Annotated[str, typer.Option("--llm-model")] = "",
 ) -> None:
@@ -885,6 +897,21 @@ def taint_schema(  # noqa: PLR0913, PLR0912, PLR0915 - CLI orchestrator
     repo_id = _resolve_repo_id(cache_root, repo_id)
     repo_dir = cache_root / repo_id
     schema_path = repo_dir / "schema.taint.yml"
+
+    if init:
+        if schema_path.is_file():
+            typer.echo(f"schema.taint.yml already exists at {schema_path}; not overwriting")
+            return
+        example_path = (
+            Path(__file__).resolve().parent.parent / "docs" / "schema.taint.yml.example"
+        )
+        if not example_path.is_file():
+            typer.echo(f"example file missing at {example_path}", err=True)
+            raise typer.Exit(code=1)
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        schema_path.write_text(example_path.read_text(encoding="utf-8"), encoding="utf-8")
+        typer.echo(f"seeded schema.taint.yml from {example_path}")
+        return
 
     if resolve:
         db = repo_dir / "index.duckdb"
