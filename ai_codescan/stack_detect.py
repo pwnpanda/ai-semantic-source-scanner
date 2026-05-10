@@ -60,6 +60,7 @@ class ProjectKind(StrEnum):
     PHP = "php"  # has composer.json, wp-config.php, or Drupal markers
     CSHARP = "csharp"  # has *.csproj, *.sln, or Directory.Build.props
     BASH = "bash"  # bare shell scripts (no manifest); detected via .sh files
+    YAML = "yaml"  # YAML config (GitHub Actions / k8s / docker-compose / Helm)
     HTML_ONLY = "html"  # no package.json, but contains HTML
 
 
@@ -119,6 +120,8 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".razor", "csharp"),
     (".sh", "bash"),
     (".bash", "bash"),
+    (".yml", "yaml"),
+    (".yaml", "yaml"),
     (".html", "html"),
     (".htm", "html"),
     (".vue", "vue"),
@@ -881,6 +884,90 @@ def _detect_ruby_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     return projects
 
 
+_K8S_FIRST_LINE_HINTS: tuple[str, ...] = (
+    "apiVersion: v1",
+    "apiVersion: apps/",
+    "apiVersion: batch/",
+    "apiVersion: networking.",
+    "apiVersion: rbac.",
+    "kind: Pod",
+    "kind: Deployment",
+    "kind: StatefulSet",
+    "kind: DaemonSet",
+    "kind: Service",
+    "kind: ConfigMap",
+    "kind: Secret",
+    "kind: Job",
+    "kind: CronJob",
+    "kind: Ingress",
+)
+
+
+def _detect_yaml_frameworks(pkg_dir: Path) -> set[str]:
+    """Identify YAML-config-only projects (Actions / k8s / compose / Helm).
+
+    The detector inspects file paths and the first ~256 bytes of YAML
+    documents — enough to recognise a workflow / k8s manifest / compose
+    file without parsing.
+    """
+    frameworks: set[str] = set()
+    workflows = pkg_dir / ".github" / "workflows"
+    if workflows.is_dir() and any(workflows.glob("*.yml")) | any(workflows.glob("*.yaml")):
+        frameworks.add("github-actions")
+    if (pkg_dir / "docker-compose.yml").is_file() or (
+        pkg_dir / "docker-compose.yaml"
+    ).is_file() or (pkg_dir / "compose.yml").is_file() or (pkg_dir / "compose.yaml").is_file():
+        frameworks.add("docker-compose")
+    if (pkg_dir / "Chart.yaml").is_file():
+        frameworks.add("helm")
+    # k8s manifests don't have a fixed filename; sniff the first file or
+    # two for ``apiVersion``/``kind`` markers.
+    for yaml_file in list(pkg_dir.rglob("*.yml")) + list(pkg_dir.rglob("*.yaml")):
+        rel = yaml_file.relative_to(pkg_dir)
+        if any(part in _SKIP_DIRS for part in rel.parts):
+            continue
+        try:
+            head = yaml_file.read_text(encoding="utf-8", errors="replace")[:256]
+        except OSError:
+            continue
+        if any(hint in head for hint in _K8S_FIRST_LINE_HINTS):
+            frameworks.add("kubernetes")
+            break
+    return frameworks
+
+
+def _detect_yaml_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+    """Find YAML-config-only projects.
+
+    Triggers when ``root`` ships GitHub Actions workflows, a Docker
+    Compose file, a Helm chart, or k8s manifests — and **only when no
+    other manifest-based project covers the same directory**. A polyglot
+    repo with a ``package.json`` plus ``.github/workflows/*.yml`` keeps
+    the Node project as primary; the workflows are still indexed via
+    the ``yaml`` AST job emitted from ``prep``.
+
+    We emit at most one YAML project at the root.
+    """
+    if Path(".") in claimed_dirs:
+        return []
+    frameworks = _detect_yaml_frameworks(root)
+    if not frameworks:
+        return []
+    return [
+        Project(
+            name=root.name,
+            kind=ProjectKind.YAML,
+            base_path=Path("."),
+            languages={"yaml"},
+            has_tsconfig=False,
+            is_workspace_member=False,
+            workspace_root=None,
+            frameworks=frameworks,
+            package_manager="unknown",
+        )
+    ]
+
+
 def _detect_csharp_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:  # noqa: PLR0912 - branches mirror the candidate / claimed / descendant rules
     """Find C#/.NET projects: one per ``*.csproj`` (or ``*.sln`` at root).
 
@@ -1056,6 +1143,7 @@ def detect_projects(root: Path) -> list[Project]:
     projects.extend(_detect_ruby_projects(root, claimed_dirs))
     projects.extend(_detect_php_projects(root, claimed_dirs))
     projects.extend(_detect_csharp_projects(root, claimed_dirs))
+    projects.extend(_detect_yaml_projects(root, claimed_dirs))
 
     if not projects:
         projects.extend(_detect_bare_source_projects(root))

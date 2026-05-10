@@ -61,6 +61,25 @@ _QUEUE_CONSUMER = re.compile(
     re.IGNORECASE,
 )
 
+# --- YAML / GitHub Actions callee patterns ----------------------------------
+
+# ``on:`` line surfaced by the YAML extractor (synthesised as
+# ``on: <first-line>``). Workflow triggers (``push``, ``pull_request``,
+# ``issues``, ``workflow_dispatch``, ``schedule``, ``workflow_call``) are
+# the GitHub Actions equivalent of HTTP routes — they're how an outside
+# event invokes the workflow.
+_YAML_WORKFLOW_TRIGGER = re.compile(r"^on:\s+", re.IGNORECASE)
+# A ``run:`` block is a shell-script step. Surface as a CLI marker so
+# reviewers see it; storage_taint sinks then pick up the actual command
+# patterns (echo / curl / etc.).
+_YAML_RUN_STEP = re.compile(r"^run:\s+", re.IGNORECASE)
+# ``${{ ... }}`` GitHub Actions expression interpolations. Specifically
+# attacker-controllable ones (``github.event.*``) are taint sources;
+# others are configuration. Surface them all as CLI-style entrypoint
+# markers so the entrypoints summary captures the workflow's
+# configurability surface.
+_YAML_TEMPLATE_EXPR = re.compile(r"^\$\{\{\s*github\.event\.")
+
 # --- Bash / shell callee patterns -------------------------------------------
 
 # Shell scripts typically don't have a single conventional entrypoint —
@@ -316,6 +335,19 @@ def _classify_callee_php(callee: str) -> EntrypointKind | None:
     return None
 
 
+def _classify_callee_yaml(callee: str) -> EntrypointKind | None:
+    if _YAML_WORKFLOW_TRIGGER.search(callee):
+        return "http_route"
+    if _YAML_RUN_STEP.search(callee):
+        return "cli"
+    if _YAML_TEMPLATE_EXPR.search(callee):
+        # Attacker-controllable workflow expression — surface as a CLI
+        # marker so it shows up in the entrypoints summary alongside
+        # ``run:`` blocks.
+        return "cli"
+    return None
+
+
 def _classify_callee_bash(callee: str) -> EntrypointKind | None:
     if _BASH_CLI_READ.search(callee):
         return "cli"
@@ -368,6 +400,8 @@ def _classify_callee(callee: str, file: str) -> EntrypointKind | None:  # noqa: 
         return _classify_callee_kotlin(callee)
     if file.endswith((".sh", ".bash")):
         return _classify_callee_bash(callee)
+    if file.endswith((".yml", ".yaml")):
+        return _classify_callee_yaml(callee)
     return _classify_callee_js(callee)
 
 

@@ -103,15 +103,18 @@ def _files_for_project(
     list[Path],
     list[Path],
     list[Path],
+    list[Path],
 ]:
     """Return per-language file lists under ``project.base_path``.
 
-    Order: ``(ts, html, python, java, go, ruby, php, csharp, kotlin, bash)``.
+    Order: ``(ts, html, python, java, go, ruby, php, csharp, kotlin, bash, yaml)``.
     Kotlin shares JVM tooling with Java, so a JAVA-kind project that also
     contains ``.kt`` / ``.kts`` files emits both a ``java`` and a
     ``kotlin`` AST job. Bash scripts emit their own AST job whenever the
     project carries ``.sh`` / ``.bash`` files (CI / glue scripts in
-    polyglot repos count too).
+    polyglot repos count too). YAML files emit a ``yaml`` AST job in
+    YAML-kind projects so workflow / k8s / compose entrypoints land in
+    the index.
     """
     base = snapshot_root / project.base_path
     ts = [
@@ -180,7 +183,12 @@ def _files_for_project(
         for p in base.rglob("*")
         if p.is_file() and p.suffix in {".sh", ".bash"} and "node_modules" not in p.parts
     ]
-    return ts, html, python, java, go, ruby, php, csharp, kotlin, bash
+    yaml_files = [
+        p
+        for p in base.rglob("*")
+        if p.is_file() and p.suffix in {".yml", ".yaml"} and "node_modules" not in p.parts
+    ]
+    return ts, html, python, java, go, ruby, php, csharp, kotlin, bash, yaml_files
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
@@ -196,6 +204,7 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         csharp_files,
         kotlin_files,
         bash_files,
+        yaml_files,
     ) = _files_for_project(snapshot_root, project)
     jobs: list[AstJob] = []
     if ts_files:
@@ -233,6 +242,13 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
     # detection covers BASH-kind projects on its own.
     if bash_files:
         jobs.append(AstJob(kind="bash", project_root=base, files=bash_files))
+    # YAML AST job: emit only for YAML-kind projects (GitHub Actions /
+    # k8s / compose / Helm). For polyglot repos with a primary code
+    # project, the workflows live alongside but aren't ingested as YAML
+    # — this avoids double-counting compose / k8s manifests in a Node
+    # repo's index.
+    if yaml_files and project.kind is ProjectKind.YAML:
+        jobs.append(AstJob(kind="yaml", project_root=base, files=yaml_files))
     return jobs
 
 

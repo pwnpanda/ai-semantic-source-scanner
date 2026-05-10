@@ -17,6 +17,7 @@ _LANG_FENCE_BY_SUFFIX: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".php", ".phtml"), "php"),
     ((".cs", ".cshtml", ".razor"), "csharp"),
     ((".sh", ".bash"), "bash"),
+    ((".yml", ".yaml"), "yaml"),
     ((".html", ".htm"), "html"),
 )
 
@@ -35,7 +36,7 @@ def _comment_marker(fence: str) -> str:
     the highlighted language. Languages with no obvious leader fall back to
     ``//`` to preserve the existing behaviour.
     """
-    if fence in {"python", "ruby", "bash"}:
+    if fence in {"python", "ruby", "bash", "yaml"}:
         return "#"
     # PHP supports both ``//`` and ``#``; the JS-style ``//`` is universally
     # recognised by syntax highlighters and matches the rest of the C-family

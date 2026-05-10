@@ -28,6 +28,7 @@ class AstJob:
         "csharp",
         "kotlin",
         "bash",
+        "yaml",
     ]
     project_root: Path
     files: list[Path] = field(default_factory=list)

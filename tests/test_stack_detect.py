@@ -554,6 +554,60 @@ def test_csharp_skips_bin_obj_dirs(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_yaml_github_actions_project_detected(fixtures_dir: Path) -> None:
+    """A repo with ``.github/workflows/*.yml`` only is a YAML project."""
+    p = detect_projects(fixtures_dir / "tiny-actions")[0]
+    assert p.kind is ProjectKind.YAML
+    assert "github-actions" in p.frameworks
+
+
+def test_yaml_kubernetes_manifest_detected(tmp_path: Path) -> None:
+    """A k8s manifest is recognised by ``apiVersion``/``kind`` markers."""
+    pkg = tmp_path / "k8s"
+    pkg.mkdir()
+    (pkg / "deploy.yaml").write_text(
+        "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: app\n",
+        encoding="utf-8",
+    )
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.YAML
+    assert "kubernetes" in p.frameworks
+
+
+def test_yaml_docker_compose_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "compose"
+    pkg.mkdir()
+    (pkg / "docker-compose.yml").write_text(
+        "services:\n  api:\n    image: nginx\n", encoding="utf-8"
+    )
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.YAML
+    assert "docker-compose" in p.frameworks
+
+
+def test_yaml_helm_chart_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "chart"
+    pkg.mkdir()
+    (pkg / "Chart.yaml").write_text(
+        "apiVersion: v2\nname: app\nversion: 0.1.0\n", encoding="utf-8"
+    )
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.YAML
+    assert "helm" in p.frameworks
+
+
+def test_yaml_skipped_when_node_project_at_root(tmp_path: Path) -> None:
+    """A polyglot repo with package.json + workflows yields the Node project only."""
+    pkg = tmp_path / "polyglot"
+    pkg.mkdir()
+    (pkg / "package.json").write_text('{"name":"polyglot"}\n', encoding="utf-8")
+    wf = pkg / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("on: push\njobs: {}\n", encoding="utf-8")
+    projects = detect_projects(pkg)
+    assert [p.kind for p in projects] == [ProjectKind.NODE]
+
+
 def test_bare_bash_files_detected(fixtures_dir: Path) -> None:
     """Bare shell scripts (no manifest) detect as a BASH-kind project."""
     p = detect_projects(fixtures_dir / "tiny-bash")[0]

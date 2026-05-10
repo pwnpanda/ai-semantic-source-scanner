@@ -538,6 +538,51 @@ def test_wp_cli_add_command_detected() -> None:
     assert any(e.kind == "cli" for e in eps)
 
 
+# --- YAML / GitHub Actions patterns ---
+
+
+def test_yaml_workflow_trigger_detected_as_route() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/.github/workflows/ci.yml",
+            "line": 6,
+            "calleeText": "on: push",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_yaml_run_step_detected_as_cli() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/.github/workflows/ci.yml",
+            "line": 17,
+            "calleeText": "run: echo hello",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "cli" for e in eps)
+
+
+def test_yaml_github_event_template_detected_as_cli() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/.github/workflows/ci.yml",
+            "line": 17,
+            "calleeText": "${{ github.event.issue.title }}",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "cli" for e in eps)
+
+
 # --- Bash / shell patterns ---
 
 

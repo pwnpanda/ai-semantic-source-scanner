@@ -1,0 +1,17 @@
+# Tiny GitHub Actions workflow with a deliberate CWE-78 command-injection
+# via attacker-controlled issue title. Used as a fixture for ai-codescan's
+# YAML pipeline; Semgrep should flag the unsafe expansion in run:.
+name: Triage
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Echo issue title
+        run: echo "Triaging: ${{ github.event.issue.title }}"
