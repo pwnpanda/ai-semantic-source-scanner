@@ -61,6 +61,31 @@ _QUEUE_CONSUMER = re.compile(
     re.IGNORECASE,
 )
 
+# --- C# / .NET callee patterns ----------------------------------------------
+
+# ASP.NET Core attribute routing on controller actions. Tree-sitter-c-sharp
+# emits attributes as ``attribute`` nodes whose text is e.g. ``[HttpGet]`` or
+# ``[Route("api/[controller]")]`` or ``[ApiController]``.
+_CSHARP_ASPNET_ATTRIBUTE = re.compile(
+    r"^\[(?:Http(?:Get|Post|Put|Patch|Delete|Head|Options)|"
+    r"Route|ApiController|AcceptVerbs)\b",
+)
+# Minimal-API map calls (``app.MapGet("/u", ...)``).
+_CSHARP_MINIMAL_API = re.compile(
+    r"\b(?:app|builder|router|endpoints|api|grp|group)\."
+    r"(?:MapGet|MapPost|MapPut|MapPatch|MapDelete|MapHead|MapMethods|MapGroup)\b",
+)
+# Azure Functions attribute markers — both isolated worker (``[Function]``)
+# and in-process (``[FunctionName]``).
+_CSHARP_AZURE_FUNCTION = re.compile(
+    r"^\[(?:Function|FunctionName)\b",
+)
+# Worker-service base classes show up as ``: BackgroundService`` in the AST
+# call/inheritance shape; when surfaced through tree-sitter as part of the
+# class declaration token text we won't see it as an xref. Detection here
+# focuses on attributes and minimal-API calls; ``BackgroundService``
+# subclasses are reserved for later symbol-walker support.
+
 # --- PHP callee patterns ----------------------------------------------------
 
 # Laravel / CodeIgniter / Slim-style ``Route::get('/path', ...)`` and
@@ -261,7 +286,17 @@ def _classify_callee_php(callee: str) -> EntrypointKind | None:
     return None
 
 
-def _classify_callee(callee: str, file: str) -> EntrypointKind | None:
+def _classify_callee_csharp(callee: str) -> EntrypointKind | None:
+    if _CSHARP_ASPNET_ATTRIBUTE.search(callee):
+        return "http_route"
+    if _CSHARP_MINIMAL_API.search(callee):
+        return "http_route"
+    if _CSHARP_AZURE_FUNCTION.search(callee):
+        return "http_route"
+    return None
+
+
+def _classify_callee(callee: str, file: str) -> EntrypointKind | None:  # noqa: PLR0911 - one early-return per language is the clearest expression
     """Return the entrypoint kind for a single callee-text from any language."""
     if file.endswith((".py", ".pyi")):
         return _classify_callee_py(callee, file)
@@ -273,6 +308,8 @@ def _classify_callee(callee: str, file: str) -> EntrypointKind | None:
         return _classify_callee_ruby(callee, file)
     if file.endswith((".php", ".phtml")):
         return _classify_callee_php(callee)
+    if file.endswith((".cs", ".cshtml", ".razor")):
+        return _classify_callee_csharp(callee)
     return _classify_callee_js(callee)
 
 

@@ -50,6 +50,10 @@ _JOERN_LANGUAGE_FLAG: dict[str, str] = {
     # PATH. Document this as a runtime requirement; the call still gracefully
     # fails via JoernUnavailableError when ``joern-parse`` itself is missing.
     "php": "PHP",
+    # ``csharpsrc2cpg`` ships with Joern but isn't listed in the official
+    # maturity table — treat results as advisory until validated against
+    # fixtures. No host-side .NET SDK is required.
+    "csharp": "CSHARPSRC",
 }
 
 _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
@@ -59,6 +63,7 @@ _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
     "go": frozenset({".go"}),
     "ruby": frozenset({".rb", ".rake"}),
     "php": frozenset({".php", ".phtml"}),
+    "csharp": frozenset({".cs"}),
 }
 
 

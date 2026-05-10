@@ -200,6 +200,8 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
                 language = "ruby"
             elif project.kind is ProjectKind.PHP:
                 language = "php"
+            elif project.kind is ProjectKind.CSHARP:
+                language = "csharp"
             else:
                 continue
             project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"

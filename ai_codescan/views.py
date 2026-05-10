@@ -14,6 +14,7 @@ _LANG_FENCE_BY_SUFFIX: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".go",), "go"),
     ((".rb", ".rake", ".gemspec"), "ruby"),
     ((".php", ".phtml"), "php"),
+    ((".cs", ".cshtml", ".razor"), "csharp"),
     ((".html", ".htm"), "html"),
 )
 

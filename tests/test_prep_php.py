@@ -24,9 +24,7 @@ def _has_node() -> bool:
 
 
 @pytest.mark.skipif(not _has_node(), reason="node runtime required for AST extraction")
-def test_prep_on_tiny_slim_indexes_php_symbols(
-    tmp_path: Path, fixtures_dir: Path
-) -> None:
+def test_prep_on_tiny_slim_indexes_php_symbols(tmp_path: Path, fixtures_dir: Path) -> None:
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
     snap, db_path = run_prep(
@@ -41,9 +39,7 @@ def test_prep_on_tiny_slim_indexes_php_symbols(
 
     conn = duckdb.connect(str(db_path), read_only=True)
     try:
-        files = conn.execute(
-            "SELECT path FROM files WHERE path LIKE '%index.php'"
-        ).fetchall()
+        files = conn.execute("SELECT path FROM files WHERE path LIKE '%index.php'").fetchall()
         assert files, "tiny-slim index.php was not ingested"
 
         query_xrefs = conn.execute(

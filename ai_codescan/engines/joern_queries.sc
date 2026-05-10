@@ -51,6 +51,34 @@ import java.security.MessageDigest
   )
 
   val patterns: LangPatterns = language.toLowerCase match {
+    case "csharp" | "csharpsrc" =>
+      LangPatterns(
+        sourcePattern =
+          "(?i)(HttpContext\\.Request|Request\\.Query|Request\\.Form|" +
+          "Request\\.Headers|Request\\.Body|Request\\.Cookies|Request\\.RouteValues|" +
+          "FromBody|FromQuery|FromRoute|FromForm|FromHeader|" +
+          "QueryString|HttpRequest).*",
+        sinkClasses = List(
+          ("CWE-89",  "sql.exec",      "(?i)ExecuteNonQuery"),
+          ("CWE-89",  "sql.exec",      "(?i)ExecuteScalar"),
+          ("CWE-89",  "sql.exec",      "(?i)ExecuteReader"),
+          ("CWE-89",  "sql.exec",      "(?i)ExecuteSqlRaw"),
+          ("CWE-89",  "sql.exec",      "(?i)FromSqlRaw"),
+          ("CWE-89",  "sql.exec",      "(?i)Query"),
+          ("CWE-89",  "sql.exec",      "(?i)QueryAsync"),
+          ("CWE-89",  "sql.exec",      "(?i)Execute"),
+          ("CWE-78",  "cmd.shell",     "(?i)Start"),
+          ("CWE-79",  "html.write",    "(?i)WriteAsync"),
+          ("CWE-79",  "html.write",    "(?i)Write"),
+          ("CWE-22",  "fs.read",       "(?i)ReadAllText"),
+          ("CWE-22",  "fs.read",       "(?i)ReadAllBytes"),
+          ("CWE-22",  "fs.read",       "(?i)OpenRead"),
+          ("CWE-22",  "fs.read",       "(?i)Open"),
+          ("CWE-502", "deser.unsafe",  "(?i)Deserialize"),
+          ("CWE-502", "deser.unsafe",  "(?i)DeserializeObject"),
+          ("CWE-502", "deser.unsafe",  "(?i)ReadObject")
+        )
+      )
     case "php" =>
       LangPatterns(
         sourcePattern =

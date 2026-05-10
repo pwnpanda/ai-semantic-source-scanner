@@ -448,6 +448,99 @@ def test_php_symfony_framework_detected(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# C#/.NET detection
+# ---------------------------------------------------------------------------
+
+
+def test_csharp_aspnet_minimal_api_detected(fixtures_dir: Path) -> None:
+    projects = detect_projects(fixtures_dir / "tiny-aspnet")
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.CSHARP
+    assert p.name == "TinyAspNet"
+    assert "csharp" in p.languages
+    assert "aspnetcore-minimal" in p.frameworks
+    assert p.package_manager == "nuget"
+
+
+def test_csharp_blazor_wasm_framework_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "bapp"
+    pkg.mkdir()
+    (pkg / "bapp.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">'
+        "<PropertyGroup><AssemblyName>Bapp</AssemblyName></PropertyGroup>"
+        "<ItemGroup>"
+        "<PackageReference "
+        'Include="Microsoft.AspNetCore.Components.WebAssembly" Version="8.0.10" />'
+        "</ItemGroup></Project>",
+        encoding="utf-8",
+    )
+    (pkg / "Program.cs").write_text("// blazor entry\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.CSHARP
+    assert "blazor-wasm" in p.frameworks
+
+
+def test_csharp_azure_functions_isolated_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "fn"
+    pkg.mkdir()
+    (pkg / "fn.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">'
+        "<ItemGroup>"
+        '<PackageReference Include="Microsoft.Azure.Functions.Worker" Version="1.21.0" />'
+        "</ItemGroup></Project>",
+        encoding="utf-8",
+    )
+    p = detect_projects(pkg)[0]
+    assert "azure-functions" in p.frameworks
+
+
+def test_csharp_solution_with_two_projects_emits_one_each(tmp_path: Path) -> None:
+    """An sln at root with two csproj children emits one project per csproj."""
+    root = tmp_path / "sln-repo"
+    root.mkdir()
+    (root / "App.sln").write_text("# sln stub\n", encoding="utf-8")
+    api = root / "src" / "Api"
+    web = root / "src" / "Web"
+    api.mkdir(parents=True)
+    web.mkdir(parents=True)
+    (api / "Api.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk.Web">'
+        "<PropertyGroup><AssemblyName>Api</AssemblyName></PropertyGroup>"
+        "<ItemGroup><PackageReference "
+        'Include="Microsoft.AspNetCore.Mvc" Version="2.2" /></ItemGroup></Project>',
+        encoding="utf-8",
+    )
+    (web / "Web.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk.Web">'
+        "<PropertyGroup><AssemblyName>Web</AssemblyName></PropertyGroup>"
+        "<ItemGroup><PackageReference "
+        'Include="Grpc.AspNetCore" Version="2.66" /></ItemGroup></Project>',
+        encoding="utf-8",
+    )
+    projects = detect_projects(root)
+    names = {p.name for p in projects}
+    assert names == {"Api", "Web"}
+
+
+def test_csharp_skips_bin_obj_dirs(tmp_path: Path) -> None:
+    pkg = tmp_path / "capp"
+    pkg.mkdir()
+    (pkg / "capp.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        "<AssemblyName>Capp</AssemblyName></PropertyGroup></Project>",
+        encoding="utf-8",
+    )
+    nested = pkg / "bin" / "Debug" / "net8.0" / "shadow"
+    nested.mkdir(parents=True)
+    (nested / "shadow.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"></Project>',
+        encoding="utf-8",
+    )
+    assert [p.name for p in detect_projects(pkg)] == ["Capp"]
+
+
+# ---------------------------------------------------------------------------
 # Bare-source fallback (no manifest)
 # ---------------------------------------------------------------------------
 

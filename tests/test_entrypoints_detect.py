@@ -538,6 +538,72 @@ def test_wp_cli_add_command_detected() -> None:
     assert any(e.kind == "cli" for e in eps)
 
 
+# --- C# / .NET framework patterns ---
+
+
+def test_aspnet_attribute_route_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/Controllers/Foo.cs",
+            "line": 14,
+            "calleeText": '[Route("api/[controller]")]',
+        },
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/Controllers/Foo.cs",
+            "line": 17,
+            "calleeText": "[HttpGet]",
+        },
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert sum(1 for e in eps if e.kind == "http_route") == 2
+
+
+def test_aspnet_minimal_api_mapget_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/Program.cs",
+            "line": 15,
+            "calleeText": 'app.MapGet("/u", (string id) => Results.Ok(id))',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_aspnet_apicontroller_attribute_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/Controllers/Foo.cs",
+            "line": 11,
+            "calleeText": "[ApiController]",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_azure_function_attribute_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/MyFunctions.cs",
+            "line": 9,
+            "calleeText": '[Function("HttpFoo")]',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
 def test_python_sys_argv_detected() -> None:
     xrefs = [
         {

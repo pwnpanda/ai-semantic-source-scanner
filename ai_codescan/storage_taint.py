@@ -64,7 +64,15 @@ _SQL_CALL = re.compile(
     r"|\$(?:pdo|db|mysqli|wpdb|conn|connection)->"
     r"(?:query|exec|execute|prepare|get_results|get_var|get_row|"
     r"executeQuery|executeStatement|raw|select|statement|whereRaw|selectRaw)$"
-    r"|\bmysqli_(?:query|multi_query|real_query)$",
+    r"|\bmysqli_(?:query|multi_query|real_query)$"
+    # C# / .NET ADO.NET / Dapper / EF Core. ``cmd``/``command`` covers the
+    # SqlCommand idiom; ``connection``/``conn`` covers Dapper extension
+    # methods on ``IDbConnection``; ``Database`` covers EF Core's raw-SQL
+    # methods.
+    r"|\b(?:cmd|command|sqlCommand|conn|connection|db|Database|dbContext)\."
+    r"(?:ExecuteNonQuery|ExecuteScalar|ExecuteReader|"
+    r"ExecuteNonQueryAsync|ExecuteScalarAsync|ExecuteReaderAsync|"
+    r"ExecuteSqlRaw|ExecuteSqlRawAsync|FromSqlRaw|SqlQueryRaw)$",
     re.IGNORECASE,
 )
 _CACHE_SET = re.compile(
@@ -295,6 +303,8 @@ _JS_TS_GLOBS = (
     "**/*.rake",
     "**/*.php",
     "**/*.phtml",
+    "**/*.cs",
+    "**/*.cshtml",
 )
 _SELECT_STRING = re.compile(
     r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",

@@ -42,6 +42,9 @@ _SKIP_DIRS = frozenset(
         ".gradle",  # Gradle cache
         ".idea",  # JetBrains caches
         "out",  # IntelliJ build dir
+        "bin",  # .NET build output
+        "obj",  # .NET intermediate output
+        ".vs",  # Visual Studio caches
     }
 )
 
@@ -55,6 +58,7 @@ class ProjectKind(StrEnum):
     GO = "go"  # has go.mod (or go.work)
     RUBY = "ruby"  # has Gemfile or *.gemspec
     PHP = "php"  # has composer.json, wp-config.php, or Drupal markers
+    CSHARP = "csharp"  # has *.csproj, *.sln, or Directory.Build.props
     HTML_ONLY = "html"  # no package.json, but contains HTML
 
 
@@ -109,6 +113,9 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".gemspec", "ruby"),
     (".php", "php"),
     (".phtml", "php"),
+    (".cs", "csharp"),
+    (".cshtml", "csharp"),
+    (".razor", "csharp"),
     (".html", "html"),
     (".htm", "html"),
     (".vue", "vue"),
@@ -407,6 +414,99 @@ def _detect_go_package_manager(pkg_dir: Path) -> str:
         return "go-workspace"
     if (pkg_dir / "go.mod").is_file():
         return "go-modules"
+    return "unknown"
+
+
+_CSHARP_FRAMEWORK_DEPS: dict[str, str] = {
+    # Substrings searched against ``.csproj`` / ``Directory.Packages.props``.
+    "Microsoft.AspNetCore.App": "aspnetcore",
+    "Microsoft.AspNetCore.Mvc": "aspnetcore-mvc",
+    "Microsoft.AspNetCore.Components.WebAssembly": "blazor-wasm",
+    "Microsoft.AspNetCore.Components.Web": "blazor-server",
+    "Microsoft.AspNetCore.SignalR": "signalr",
+    "Microsoft.Extensions.Hosting": "worker-service",
+    "Microsoft.Azure.Functions.Worker": "azure-functions",
+    "Microsoft.NET.Sdk.Functions": "azure-functions",
+    "Grpc.AspNetCore": "grpc",
+    "MassTransit": "masstransit",
+    "MediatR": "mediatr",
+    "Hangfire": "hangfire",
+    "Quartz": "quartz",
+    "Microsoft.Orleans": "orleans",
+}
+
+_CSPROJ_NAME_RE = re.compile(r"<AssemblyName>\s*([^<\s]+)\s*</AssemblyName>")
+_CSPROJ_ROOT_NS_RE = re.compile(r"<RootNamespace>\s*([^<\s]+)\s*</RootNamespace>")
+
+
+def _csharp_manifest(pkg_dir: Path) -> Path | None:
+    """Return the most authoritative C# project marker.
+
+    Preference: any ``*.csproj`` > ``*.sln`` > ``Directory.Build.props`` >
+    ``global.json``.
+    """
+    for csproj in pkg_dir.glob("*.csproj"):
+        if csproj.is_file():
+            return csproj
+    for sln in pkg_dir.glob("*.sln"):
+        if sln.is_file():
+            return sln
+    for name in ("Directory.Build.props", "Directory.Packages.props", "global.json"):
+        candidate = pkg_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _project_name_csharp(manifest: Path) -> str:
+    """Best-effort C# project name.
+
+    For ``*.csproj``: prefers ``<AssemblyName>``, falls back to
+    ``<RootNamespace>``, then to the file stem (``Foo.csproj`` → ``Foo``).
+    For ``*.sln``: file stem.
+    """
+    parent_name = manifest.parent.name or "csharp"
+    if manifest.suffix == ".csproj":
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+        for pattern in (_CSPROJ_NAME_RE, _CSPROJ_ROOT_NS_RE):
+            match = pattern.search(text)
+            if match:
+                return match.group(1)
+        return manifest.stem or parent_name
+    if manifest.suffix == ".sln":
+        return manifest.stem or parent_name
+    return parent_name
+
+
+def _detect_csharp_frameworks(pkg_dir: Path) -> set[str]:
+    text_blobs: list[str] = []
+    for csproj in pkg_dir.glob("*.csproj"):
+        if csproj.is_file():
+            text_blobs.append(csproj.read_text(encoding="utf-8", errors="replace"))
+    for name in ("Directory.Build.props", "Directory.Packages.props"):
+        candidate = pkg_dir / name
+        if candidate.is_file():
+            text_blobs.append(candidate.read_text(encoding="utf-8", errors="replace"))
+    if not text_blobs:
+        return set()
+    blob = "\n".join(text_blobs)
+    frameworks = {label for needle, label in _CSHARP_FRAMEWORK_DEPS.items() if needle in blob}
+    # Heuristic: a Program.cs that constructs a WebApplication implies an
+    # ASP.NET Core minimal-API surface even when only the framework
+    # reference is present.
+    program_cs = pkg_dir / "Program.cs"
+    if program_cs.is_file():
+        program_text = program_cs.read_text(encoding="utf-8", errors="replace")
+        if "WebApplication.CreateBuilder" in program_text:
+            frameworks.add("aspnetcore-minimal")
+    return frameworks
+
+
+def _detect_csharp_package_manager(pkg_dir: Path) -> str:
+    if (pkg_dir / "packages.lock.json").is_file():
+        return "nuget-locked"
+    if any(pkg_dir.glob("*.csproj")) or any(pkg_dir.glob("*.sln")):
+        return "nuget"
     return "unknown"
 
 
@@ -778,6 +878,81 @@ def _detect_ruby_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     return projects
 
 
+def _detect_csharp_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:  # noqa: PLR0912 - branches mirror the candidate / claimed / descendant rules
+    """Find C#/.NET projects: one per ``*.csproj`` (or ``*.sln`` at root).
+
+    A solution-only repo (``*.sln`` plus per-project ``*.csproj`` under
+    subdirectories) emits one project per ``*.csproj`` so each module's
+    framework + dependency footprint is visible. The outermost ``*.sln``
+    by itself counts when no ``.csproj`` siblings exist (rare but possible
+    for sln-only metadata).
+    """
+    csproj_dirs: set[Path] = set()
+    sln_dirs: set[Path] = set()
+    for path in root.rglob("*.csproj"):
+        rel = path.relative_to(root)
+        if any(part in _SKIP_DIRS for part in rel.parts):
+            continue
+        csproj_dirs.add(path.parent)
+    for path in root.rglob("*.sln"):
+        rel = path.relative_to(root)
+        if any(part in _SKIP_DIRS for part in rel.parts):
+            continue
+        sln_dirs.add(path.parent)
+    # When ``*.sln`` lives at a directory that is an ancestor of any
+    # ``*.csproj``, treat the sln as a workspace-style wrapper and emit the
+    # csproj children only. A standalone sln (no descendant csproj) is
+    # rare but still emits one project for completeness.
+    candidate_set: set[Path] = set(csproj_dirs)
+    for sln_dir in sln_dirs:
+        sln_rel = sln_dir.relative_to(root)
+        has_descendant_csproj = any(
+            _is_descendant(d.relative_to(root), sln_rel) or d == sln_dir for d in csproj_dirs
+        )
+        if not has_descendant_csproj:
+            candidate_set.add(sln_dir)
+    candidates: list[Path] = sorted(candidate_set, key=lambda p: len(p.parts))
+
+    selected: list[Path] = []
+    for cand in candidates:
+        rel = cand.relative_to(root)
+        if rel in claimed_dirs:
+            continue
+        # C# multi-module solutions ship multiple *.csproj — emit one project
+        # per csproj rather than collapsing under the outer .sln, since each
+        # csproj has its own framework/dependency footprint. Only skip
+        # candidates that have an ancestor with a *.csproj already selected.
+        ancestor_with_csproj = False
+        for sel in selected:
+            if _is_descendant(rel, sel) and any((root / sel).glob("*.csproj")):
+                ancestor_with_csproj = True
+                break
+        if ancestor_with_csproj:
+            continue
+        selected.append(rel)
+
+    projects: list[Project] = []
+    for rel in selected:
+        pkg_dir = root / rel
+        manifest = _csharp_manifest(pkg_dir)
+        if manifest is None:
+            continue
+        projects.append(
+            Project(
+                name=_project_name_csharp(manifest),
+                kind=ProjectKind.CSHARP,
+                base_path=rel,
+                languages=_detect_languages(pkg_dir),
+                has_tsconfig=False,
+                is_workspace_member=False,
+                workspace_root=None,
+                frameworks=_detect_csharp_frameworks(pkg_dir),
+                package_manager=_detect_csharp_package_manager(pkg_dir),
+            )
+        )
+    return projects
+
+
 def _detect_php_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     """Find PHP projects: one per composer.json / wp-config.php / Drupal core marker."""
     candidates: list[Path] = []
@@ -877,6 +1052,7 @@ def detect_projects(root: Path) -> list[Project]:
     projects.extend(_detect_go_projects(root, claimed_dirs))
     projects.extend(_detect_ruby_projects(root, claimed_dirs))
     projects.extend(_detect_php_projects(root, claimed_dirs))
+    projects.extend(_detect_csharp_projects(root, claimed_dirs))
 
     if not projects:
         projects.extend(_detect_bare_source_projects(root))
@@ -902,6 +1078,7 @@ _BARE_SOURCE_KIND_BY_EXT: tuple[tuple[str, ProjectKind, str], ...] = (
     (".go", ProjectKind.GO, "go"),
     (".rb", ProjectKind.RUBY, "ruby"),
     (".php", ProjectKind.PHP, "php"),
+    (".cs", ProjectKind.CSHARP, "csharp"),
 )
 
 

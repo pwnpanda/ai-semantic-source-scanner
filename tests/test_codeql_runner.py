@@ -72,6 +72,14 @@ def test_tag_filtered_suite_uses_ruby_pack(tmp_path: Path) -> None:
     assert queries_step["from"] == "codeql/ruby-queries"
 
 
+def test_tag_filtered_suite_uses_csharp_pack(tmp_path: Path) -> None:
+    suite = tmp_path / "filter.qls"
+    _write_tag_filtered_suite(suite, ["security/cwe/cwe-089"], language="csharp")
+    instructions = yaml.safe_load(suite.read_text(encoding="utf-8"))
+    queries_step = next(step for step in instructions if "queries" in step)
+    assert queries_step["from"] == "codeql/csharp-queries"
+
+
 def test_tag_filtered_suite_rejects_unknown_language(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported codeql language"):
         _write_tag_filtered_suite(tmp_path / "f.qls", ["x"], language="cobol")

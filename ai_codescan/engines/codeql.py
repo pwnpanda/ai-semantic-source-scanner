@@ -16,6 +16,7 @@ _QUERY_SUITES: dict[str, str] = {
     "java": "codeql/java-queries:codeql-suites/java-security-extended.qls",
     "go": "codeql/go-queries:codeql-suites/go-security-extended.qls",
     "ruby": "codeql/ruby-queries:codeql-suites/ruby-security-extended.qls",
+    "csharp": "codeql/csharp-queries:codeql-suites/csharp-security-extended.qls",
 }
 """Per-language default suite — security-extended is the broadest stable set.
 
@@ -30,6 +31,7 @@ _QUERY_PACKS: dict[str, str] = {
     "java": "codeql/java-queries",
     "go": "codeql/go-queries",
     "ruby": "codeql/ruby-queries",
+    "csharp": "codeql/csharp-queries",
 }
 
 _CODEQL_LANGUAGE_FLAG: dict[str, str] = {
@@ -42,13 +44,15 @@ _CODEQL_LANGUAGE_FLAG: dict[str, str] = {
     "java": "java-kotlin",
     "go": "go",
     "ruby": "ruby",
+    "csharp": "csharp",
 }
 
 # Languages whose extractor needs ``--build-mode=none`` to extract source
-# without an external build (CodeQL CLI ≥ 2.18.2). JS/Python don't accept
-# this flag; Java/Kotlin require *some* build mode and ``none`` is the
-# zero-config option.
-_CODEQL_BUILD_MODE_LANGS: frozenset[str] = frozenset({"java"})
+# without an external build. JS/Python/Ruby don't accept this flag.
+# Java/Kotlin: GA in CodeQL CLI 2.18.2.
+# C#: GA in CodeQL CLI 2.18.4 — same shape, slightly less precision than
+#     ``autobuild`` on Razor / source-generated code.
+_CODEQL_BUILD_MODE_LANGS: frozenset[str] = frozenset({"java", "csharp"})
 
 QUERY_SUITE = _QUERY_SUITES["javascript"]
 """Default JavaScript suite — kept as a public alias for back-compat."""

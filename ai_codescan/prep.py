@@ -80,11 +80,32 @@ _PHP_SKIP_PARTS: frozenset[str] = frozenset(
     }
 )
 
+_CSHARP_SKIP_PARTS: frozenset[str] = frozenset(
+    {
+        "bin",  # .NET build output
+        "obj",  # .NET intermediate output
+        "node_modules",
+        ".vs",
+    }
+)
+
 
 def _files_for_project(
     snapshot_root: Path, project: Project
-) -> tuple[list[Path], list[Path], list[Path], list[Path], list[Path], list[Path], list[Path]]:
-    """Return (ts, html, python, java, go, ruby, php) file lists under ``project.base_path``."""
+) -> tuple[
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+    list[Path],
+]:
+    """Return per-language file lists under ``project.base_path``.
+
+    Order: ``(ts, html, python, java, go, ruby, php, csharp)``.
+    """
     base = snapshot_root / project.base_path
     ts = [
         p
@@ -133,7 +154,14 @@ def _files_for_project(
         and p.suffix in {".php", ".phtml"}
         and not any(part in _PHP_SKIP_PARTS for part in p.relative_to(base).parts)
     ]
-    return ts, html, python, java, go, ruby, php
+    csharp = [
+        p
+        for p in base.rglob("*")
+        if p.is_file()
+        and p.suffix == ".cs"
+        and not any(part in _CSHARP_SKIP_PARTS for part in p.relative_to(base).parts)
+    ]
+    return ts, html, python, java, go, ruby, php, csharp
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
@@ -146,6 +174,7 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         go_files,
         ruby_files,
         php_files,
+        csharp_files,
     ) = _files_for_project(snapshot_root, project)
     jobs: list[AstJob] = []
     if ts_files:
@@ -170,6 +199,8 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         jobs.append(AstJob(kind="ruby", project_root=base, files=ruby_files))
     if php_files and project.kind is ProjectKind.PHP:
         jobs.append(AstJob(kind="php", project_root=base, files=php_files))
+    if csharp_files and project.kind is ProjectKind.CSHARP:
+        jobs.append(AstJob(kind="csharp", project_root=base, files=csharp_files))
     return jobs
 
 
@@ -208,7 +239,7 @@ def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: 
     return lookup
 
 
-def _codeql_language_for_project(project: Project) -> str | None:
+def _codeql_language_for_project(project: Project) -> str | None:  # noqa: PLR0911 - one early-return per language is the clearest expression
     """Return the CodeQL language token for ``project``, or None if unsupported."""
     if project.kind is ProjectKind.NODE and project.languages.intersection(
         {"javascript", "typescript"}
@@ -222,6 +253,8 @@ def _codeql_language_for_project(project: Project) -> str | None:
         return "go"
     if project.kind is ProjectKind.RUBY and "ruby" in project.languages:
         return "ruby"
+    if project.kind is ProjectKind.CSHARP and "csharp" in project.languages:
+        return "csharp"
     return None
 
 

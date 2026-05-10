@@ -118,6 +118,16 @@ def test_classify_call_recognises_php_mysqli_query() -> None:
     assert classify_call("mysqli_query") == ("sql_column", "unknown")
 
 
+def test_classify_call_recognises_csharp_sql_command() -> None:
+    assert classify_call("cmd.ExecuteReader") == ("sql_column", "unknown")
+    assert classify_call("cmd.ExecuteNonQuery") == ("sql_column", "unknown")
+
+
+def test_classify_call_recognises_csharp_ef_core_raw() -> None:
+    assert classify_call("Database.ExecuteSqlRaw") == ("sql_column", "unknown")
+    assert classify_call("dbContext.FromSqlRaw") == ("sql_column", "unknown")
+
+
 def test_load_save_schema_yaml_roundtrip(tmp_path: Path) -> None:
     target = tmp_path / "schema.taint.yml"
     data = {"tables": {"users": {"columns": {"bio": {"taint": "dirty"}}}}}
