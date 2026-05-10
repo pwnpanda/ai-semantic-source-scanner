@@ -258,6 +258,12 @@ def _scip_language_for_project(project: Project) -> str | None:
         return "javascript"
     if project.kind is ProjectKind.PYTHON and "python" in project.languages:
         return "python"
+    if project.kind is ProjectKind.JAVA and (
+        "java" in project.languages or "kotlin" in project.languages
+    ):
+        return "java"
+    if project.kind is ProjectKind.GO and "go" in project.languages:
+        return "go"
     return None
 
 
@@ -295,7 +301,12 @@ def _codeql_language_for_project(project: Project) -> str | None:  # noqa: PLR09
         return "javascript"
     if project.kind is ProjectKind.PYTHON and "python" in project.languages:
         return "python"
-    if project.kind is ProjectKind.JAVA and "java" in project.languages:
+    if project.kind is ProjectKind.JAVA and project.languages.intersection(
+        {"java", "kotlin"}
+    ):
+        # CodeQL's ``java-kotlin`` extractor analyses both .java and .kt
+        # source, so a Kotlin-only Gradle project (build.gradle.kts +
+        # ``src/main/kotlin/...``) still wants the Java pipeline.
         return "java"
     if project.kind is ProjectKind.GO and "go" in project.languages:
         return "go"

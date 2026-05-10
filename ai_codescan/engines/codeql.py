@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -9,6 +10,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+log = logging.getLogger(__name__)
+
+_PACK_DOWNLOAD_TIMEOUT_SEC = 600
+"""Hard cap for a single ``codeql pack download`` invocation.
+
+Pack downloads vary widely (a few MB for Ruby up to a few hundred MB for
+Java/C# on a cold cache); 10 minutes is generous enough to cover slow
+networks while still surfacing a hung resolver."""
+
+_PACK_DOWNLOAD_RETRIES = 2
+"""Re-attempt count on transient download failures (network blips,
+registry rate-limits). Total attempts = ``1 + _PACK_DOWNLOAD_RETRIES``."""
 
 _QUERY_SUITES: dict[str, str] = {
     "javascript": "codeql/javascript-queries:codeql-suites/javascript-security-extended.qls",
@@ -61,6 +75,63 @@ QUERY_SUITE = _QUERY_SUITES["javascript"]
 def _ensure_codeql_on_path() -> None:
     if shutil.which("codeql") is None:
         raise RuntimeError("codeql CLI not on PATH. Install from github.com/github/codeql-cli.")
+
+
+def ensure_query_pack(language: str) -> None:
+    """Idempotently download the language's query pack with retry + timeout.
+
+    ``codeql database analyze`` resolves query packs against the local cache
+    at ``~/.codeql/packages``. ``codeql database create`` ships extractor
+    packs but doesn't pre-fetch query packs, so the first analyze call on a
+    fresh host fails until the pack is fetched. This helper primes that
+    cache deterministically, with a bounded timeout and a small retry budget
+    for flaky networks. Safe to call repeatedly — CodeQL skips pack
+    downloads when the requested version is already on disk.
+
+    Silently no-ops when ``codeql`` isn't on PATH (the caller already
+    surfaces a clearer error via ``_ensure_codeql_on_path`` later in the
+    flow). Logs a warning on each failed attempt and surfaces the final
+    error as ``RuntimeError`` if every retry fails.
+    """
+    pack = _QUERY_PACKS.get(language)
+    if pack is None:
+        raise ValueError(f"unsupported codeql language: {language!r}")
+    if shutil.which("codeql") is None:
+        return
+    last_err: Exception | None = None
+    for attempt in range(1 + _PACK_DOWNLOAD_RETRIES):
+        try:
+            # S603/S607: argv-only, no shell; ``pack`` is selected from a
+            # static dict, never user-controlled.
+            subprocess.run(  # noqa: S603
+                ["codeql", "pack", "download", pack],  # noqa: S607
+                check=True,
+                capture_output=True,
+                timeout=_PACK_DOWNLOAD_TIMEOUT_SEC,
+            )
+            return
+        except subprocess.TimeoutExpired as exc:
+            last_err = exc
+            log.warning(
+                "codeql pack download %s timed out (attempt %d/%d)",
+                pack,
+                attempt + 1,
+                1 + _PACK_DOWNLOAD_RETRIES,
+            )
+        except subprocess.CalledProcessError as exc:
+            last_err = exc
+            stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+            log.warning(
+                "codeql pack download %s failed (attempt %d/%d): %s",
+                pack,
+                attempt + 1,
+                1 + _PACK_DOWNLOAD_RETRIES,
+                stderr.strip().splitlines()[-1] if stderr.strip() else "no stderr",
+            )
+    raise RuntimeError(
+        f"codeql pack download failed for {pack} after "
+        f"{1 + _PACK_DOWNLOAD_RETRIES} attempts: {last_err}"
+    )
 
 
 def build_database(
@@ -166,6 +237,11 @@ def run_queries(  # noqa: PLR0913 - keyword-only knobs are clearer than packing 
     _ensure_codeql_on_path()
     if language not in _QUERY_SUITES:
         raise ValueError(f"unsupported codeql language: {language!r}")
+    # Prime the language pack before analyze. ``codeql database analyze``
+    # resolves the suite's ``from:`` reference against the local pack cache
+    # — a missing pack surfaces as exit-code 2 with no helpful stderr, so
+    # we fetch it deterministically here with a bounded timeout + retry.
+    ensure_query_pack(language)
     sarif_dir = cache_dir / "codeql"
     sarif_dir.mkdir(parents=True, exist_ok=True)
     sarif_path = sarif_dir / f"{project_id}.sarif"

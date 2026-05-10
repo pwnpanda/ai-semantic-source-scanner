@@ -36,6 +36,26 @@ def test_build_scip_python_raises_when_cli_missing(tmp_path: Path, monkeypatch) 
         build_scip_index(project, cache_dir=cache, project_id="p", language="python")
 
 
+def test_build_scip_java_raises_when_cli_missing(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "j"
+    project.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    with pytest.raises(RuntimeError, match="scip-java is not on PATH"):
+        build_scip_index(project, cache_dir=cache, project_id="j", language="java")
+
+
+def test_build_scip_go_raises_when_cli_missing(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "g"
+    project.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    with pytest.raises(RuntimeError, match="scip-go is not on PATH"):
+        build_scip_index(project, cache_dir=cache, project_id="g", language="go")
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_scip_typescript(), reason="scip-typescript not installed")
 def test_build_scip_index_writes_protobuf(tmp_path: Path) -> None:

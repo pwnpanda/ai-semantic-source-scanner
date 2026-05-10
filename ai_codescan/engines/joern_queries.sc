@@ -51,6 +51,37 @@ import java.security.MessageDigest
   )
 
   val patterns: LangPatterns = language.toLowerCase match {
+    case "kotlin" =>
+      // Kotlin source patterns — Spring on Kotlin reuses Java's
+      // @RequestParam / @RequestBody / @PathVariable; Ktor's request DSL
+      // exposes data through ``call.parameters[...]`` and
+      // ``call.receive<T>()``. JDBC sinks are the same Java
+      // executeQuery / executeUpdate / Statement / PreparedStatement
+      // surface that javasrc2cpg sees.
+      LangPatterns(
+        sourcePattern =
+          "(?i)(call\\.parameters|call\\.receive|call\\.request\\.queryParameters|" +
+          "call\\.request\\.headers|RequestParam|RequestBody|PathVariable|" +
+          "RequestHeader).*",
+        sinkClasses = List(
+          ("CWE-89",  "sql.exec",      "(?i)executeQuery"),
+          ("CWE-89",  "sql.exec",      "(?i)executeUpdate"),
+          ("CWE-89",  "sql.exec",      "(?i)prepareStatement"),
+          ("CWE-89",  "sql.exec",      "(?i)createQuery"),
+          ("CWE-89",  "sql.exec",      "(?i)createNativeQuery"),
+          ("CWE-89",  "sql.exec",      "(?i)queryForList"),
+          ("CWE-89",  "sql.exec",      "(?i)queryForObject"),
+          ("CWE-78",  "cmd.shell",     "(?i)exec"),
+          ("CWE-78",  "cmd.shell",     "(?i)ProcessBuilder"),
+          ("CWE-79",  "html.write",    "(?i)respondText"),
+          ("CWE-79",  "html.write",    "(?i)respondHtml"),
+          ("CWE-22",  "fs.read",       "(?i)FileInputStream"),
+          ("CWE-22",  "fs.read",       "(?i)newInputStream"),
+          ("CWE-22",  "fs.read",       "(?i)readBytes"),
+          ("CWE-22",  "fs.read",       "(?i)readText"),
+          ("CWE-502", "deser.unsafe",  "(?i)readObject")
+        )
+      )
     case "csharp" | "csharpsrc" =>
       LangPatterns(
         sourcePattern =

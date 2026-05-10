@@ -3,6 +3,7 @@
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -11,39 +12,13 @@ from ai_codescan.engines.codeql import (
     CodeqlResult,
     _write_tag_filtered_suite,
     build_database,
+    ensure_query_pack,
     run_queries,
 )
 
 
 def _has_codeql() -> bool:
     return shutil.which("codeql") is not None
-
-
-def _ensure_codeql_pack(pack: str) -> bool:
-    """Download a CodeQL query pack if missing; return True on success.
-
-    The integration tests in this module rely on the language-specific
-    query pack (``codeql/<lang>-queries``) being resolvable so the
-    tag-filtered suite's ``from:`` reference works during ``database
-    analyze``. ``codeql database create`` doesn't auto-fetch query
-    packs — only the extractor packs are bundled with the CLI — so we
-    invoke ``codeql pack download <pack>`` lazily on first call.
-
-    Returns True when the pack is available locally after the call,
-    False if download failed (e.g. offline environment).
-    """
-    if not _has_codeql():
-        return False
-    try:
-        subprocess.run(  # noqa: S603, S607 - argv-only, no shell
-            ["codeql", "pack", "download", pack],
-            check=True,
-            capture_output=True,
-            timeout=300,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-        return False
-    return True
 
 
 @pytest.mark.integration
@@ -113,6 +88,71 @@ def test_tag_filtered_suite_rejects_unknown_language(tmp_path: Path) -> None:
         _write_tag_filtered_suite(tmp_path / "f.qls", ["x"], language="cobol")
 
 
+# ---------------------------------------------------------------------------
+# ensure_query_pack: pack download with retry + timeout
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_query_pack_rejects_unknown_language() -> None:
+    with pytest.raises(ValueError, match="unsupported codeql language"):
+        ensure_query_pack("cobol")
+
+
+def test_ensure_query_pack_noop_when_codeql_missing() -> None:
+    """Without ``codeql`` on PATH the helper silently returns — the
+    caller surfaces a clearer error elsewhere."""
+    with patch("ai_codescan.engines.codeql.shutil.which", return_value=None):
+        ensure_query_pack("python")  # must not raise
+
+
+def test_ensure_query_pack_succeeds_on_first_attempt() -> None:
+    """Happy path: a single subprocess.run call, no retries."""
+    with (
+        patch(
+            "ai_codescan.engines.codeql.shutil.which",
+            return_value="/usr/local/bin/codeql",
+        ),
+        patch("ai_codescan.engines.codeql.subprocess.run") as mock_run,
+    ):
+        ensure_query_pack("python")
+    assert mock_run.call_count == 1
+    call_argv = mock_run.call_args.args[0]
+    assert call_argv == ["codeql", "pack", "download", "codeql/python-queries"]
+
+
+def test_ensure_query_pack_retries_on_failure_then_succeeds() -> None:
+    """A transient CalledProcessError on the first attempt is retried."""
+    with (
+        patch(
+            "ai_codescan.engines.codeql.shutil.which",
+            return_value="/usr/local/bin/codeql",
+        ),
+        patch("ai_codescan.engines.codeql.subprocess.run") as mock_run,
+    ):
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["codeql"], stderr=b"transient"),
+            None,  # second attempt succeeds
+        ]
+        ensure_query_pack("ruby")
+    assert mock_run.call_count == 2
+
+
+def test_ensure_query_pack_raises_after_exhausting_retries() -> None:
+    """All attempts fail → final RuntimeError surfaces with pack name."""
+    with (
+        patch(
+            "ai_codescan.engines.codeql.shutil.which",
+            return_value="/usr/local/bin/codeql",
+        ),
+        patch("ai_codescan.engines.codeql.subprocess.run") as mock_run,
+    ):
+        mock_run.side_effect = subprocess.TimeoutExpired(["codeql"], timeout=1)
+        with pytest.raises(RuntimeError, match=r"codeql/java-queries"):
+            ensure_query_pack("java")
+    # 1 initial attempt + 2 retries.
+    assert mock_run.call_count == 3
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_codeql(), reason="codeql cli not installed")
 def test_run_queries_emits_sarif(tmp_path: Path, fixtures_dir: Path) -> None:
@@ -157,8 +197,10 @@ def _has_go_toolchain() -> bool:
 @pytest.mark.skipif(not _has_codeql(), reason="codeql cli not installed")
 def test_codeql_runs_against_tiny_spring_java(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build + analyze tiny-spring with the Java extractor (build-mode=none)."""
-    if not _ensure_codeql_pack("codeql/java-queries"):
-        pytest.skip("codeql/java-queries pack unavailable (offline?)")
+    try:
+        ensure_query_pack("java")
+    except RuntimeError as exc:
+        pytest.skip(f"codeql/java-queries pack unavailable: {exc}")
     cache = tmp_path / "cache"
     cache.mkdir()
     db_path = build_database(
@@ -184,8 +226,10 @@ def test_codeql_runs_against_tiny_spring_java(tmp_path: Path, fixtures_dir: Path
 @pytest.mark.skipif(not _has_go_toolchain(), reason="go toolchain not installed")
 def test_codeql_runs_against_tiny_gin_go(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build + analyze tiny-gin with the Go extractor (autobuild)."""
-    if not _ensure_codeql_pack("codeql/go-queries"):
-        pytest.skip("codeql/go-queries pack unavailable (offline?)")
+    try:
+        ensure_query_pack("go")
+    except RuntimeError as exc:
+        pytest.skip(f"codeql/go-queries pack unavailable: {exc}")
     cache = tmp_path / "cache"
     cache.mkdir()
     db_path = build_database(
@@ -210,8 +254,10 @@ def test_codeql_runs_against_tiny_gin_go(tmp_path: Path, fixtures_dir: Path) -> 
 @pytest.mark.skipif(not _has_codeql(), reason="codeql cli not installed")
 def test_codeql_runs_against_tiny_sinatra_ruby(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build + analyze tiny-sinatra with the Ruby extractor (bare-source)."""
-    if not _ensure_codeql_pack("codeql/ruby-queries"):
-        pytest.skip("codeql/ruby-queries pack unavailable (offline?)")
+    try:
+        ensure_query_pack("ruby")
+    except RuntimeError as exc:
+        pytest.skip(f"codeql/ruby-queries pack unavailable: {exc}")
     cache = tmp_path / "cache"
     cache.mkdir()
     db_path = build_database(
@@ -236,8 +282,10 @@ def test_codeql_runs_against_tiny_sinatra_ruby(tmp_path: Path, fixtures_dir: Pat
 @pytest.mark.skipif(not _has_codeql(), reason="codeql cli not installed")
 def test_codeql_runs_against_tiny_aspnet_csharp(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build + analyze tiny-aspnet with the C# extractor (build-mode=none)."""
-    if not _ensure_codeql_pack("codeql/csharp-queries"):
-        pytest.skip("codeql/csharp-queries pack unavailable (offline?)")
+    try:
+        ensure_query_pack("csharp")
+    except RuntimeError as exc:
+        pytest.skip(f"codeql/csharp-queries pack unavailable: {exc}")
     cache = tmp_path / "cache"
     cache.mkdir()
     db_path = build_database(

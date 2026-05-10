@@ -54,6 +54,11 @@ _JOERN_LANGUAGE_FLAG: dict[str, str] = {
     # maturity table — treat results as advisory until validated against
     # fixtures. No host-side .NET SDK is required.
     "csharp": "CSHARPSRC",
+    # ``kotlin2cpg`` is Joern's Kotlin source frontend. The hybrid runner
+    # selects this language for Kotlin-heavy JVM projects (more .kt than
+    # .java files); mixed projects continue to route through ``JAVASRC``
+    # so a single CPG covers the project's Java surface.
+    "kotlin": "KOTLIN",
 }
 
 _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
@@ -64,6 +69,7 @@ _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
     "ruby": frozenset({".rb", ".rake"}),
     "php": frozenset({".php", ".phtml"}),
     "csharp": frozenset({".cs"}),
+    "kotlin": frozenset({".kt", ".kts"}),
 }
 
 

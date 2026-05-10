@@ -197,6 +197,32 @@ def _stub_engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     return captured_languages
 
 
+def test_run_hybrid_routes_kotlin_language_to_joern(
+    tmp_path: Path, _stub_engines: list[str]
+) -> None:
+    """A project_root tuple with language='kotlin' reaches Joern's stub
+    with the kotlin token forwarded — exercising the kotlin2cpg dispatch
+    path independently of the cli.py file-count heuristic."""
+    db_path = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    conn.close()
+
+    snapshot = tmp_path / "snap"
+    kt_root = snapshot / "kt-app"
+    kt_root.mkdir(parents=True)
+    repo_dir = tmp_path / "cache"
+    repo_dir.mkdir()
+
+    run_hybrid(
+        [(kt_root, "kt-app", "kotlin")],
+        snapshot_root=snapshot,
+        repo_dir=repo_dir,
+        db_path=db_path,
+    )
+    assert _stub_engines == ["kotlin"]
+
+
 def test_run_hybrid_routes_per_project_language(tmp_path: Path, _stub_engines: list[str]) -> None:
     """A JS and a Python project route to Joern with the right language flag,
     and each project's flow is ingested under engine='joern'."""

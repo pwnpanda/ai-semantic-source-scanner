@@ -193,7 +193,15 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
             elif project.kind is ProjectKind.PYTHON:
                 language = "python"
             elif project.kind is ProjectKind.JAVA:
-                language = "java"
+                # Kotlin-heavy JVM projects route to Joern's kotlin2cpg
+                # frontend; mixed / Java-only projects keep javasrc2cpg.
+                # CodeQL's java-kotlin extractor handles both regardless.
+                project_dir = snapshot_root / project.base_path
+                java_count = sum(1 for _ in project_dir.rglob("*.java"))
+                kotlin_count = sum(
+                    1 for p in project_dir.rglob("*") if p.suffix in {".kt", ".kts"}
+                )
+                language = "kotlin" if kotlin_count > java_count else "java"
             elif project.kind is ProjectKind.GO:
                 language = "go"
             elif project.kind is ProjectKind.RUBY:
