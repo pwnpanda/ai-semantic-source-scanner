@@ -18,12 +18,12 @@ from ai_codescan.sandbox import (
     LanguageProfile,
     SandboxResult,
     SandboxUnavailableError,
+    UnsupportedPocLanguageError,
     configured_runtime,
-    profile_for_lang,
+    profile_for_extension,
     run_in_sandbox,
 )
 from ai_codescan.taxonomy.loader import list_classes
-from ai_codescan.user_config import load as load_user_config
 
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "validator"
 
@@ -102,10 +102,8 @@ def _hints_for_cwe(cwe: str | None) -> list[str]:
 
 def _local_argv(profile: LanguageProfile, poc_path: Path) -> list[str]:
     """Argv to execute the PoC locally (no container)."""
-    if profile.name == "go":
-        return ["go", "run", str(poc_path)]
-    # Most interpreters take the script path directly.
-    return [profile.interpreter.split()[0], str(poc_path)]
+    interpreter_parts = profile.interpreter.split()
+    return [*interpreter_parts, str(poc_path)]
 
 
 def _container_argv(profile: LanguageProfile, poc_path: Path) -> list[str]:
@@ -123,7 +121,13 @@ def _run_poc(
 ) -> SandboxResult:
     if no_sandbox:
         # Local execution — used when runtime=none or the user passes --no-sandbox.
-        # Same signal/exit-code conventions as the container path.
+        # Same signal/exit-code conventions as the container path. Only Python
+        # is supported here; we can't assume node/go/ruby/etc. are on PATH.
+        if not profile.local_supported:
+            raise SandboxUnavailableError(
+                f"PoC language {profile.name!r} requires a container runtime; "
+                "install docker or podman, or rewrite the PoC in Python."
+            )
         argv = _local_argv(profile, poc_path)
         try:
             proc = subprocess.run(  # noqa: S603 - argv-only, no shell
@@ -160,29 +164,7 @@ def _run_poc(
     )
 
 
-def _profile_for_finding(finding: Finding, *, repo_md: str | None) -> LanguageProfile:
-    """Pick a language profile based on user pref, finding metadata, and repo.md hints."""
-    pref = load_user_config().poc_language_preference
-    if pref != "auto":
-        return profile_for_lang(pref)
-    # The finding doc may carry a hint via the body (e.g. "lang: javascript").
-    if "lang: " in finding.body:
-        for line in finding.body.splitlines():
-            stripped = line.strip().lower()
-            if stripped.startswith("lang:"):
-                return profile_for_lang(stripped.split(":", 1)[1].strip())
-    # Otherwise, infer from repo.md's first detected language.
-    if repo_md:
-        for line in repo_md.splitlines():
-            stripped = line.strip().lower()
-            if stripped.startswith("- languages:"):
-                first = stripped.split(":", 1)[1].split(",")[0].strip()
-                if first:
-                    return profile_for_lang(first)
-    return profile_for_lang("python")
-
-
-def run_validator(  # noqa: PLR0915 - orchestrator inherently combines several stages
+def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines several stages
     state: RunState,
     *,
     repo_dir: Path,
@@ -232,10 +214,6 @@ def run_validator(  # noqa: PLR0915 - orchestrator inherently combines several s
     if not no_sandbox and configured_runtime() == "none":
         no_sandbox = True
 
-    # Cache the repo.md once; the validator may consult it for language hints.
-    repo_md_path = repo_dir / "repo.md"
-    repo_md = repo_md_path.read_text(encoding="utf-8") if repo_md_path.is_file() else None
-
     # Execute every PoC the skill produced.
     log_rows: list[str] = []
     for finding_path in sorted(findings_dir.glob("*.md")):
@@ -252,22 +230,16 @@ def run_validator(  # noqa: PLR0915 - orchestrator inherently combines several s
         )
         if poc_path is None:
             continue
-        # Pick the language profile from the file extension first; user pref is the override.
-        ext_to_lang = {
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".php": "php",
-            ".rb": "ruby",
-            ".go": "go",
-            ".sh": "shell",
-        }
-        explicit_lang = ext_to_lang.get(poc_path.suffix)
-        profile = (
-            profile_for_lang(explicit_lang)
-            if explicit_lang
-            else _profile_for_finding(finding, repo_md=repo_md)
-        )
+        # Extension drives the language profile. Unknown extensions are
+        # logged and skipped — the LLM picked something we don't support.
+        try:
+            profile = profile_for_extension(poc_path.suffix)
+        except UnsupportedPocLanguageError:
+            log_rows.append(
+                f"| {finding.finding_id} | unsupported-poc-language "
+                f"({poc_path.suffix or 'no-extension'}) | -- | -- | -- |"
+            )
+            continue
         try:
             result = _run_poc(
                 poc_path,
