@@ -391,6 +391,123 @@ def test_ruby_grape_framework_detected(tmp_path: Path) -> None:
     assert "grape" in p.frameworks
 
 
+# ---------------------------------------------------------------------------
+# PHP detection
+# ---------------------------------------------------------------------------
+
+
+def test_php_slim_project_detected(fixtures_dir: Path) -> None:
+    projects = detect_projects(fixtures_dir / "tiny-slim")
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.PHP
+    assert p.name == "tiny-slim"
+    assert "php" in p.languages
+    assert "slim" in p.frameworks
+    assert p.package_manager == "composer"
+
+
+def test_php_laravel_framework_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "lapp"
+    pkg.mkdir()
+    (pkg / "composer.json").write_text(
+        '{"name":"a/lapp","require":{"laravel/framework":"^11.0"}}',
+        encoding="utf-8",
+    )
+    (pkg / "index.php").write_text("<?php echo 'hi';\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.PHP
+    assert "laravel" in p.frameworks
+
+
+def test_php_wordpress_install_detected(tmp_path: Path) -> None:
+    """A WordPress install at the root has no composer.json but ships wp-config.php."""
+    pkg = tmp_path / "wp"
+    pkg.mkdir()
+    (pkg / "wp-config.php").write_text("<?php\n// WP config\n", encoding="utf-8")
+    (pkg / "index.php").write_text("<?php\n// WP entry\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.PHP
+    assert "wordpress" in p.frameworks
+
+
+def test_php_symfony_framework_detected(tmp_path: Path) -> None:
+    pkg = tmp_path / "sapp"
+    pkg.mkdir()
+    (pkg / "composer.json").write_text(
+        '{"name":"a/sapp","require":{"symfony/framework-bundle":"^7.0"}}',
+        encoding="utf-8",
+    )
+    (pkg / "src" / "Controller").mkdir(parents=True)
+    (pkg / "src" / "Controller" / "Foo.php").write_text(
+        "<?php\nnamespace App\\Controller; class Foo {}\n",
+        encoding="utf-8",
+    )
+    p = detect_projects(pkg)[0]
+    assert "symfony" in p.frameworks
+
+
+# ---------------------------------------------------------------------------
+# Bare-source fallback (no manifest)
+# ---------------------------------------------------------------------------
+
+
+def test_bare_python_files_detected_without_manifest(tmp_path: Path) -> None:
+    pkg = tmp_path / "snippet"
+    pkg.mkdir()
+    (pkg / "main.py").write_text("print('hi')\n", encoding="utf-8")
+    (pkg / "util.py").write_text("def f(): pass\n", encoding="utf-8")
+    projects = detect_projects(pkg)
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.PYTHON
+    assert "python" in p.languages
+    assert p.name == "snippet"
+    assert p.frameworks == set()
+    assert p.package_manager == "unknown"
+
+
+def test_bare_go_files_detected_without_manifest(tmp_path: Path) -> None:
+    pkg = tmp_path / "ctf"
+    pkg.mkdir()
+    (pkg / "main.go").write_text("package main\nfunc main() {}\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.GO
+
+
+def test_bare_ruby_files_detected_without_manifest(tmp_path: Path) -> None:
+    pkg = tmp_path / "scripts"
+    pkg.mkdir()
+    (pkg / "tool.rb").write_text("puts 'hi'\n", encoding="utf-8")
+    p = detect_projects(pkg)[0]
+    assert p.kind is ProjectKind.RUBY
+
+
+def test_bare_source_skipped_when_manifest_present(tmp_path: Path) -> None:
+    """A real Python manifest still wins over the bare-source fallback."""
+    pkg = tmp_path / "real"
+    pkg.mkdir()
+    (pkg / "pyproject.toml").write_text(
+        "[project]\nname='real'\nversion='0.1.0'\ndependencies=['flask']\n",
+        encoding="utf-8",
+    )
+    (pkg / "stray.go").write_text("package main\n", encoding="utf-8")
+    projects = detect_projects(pkg)
+    # Python project from the manifest; the stray .go does NOT spawn a Go project.
+    assert [p.kind for p in projects] == [ProjectKind.PYTHON]
+
+
+def test_bare_source_emits_one_project_per_language(tmp_path: Path) -> None:
+    """A directory with mixed source files (no manifest) yields one project per language."""
+    pkg = tmp_path / "polyglot"
+    pkg.mkdir()
+    (pkg / "a.py").write_text("\n", encoding="utf-8")
+    (pkg / "b.go").write_text("package main\n", encoding="utf-8")
+    (pkg / "c.rb").write_text("\n", encoding="utf-8")
+    kinds = {p.kind for p in detect_projects(pkg)}
+    assert kinds == {ProjectKind.PYTHON, ProjectKind.GO, ProjectKind.RUBY}
+
+
 def test_node_and_python_coexist_at_same_root(tmp_path: Path) -> None:
     """A directory with both package.json and pyproject.toml yields a Node project only.
 

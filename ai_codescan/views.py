@@ -13,6 +13,7 @@ _LANG_FENCE_BY_SUFFIX: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".java",), "java"),
     ((".go",), "go"),
     ((".rb", ".rake", ".gemspec"), "ruby"),
+    ((".php", ".phtml"), "php"),
     ((".html", ".htm"), "html"),
 )
 
@@ -33,6 +34,9 @@ def _comment_marker(fence: str) -> str:
     """
     if fence in {"python", "ruby"}:
         return "#"
+    # PHP supports both ``//`` and ``#``; the JS-style ``//`` is universally
+    # recognised by syntax highlighters and matches the rest of the C-family
+    # languages, so we keep ``//`` as the default.
     return "//"
 
 

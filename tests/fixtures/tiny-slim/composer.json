@@ -1,0 +1,9 @@
+{
+    "name": "ai-codescan/tiny-slim",
+    "description": "Minimal Slim app with a deliberate SQLi for SAST testing.",
+    "require": {
+        "php": "^8.2",
+        "slim/slim": "^4.13",
+        "slim/psr7": "^1.6"
+    }
+}

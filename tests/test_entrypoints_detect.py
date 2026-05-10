@@ -465,6 +465,79 @@ def test_sidekiq_worker_include_detected() -> None:
     assert any(e.kind == "message_consumer" for e in eps)
 
 
+# --- PHP framework patterns ---
+
+
+def test_laravel_route_static_call_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/routes/web.php",
+            "line": 7,
+            "calleeText": "Route::get('/u', [UserController::class, 'show'])",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_slim_app_get_route_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/index.php",
+            "line": 20,
+            "calleeText": "$app->get('/u', $callable)",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_symfony_route_attribute_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/src/Controller/Foo.php",
+            "line": 14,
+            "calleeText": "#[Route('/foo', methods: ['GET'])]",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_wordpress_add_action_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/wp-content/plugins/p/p.php",
+            "line": 11,
+            "calleeText": "add_action('wp_ajax_foo', 'my_handler')",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "http_route" for e in eps)
+
+
+def test_wp_cli_add_command_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/cli.php",
+            "line": 3,
+            "calleeText": "WP_CLI::add_command('foo', 'FooCommand')",
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+    assert any(e.kind == "cli" for e in eps)
+
+
 def test_python_sys_argv_detected() -> None:
     xrefs = [
         {

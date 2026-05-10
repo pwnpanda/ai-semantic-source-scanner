@@ -61,6 +61,28 @@ _QUEUE_CONSUMER = re.compile(
     re.IGNORECASE,
 )
 
+# --- PHP callee patterns ----------------------------------------------------
+
+# Laravel / CodeIgniter / Slim-style ``Route::get('/path', ...)`` and
+# ``$app->get('/path', ...)`` /  ``$router->get('/path', ...)``.
+_PHP_HTTP_ROUTE = re.compile(
+    r"\b(?:Route|App|Router|api|router|app)(?:::|->)"
+    r"(?:get|post|put|patch|delete|options|head|any|match|resource|"
+    r"apiResource|group|map)\b",
+    re.IGNORECASE,
+)
+# Symfony's PHP 8 ``#[Route(...)]`` attribute. Tree-sitter-php emits these
+# as ``attribute`` nodes whose text starts with ``#[Route``.
+_PHP_SYMFONY_ATTRIBUTE_ROUTE = re.compile(r"^#\[Route\b")
+# WordPress hook registrations.
+_PHP_WP_HOOK = re.compile(
+    r"\b(?:add_action|add_filter|register_rest_route|add_shortcode)\s*\(",
+)
+# CLI/Console: WP-CLI, Laravel Artisan, Symfony Console.
+_PHP_CONSOLE = re.compile(
+    r"\bWP_CLI::add_command\b|\bArtisan::command\b|#\[AsCommand\b",
+)
+
 # --- Ruby callee patterns ---------------------------------------------------
 
 # Rails routes DSL methods. Detection is scoped to ``config/routes.rb`` (or
@@ -229,6 +251,16 @@ def _classify_callee_ruby(callee: str, file: str) -> EntrypointKind | None:
     return None
 
 
+def _classify_callee_php(callee: str) -> EntrypointKind | None:
+    if _PHP_HTTP_ROUTE.search(callee) or _PHP_SYMFONY_ATTRIBUTE_ROUTE.search(callee):
+        return "http_route"
+    if _PHP_WP_HOOK.search(callee):
+        return "http_route"
+    if _PHP_CONSOLE.search(callee):
+        return "cli"
+    return None
+
+
 def _classify_callee(callee: str, file: str) -> EntrypointKind | None:
     """Return the entrypoint kind for a single callee-text from any language."""
     if file.endswith((".py", ".pyi")):
@@ -239,6 +271,8 @@ def _classify_callee(callee: str, file: str) -> EntrypointKind | None:
         return _classify_callee_go(callee)
     if file.endswith((".rb", ".rake")):
         return _classify_callee_ruby(callee, file)
+    if file.endswith((".php", ".phtml")):
+        return _classify_callee_php(callee)
     return _classify_callee_js(callee)
 
 

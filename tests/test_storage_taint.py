@@ -104,6 +104,20 @@ def test_classify_call_recognises_ruby_active_record_where() -> None:
     assert classify_call("SQLite3::Database.execute") == ("sql_column", "unknown")
 
 
+def test_classify_call_recognises_php_pdo_query() -> None:
+    assert classify_call("$pdo->query") == ("sql_column", "unknown")
+    assert classify_call("$db->prepare") == ("sql_column", "unknown")
+
+
+def test_classify_call_recognises_php_wpdb_get_results() -> None:
+    assert classify_call("$wpdb->get_results") == ("sql_column", "unknown")
+    assert classify_call("$wpdb->query") == ("sql_column", "unknown")
+
+
+def test_classify_call_recognises_php_mysqli_query() -> None:
+    assert classify_call("mysqli_query") == ("sql_column", "unknown")
+
+
 def test_load_save_schema_yaml_roundtrip(tmp_path: Path) -> None:
     target = tmp_path / "schema.taint.yml"
     data = {"tables": {"users": {"columns": {"bio": {"taint": "dirty"}}}}}

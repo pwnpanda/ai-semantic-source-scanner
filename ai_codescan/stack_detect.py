@@ -54,6 +54,7 @@ class ProjectKind(StrEnum):
     JAVA = "java"  # has pom.xml or build.gradle(.kts)
     GO = "go"  # has go.mod (or go.work)
     RUBY = "ruby"  # has Gemfile or *.gemspec
+    PHP = "php"  # has composer.json, wp-config.php, or Drupal markers
     HTML_ONLY = "html"  # no package.json, but contains HTML
 
 
@@ -106,6 +107,8 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".rb", "ruby"),
     (".rake", "ruby"),
     (".gemspec", "ruby"),
+    (".php", "php"),
+    (".phtml", "php"),
     (".html", "html"),
     (".htm", "html"),
     (".vue", "vue"),
@@ -407,6 +410,81 @@ def _detect_go_package_manager(pkg_dir: Path) -> str:
     return "unknown"
 
 
+_PHP_FRAMEWORK_DEPS: dict[str, str] = {
+    # Composer ``require`` package names. Search the concatenated
+    # ``composer.json`` body for these substrings.
+    "laravel/framework": "laravel",
+    "symfony/symfony": "symfony",
+    "symfony/http-kernel": "symfony",
+    "symfony/http-foundation": "symfony",
+    "symfony/framework-bundle": "symfony",
+    "codeigniter4/framework": "codeigniter",
+    "yiisoft/yii2": "yii",
+    "slim/slim": "slim",
+    "cakephp/cakephp": "cakephp",
+    "drupal/core": "drupal",
+}
+
+_COMPOSER_REQUIRE_RE = re.compile(r'"([a-z0-9_\-]+/[a-z0-9_.\-]+)"\s*:')
+
+
+def _php_manifest(pkg_dir: Path) -> Path | None:
+    """Return the most authoritative PHP marker.
+
+    Preference: ``composer.json`` > ``wp-config.php`` (WordPress) >
+    ``core/lib/Drupal.php`` (Drupal). Returns None if no marker is found.
+    """
+    composer = pkg_dir / "composer.json"
+    if composer.is_file():
+        return composer
+    wp_config = pkg_dir / "wp-config.php"
+    if wp_config.is_file():
+        return wp_config
+    drupal_marker = pkg_dir / "core" / "lib" / "Drupal.php"
+    if drupal_marker.is_file():
+        return drupal_marker
+    return None
+
+
+def _project_name_php(manifest: Path) -> str:
+    """Best-effort PHP project name from composer.json or directory."""
+    parent_name = manifest.parent.name or "php"
+    if manifest.name == "composer.json":
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return parent_name
+        name = data.get("name") or ""
+        if isinstance(name, str) and "/" in name:
+            return name.split("/", 1)[1]
+        if isinstance(name, str) and name:
+            return name
+    return parent_name
+
+
+def _detect_php_frameworks(pkg_dir: Path) -> set[str]:
+    composer = pkg_dir / "composer.json"
+    frameworks: set[str] = set()
+    if composer.is_file():
+        text = composer.read_text(encoding="utf-8", errors="replace")
+        for needle, label in _PHP_FRAMEWORK_DEPS.items():
+            if needle in text:
+                frameworks.add(label)
+    if (pkg_dir / "wp-config.php").is_file() or (pkg_dir / "wp-config-sample.php").is_file():
+        frameworks.add("wordpress")
+    if (pkg_dir / "core" / "lib" / "Drupal.php").is_file():
+        frameworks.add("drupal")
+    return frameworks
+
+
+def _detect_php_package_manager(pkg_dir: Path) -> str:
+    if (pkg_dir / "composer.lock").is_file():
+        return "composer"
+    if (pkg_dir / "composer.json").is_file():
+        return "composer"
+    return "unknown"
+
+
 _RUBY_FRAMEWORK_GEMS: dict[str, str] = {
     "rails": "rails",
     "sinatra": "sinatra",
@@ -700,6 +778,55 @@ def _detect_ruby_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     return projects
 
 
+def _detect_php_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+    """Find PHP projects: one per composer.json / wp-config.php / Drupal core marker."""
+    candidates: list[Path] = []
+    for needle in ("composer.json", "wp-config.php"):
+        for path in root.rglob(needle):
+            rel = path.relative_to(root)
+            if any(part in _SKIP_DIRS for part in rel.parts):
+                continue
+            candidates.append(path.parent)
+    for path in root.rglob("core/lib/Drupal.php"):
+        rel = path.relative_to(root)
+        if any(part in _SKIP_DIRS for part in rel.parts):
+            continue
+        # Drupal marker is at <root>/core/lib/Drupal.php — point at the parent
+        # of ``core/`` so the project's base_path lands at the actual project root.
+        candidates.append(path.parent.parent.parent)
+    candidates = sorted({c for c in candidates}, key=lambda p: len(p.parts))
+
+    selected: list[Path] = []
+    for cand in candidates:
+        rel = cand.relative_to(root)
+        if rel in claimed_dirs:
+            continue
+        if any(_is_descendant(rel, sel) for sel in selected):
+            continue
+        selected.append(rel)
+
+    projects: list[Project] = []
+    for rel in selected:
+        pkg_dir = root / rel
+        manifest = _php_manifest(pkg_dir)
+        if manifest is None:
+            continue
+        projects.append(
+            Project(
+                name=_project_name_php(manifest),
+                kind=ProjectKind.PHP,
+                base_path=rel,
+                languages=_detect_languages(pkg_dir),
+                has_tsconfig=False,
+                is_workspace_member=False,
+                workspace_root=None,
+                frameworks=_detect_php_frameworks(pkg_dir),
+                package_manager=_detect_php_package_manager(pkg_dir),
+            )
+        )
+    return projects
+
+
 def _is_descendant(rel: Path, ancestor: Path) -> bool:
     if ancestor == Path("."):
         return rel != Path(".")
@@ -749,6 +876,10 @@ def detect_projects(root: Path) -> list[Project]:
     projects.extend(_detect_java_projects(root, claimed_dirs))
     projects.extend(_detect_go_projects(root, claimed_dirs))
     projects.extend(_detect_ruby_projects(root, claimed_dirs))
+    projects.extend(_detect_php_projects(root, claimed_dirs))
+
+    if not projects:
+        projects.extend(_detect_bare_source_projects(root))
 
     if not projects and (any(_iter_files(root, ".html")) or any(_iter_files(root, ".htm"))):
         projects.append(
@@ -759,4 +890,50 @@ def detect_projects(root: Path) -> list[Project]:
                 languages={"html"},
             )
         )
+    return projects
+
+
+# Mapping from a single source-file extension to the project kind we'd emit
+# in bare-source mode. Order doesn't matter — a directory with a mix of
+# languages produces one project per kind.
+_BARE_SOURCE_KIND_BY_EXT: tuple[tuple[str, ProjectKind, str], ...] = (
+    (".py", ProjectKind.PYTHON, "python"),
+    (".java", ProjectKind.JAVA, "java"),
+    (".go", ProjectKind.GO, "go"),
+    (".rb", ProjectKind.RUBY, "ruby"),
+    (".php", ProjectKind.PHP, "php"),
+)
+
+
+def _detect_bare_source_projects(root: Path) -> list[Project]:
+    """Fall back to source-extension detection when no manifest was found.
+
+    Triggers only when no manifest-based project was detected (the caller
+    guards with ``if not projects:``). Emits one Project per supported
+    language whose source extension appears at least once under ``root``.
+    Useful for snippet repos, one-off scripts, and CTF challenges that
+    ship without packaging metadata.
+
+    The emitted Project carries:
+      * ``name`` = ``root.name`` (the snapshot directory's name)
+      * ``base_path`` = ``Path(".")``
+      * ``frameworks`` = empty (no manifest to draw deps from)
+      * ``package_manager`` = ``"unknown"``
+    """
+    projects: list[Project] = []
+    for ext, kind, lang in _BARE_SOURCE_KIND_BY_EXT:
+        if any(_iter_files(root, ext)):
+            projects.append(
+                Project(
+                    name=root.name,
+                    kind=kind,
+                    base_path=Path("."),
+                    languages={lang},
+                    has_tsconfig=False,
+                    is_workspace_member=False,
+                    workspace_root=None,
+                    frameworks=set(),
+                    package_manager="unknown",
+                )
+            )
     return projects

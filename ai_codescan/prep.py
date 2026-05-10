@@ -70,11 +70,21 @@ _RUBY_SKIP_PARTS: frozenset[str] = frozenset(
     }
 )
 
+_PHP_SKIP_PARTS: frozenset[str] = frozenset(
+    {
+        "vendor",  # Composer ``vendor/`` is the canonical install dir
+        "node_modules",
+        "wp-content/uploads",  # WP user uploads
+        "wp-content/cache",
+        "storage",  # Laravel storage/
+    }
+)
+
 
 def _files_for_project(
     snapshot_root: Path, project: Project
-) -> tuple[list[Path], list[Path], list[Path], list[Path], list[Path], list[Path]]:
-    """Return (ts, html, python, java, go, ruby) file lists under ``project.base_path``."""
+) -> tuple[list[Path], list[Path], list[Path], list[Path], list[Path], list[Path], list[Path]]:
+    """Return (ts, html, python, java, go, ruby, php) file lists under ``project.base_path``."""
     base = snapshot_root / project.base_path
     ts = [
         p
@@ -116,14 +126,27 @@ def _files_for_project(
         # prefixes like ``/tmp/`` don't trip the Rails-``tmp/`` skip.
         and not any(part in _RUBY_SKIP_PARTS for part in p.relative_to(base).parts)
     ]
-    return ts, html, python, java, go, ruby
+    php = [
+        p
+        for p in base.rglob("*")
+        if p.is_file()
+        and p.suffix in {".php", ".phtml"}
+        and not any(part in _PHP_SKIP_PARTS for part in p.relative_to(base).parts)
+    ]
+    return ts, html, python, java, go, ruby, php
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
     base = snapshot_root / project.base_path
-    ts_files, html_files, py_files, java_files, go_files, ruby_files = _files_for_project(
-        snapshot_root, project
-    )
+    (
+        ts_files,
+        html_files,
+        py_files,
+        java_files,
+        go_files,
+        ruby_files,
+        php_files,
+    ) = _files_for_project(snapshot_root, project)
     jobs: list[AstJob] = []
     if ts_files:
         tsconfig = base / "tsconfig.json"
@@ -145,6 +168,8 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         jobs.append(AstJob(kind="go", project_root=base, files=go_files))
     if ruby_files and project.kind is ProjectKind.RUBY:
         jobs.append(AstJob(kind="ruby", project_root=base, files=ruby_files))
+    if php_files and project.kind is ProjectKind.PHP:
+        jobs.append(AstJob(kind="php", project_root=base, files=php_files))
     return jobs
 
 

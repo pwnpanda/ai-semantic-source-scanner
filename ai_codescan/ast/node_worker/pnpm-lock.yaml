@@ -20,6 +20,9 @@ importers:
       tree-sitter-java:
         specifier: 0.23.5
         version: 0.23.5(tree-sitter@0.22.4)
+      tree-sitter-php:
+        specifier: 0.22.8
+        version: 0.22.8(tree-sitter@0.22.4)
       tree-sitter-python:
         specifier: 0.23.6
         version: 0.23.6(tree-sitter@0.22.4)
@@ -86,6 +89,10 @@ packages:
   glob-parent@5.1.2:
     resolution: {integrity: sha512-AOIgSQCepiJYwP3ARnGx+5VnTu2HBYdzbGP45eLw1vr3zB3vZLeyed1sC9hnbcOc9/SrMyM5RPQrkGz4aS9Zow==}
     engines: {node: '>= 6'}
+
+  globals@15.15.0:
+    resolution: {integrity: sha512-7ACyT3wmyp3I61S4fG682L0VA2RGD9otkqGJIwNUMF1SWUombIIk+af1unuDYgMm082aHYwD+mzJvv9Iu8dsgg==}
+    engines: {node: '>=18'}
 
   is-extglob@2.1.1:
     resolution: {integrity: sha512-SbKbANkN603Vi4jEZv49LeVJMn4yGwsbzZworEoyEiutsN3nJYdbO36zfhGJ6QEDpOZIFkDtnq5JRxmvl3jsoQ==}
@@ -165,6 +172,15 @@ packages:
       tree-sitter: ^0.21.1
     peerDependenciesMeta:
       tree-sitter:
+        optional: true
+
+  tree-sitter-php@0.22.8:
+    resolution: {integrity: sha512-X3VeTwgofcRaR1+GQBBkA0dGdS8MntAPjkgmsqmYtx2Jh/+bYzvc8/nM+D5S6HQW7npvAIf6DzP1DADP5xooSw==}
+    peerDependencies:
+      tree-sitter: ^0.21.1
+      tree_sitter: '*'
+    peerDependenciesMeta:
+      tree_sitter:
         optional: true
 
   tree-sitter-python@0.23.6:
@@ -256,6 +272,8 @@ snapshots:
     dependencies:
       is-glob: 4.0.3
 
+  globals@15.15.0: {}
+
   is-extglob@2.1.1: {}
 
   is-glob@4.0.3:
@@ -318,6 +336,13 @@ snapshots:
       node-addon-api: 8.7.0
       node-gyp-build: 4.8.4
     optionalDependencies:
+      tree-sitter: 0.22.4
+
+  tree-sitter-php@0.22.8(tree-sitter@0.22.4):
+    dependencies:
+      globals: 15.15.0
+      node-addon-api: 8.7.0
+      node-gyp-build: 4.8.4
       tree-sitter: 0.22.4
 
   tree-sitter-python@0.23.6(tree-sitter@0.22.4):

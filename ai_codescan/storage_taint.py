@@ -57,7 +57,14 @@ _SQL_CALL = re.compile(
     # Ruby ActiveRecord and raw drivers.
     r"|\b(?:ActiveRecord::Base|connection|Mysql2::Client|PG::Connection|"
     r"SQLite3::Database)\."
-    r"(?:where|find_by_sql|exec_query|execute|select_all|query)$",
+    r"(?:where|find_by_sql|exec_query|execute|select_all|query)$"
+    # PHP PDO / mysqli / WordPress wpdb / Laravel DB. Includes both
+    # member-call (``$pdo->query``) and free-function (``mysqli_query``)
+    # forms.
+    r"|\$(?:pdo|db|mysqli|wpdb|conn|connection)->"
+    r"(?:query|exec|execute|prepare|get_results|get_var|get_row|"
+    r"executeQuery|executeStatement|raw|select|statement|whereRaw|selectRaw)$"
+    r"|\bmysqli_(?:query|multi_query|real_query)$",
     re.IGNORECASE,
 )
 _CACHE_SET = re.compile(
@@ -286,6 +293,8 @@ _JS_TS_GLOBS = (
     "**/*.go",
     "**/*.rb",
     "**/*.rake",
+    "**/*.php",
+    "**/*.phtml",
 )
 _SELECT_STRING = re.compile(
     r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",

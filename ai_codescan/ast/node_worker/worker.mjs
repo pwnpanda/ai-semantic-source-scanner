@@ -36,6 +36,10 @@ async function dispatch(job) {
       const m = await import("./extract_ruby.mjs");
       return m.run(job);
     }
+    case "php": {
+      const m = await import("./extract_php.mjs");
+      return m.run(job);
+    }
     default:
       throw new Error(`unknown kind: ${job.kind}`);
   }

@@ -51,6 +51,38 @@ import java.security.MessageDigest
   )
 
   val patterns: LangPatterns = language.toLowerCase match {
+    case "php" =>
+      LangPatterns(
+        sourcePattern =
+          "(?i)(\\$_GET|\\$_POST|\\$_REQUEST|\\$_COOKIE|\\$_SERVER|\\$_FILES|" +
+          "\\$_ENV|getenv|php://input).*",
+        sinkClasses = List(
+          ("CWE-89",  "sql.exec",      "(?i)query"),
+          ("CWE-89",  "sql.exec",      "(?i)exec"),
+          ("CWE-89",  "sql.exec",      "(?i)mysqli_query"),
+          ("CWE-89",  "sql.exec",      "(?i)multi_query"),
+          ("CWE-89",  "sql.exec",      "(?i)get_results"),
+          ("CWE-89",  "sql.exec",      "(?i)get_var"),
+          ("CWE-89",  "sql.exec",      "(?i)get_row"),
+          ("CWE-78",  "cmd.shell",     "(?i)shell_exec"),
+          ("CWE-78",  "cmd.shell",     "(?i)passthru"),
+          ("CWE-78",  "cmd.shell",     "(?i)system"),
+          ("CWE-78",  "cmd.shell",     "(?i)proc_open"),
+          ("CWE-78",  "cmd.shell",     "(?i)popen"),
+          ("CWE-79",  "html.write",    "(?i)echo"),
+          ("CWE-79",  "html.write",    "(?i)print"),
+          ("CWE-22",  "fs.read",       "(?i)file_get_contents"),
+          ("CWE-22",  "fs.read",       "(?i)fopen"),
+          ("CWE-22",  "fs.read",       "(?i)readfile"),
+          ("CWE-22",  "fs.read",       "(?i)include"),
+          ("CWE-22",  "fs.read",       "(?i)require"),
+          ("CWE-502", "deser.unsafe",  "(?i)unserialize"),
+          ("CWE-94",  "code.exec",     "(?i)eval"),
+          ("CWE-94",  "code.exec",     "(?i)assert"),
+          ("CWE-94",  "code.exec",     "(?i)create_function"),
+          ("CWE-918", "ssrf",          "(?i)curl_exec")
+        )
+      )
     case "ruby" | "rubysrc" =>
       LangPatterns(
         sourcePattern =

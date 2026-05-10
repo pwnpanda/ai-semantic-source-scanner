@@ -46,6 +46,10 @@ _JOERN_LANGUAGE_FLAG: dict[str, str] = {
     # as unresolved call edges. The wiring is identical to the others; the
     # caller is responsible for handling parse failures gracefully.
     "ruby": "RUBYSRC",
+    # Joern's php2cpg shells out to PHP-Parser, so the host needs ``php`` on
+    # PATH. Document this as a runtime requirement; the call still gracefully
+    # fails via JoernUnavailableError when ``joern-parse`` itself is missing.
+    "php": "PHP",
 }
 
 _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
@@ -54,6 +58,7 @@ _SOURCE_EXTS_BY_LANGUAGE: dict[str, frozenset[str]] = {
     "java": frozenset({".java"}),
     "go": frozenset({".go"}),
     "ruby": frozenset({".rb", ".rake"}),
+    "php": frozenset({".php", ".phtml"}),
 }
 
 
