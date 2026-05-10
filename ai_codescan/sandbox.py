@@ -147,44 +147,106 @@ def run_in_sandbox(  # noqa: PLR0913 - kw-only args mirror the CLI surface
 
 @dataclass(frozen=True, slots=True)
 class LanguageProfile:
-    """How to run a PoC written in a given language."""
+    """How to run a PoC written in a given language.
+
+    ``interpreter`` is the argv-prefix (split on whitespace) that runs the
+    script inside the container; the script path is appended by the caller.
+    ``local_supported`` flags whether the ``--no-sandbox`` fallback is allowed
+    — only Python is supported locally; everything else requires Docker or
+    Podman because we can't assume the host has the toolchain installed.
+    """
 
     name: str  # canonical lang
     extension: str  # ".py" / ".js" / …
     image: str  # default container image
-    interpreter: str  # entrypoint binary inside the image
+    interpreter: str  # entrypoint argv inside the image (whitespace-split)
+    local_supported: bool = False
 
 
 _PROFILES: dict[str, LanguageProfile] = {
-    "python": LanguageProfile("python", ".py", "python:3.13-alpine", "python3"),
+    "python": LanguageProfile(
+        "python", ".py", "python:3.13-slim", "python3", local_supported=True
+    ),
     "javascript": LanguageProfile("javascript", ".js", "node:22-alpine", "node"),
-    "typescript": LanguageProfile("typescript", ".ts", "node:22-alpine", "node"),
-    "php": LanguageProfile("php", ".php", "php:8-alpine", "php"),
-    "ruby": LanguageProfile("ruby", ".rb", "ruby:3-alpine", "ruby"),
-    "go": LanguageProfile("go", ".go", "golang:1-alpine", "go run"),
-    "shell": LanguageProfile("shell", ".sh", "alpine:3.20", "sh"),
+    # TypeScript runs through tsx (https://tsx.is) — no compile step required.
+    "typescript": LanguageProfile("typescript", ".ts", "node:22-alpine", "npx --yes tsx"),
+    # JEP 330 single-file source-code execution; needs JDK >= 11.
+    "java": LanguageProfile("java", ".java", "openjdk:21-slim", "java"),
+    "go": LanguageProfile("go", ".go", "golang:1.22-alpine", "go run"),
+    "ruby": LanguageProfile("ruby", ".rb", "ruby:3.3-alpine", "ruby"),
+    "php": LanguageProfile("php", ".php", "php:8.3-cli-alpine", "php"),
+    # .NET 8 doesn't yet support file-based apps (`dotnet run path.cs`); that
+    # arrives in .NET 10 (preview at time of writing). Keep the profile so a
+    # PoC that ships its own .csproj can still be wired up via the LLM, but
+    # the validator route flags it as unsupported below — see ``ext_to_profile``.
+    "csharp": LanguageProfile("csharp", ".cs", "mcr.microsoft.com/dotnet/sdk:8.0", "dotnet run"),
+    "shell": LanguageProfile("shell", ".sh", "bash:5", "bash"),
 }
+
+
+_LANG_ALIASES: dict[str, str] = {
+    "python": "python",
+    "py": "python",
+    "javascript": "javascript",
+    "node": "javascript",
+    "js": "javascript",
+    "typescript": "typescript",
+    "ts": "typescript",
+    "java": "java",
+    "go": "go",
+    "golang": "go",
+    "ruby": "ruby",
+    "rb": "ruby",
+    "php": "php",
+    "csharp": "csharp",
+    "cs": "csharp",
+    "dotnet": "csharp",
+    "shell": "shell",
+    "sh": "shell",
+    "bash": "shell",
+}
+
+
+# Extension → canonical language. Drives PoC routing in the validator.
+# The .cs entry is intentionally omitted: file-based execution needs .NET 10
+# (we're on 8). PoCs that need C# must ship as a csproj — track as TODO.
+_EXT_TO_LANG: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".ts": "typescript",
+    ".java": "java",
+    ".go": "go",
+    ".rb": "ruby",
+    ".php": "php",
+    ".sh": "shell",
+    ".bash": "shell",
+}
+
+
+class UnsupportedPocLanguageError(ValueError):
+    """Raised when a PoC file's extension has no registered language profile."""
 
 
 def profile_for_lang(lang: str) -> LanguageProfile:
     """Return the language profile for ``lang`` (case-insensitive); python fallback."""
-    canonical = {
-        "javascript": "javascript",
-        "node": "javascript",
-        "js": "javascript",
-        "typescript": "typescript",
-        "ts": "typescript",
-        "python": "python",
-        "py": "python",
-        "php": "php",
-        "ruby": "ruby",
-        "rb": "ruby",
-        "go": "go",
-        "golang": "go",
-        "shell": "shell",
-        "sh": "shell",
-        "bash": "shell",
-    }.get(lang.lower(), "python")
+    canonical = _LANG_ALIASES.get(lang.lower(), "python")
+    return _PROFILES[canonical]
+
+
+def profile_for_extension(extension: str) -> LanguageProfile:
+    """Return the language profile for a file extension (e.g. ``.js``).
+
+    Raises :class:`UnsupportedPocLanguageError` for extensions we don't route.
+    Always pass the leading dot — that's what :attr:`pathlib.Path.suffix` returns.
+    """
+    canonical = _EXT_TO_LANG.get(extension.lower())
+    if canonical is None:
+        supported = ", ".join(sorted(_EXT_TO_LANG))
+        raise UnsupportedPocLanguageError(
+            f"no PoC language profile for extension {extension!r}; "
+            f"supported extensions: {supported}"
+        )
     return _PROFILES[canonical]
 
 

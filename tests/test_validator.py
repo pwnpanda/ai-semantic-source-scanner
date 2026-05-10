@@ -1,13 +1,21 @@
 """Tests for ai_codescan.validator (status-flip logic + log writer)."""
 
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from ai_codescan.findings.model import Finding, parse_finding, render_finding
 from ai_codescan.runs.state import load_or_create
-from ai_codescan.sandbox import SandboxResult
-from ai_codescan.validator import _flip_status, _hints_for_cwe, _parse_verdict, run_validator
+from ai_codescan.sandbox import SandboxResult, SandboxUnavailableError, profile_for_extension
+from ai_codescan.validator import (
+    _flip_status,
+    _hints_for_cwe,
+    _parse_verdict,
+    _run_poc,
+    run_validator,
+)
 
 
 def _result(exit_code: int = 0, *, signal: bool = False, timed_out: bool = False) -> SandboxResult:
@@ -150,3 +158,141 @@ def test_hints_for_cwe_returns_empty_for_unknown() -> None:
 
     assert _hints_for_cwe("CWE-9999") == []
     assert _hints_for_cwe(None) == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-language PoC routing — each test feeds a poc.<ext> through `_run_poc`
+# and inspects the argv that `subprocess.run` (inside sandbox.run_in_sandbox)
+# would have sent to docker. The sandbox itself never actually starts.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingProc:
+    """Stand-in for ``subprocess.CompletedProcess`` with a successful PoC."""
+
+    returncode = 0
+    stdout = "OK_VULN\n"
+    stderr = ""
+
+
+def _capture_subprocess(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Capture every ``subprocess.run`` argv issued from ``ai_codescan.sandbox``.
+
+    Returns a mutable list that the test can inspect after invoking
+    ``_run_poc`` — the test asserts on the last argv (the docker command).
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> _RecordingProc:
+        calls.append(list(argv))
+        return _RecordingProc()
+
+    # Pretend docker is on PATH.
+    monkeypatch.setattr("ai_codescan.sandbox.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("ai_codescan.sandbox.configured_runtime", lambda: "docker")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def _write_poc(tmp_path: Path, suffix: str, body: str = "") -> Path:
+    poc = tmp_path / f"poc{suffix}"
+    poc.write_text(body or "// stub\n", encoding="utf-8")
+    return poc
+
+
+def test_run_poc_routes_javascript_to_node_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _capture_subprocess(monkeypatch)
+    poc = _write_poc(tmp_path, ".js")
+    profile = profile_for_extension(".js")
+
+    _run_poc(poc, work_dir=tmp_path, profile=profile, no_sandbox=False)
+
+    assert len(calls) == 1
+    argv = calls[0]
+    assert argv[0] == "docker"
+    # Image immediately precedes the in-container argv.
+    assert "node:22-alpine" in argv
+    image_idx = argv.index("node:22-alpine")
+    assert argv[image_idx + 1] == "node"
+    assert argv[image_idx + 2] == "poc.js"
+
+
+def test_run_poc_routes_go_to_golang_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _capture_subprocess(monkeypatch)
+    poc = _write_poc(tmp_path, ".go")
+    profile = profile_for_extension(".go")
+
+    _run_poc(poc, work_dir=tmp_path, profile=profile, no_sandbox=False)
+
+    argv = calls[0]
+    assert "golang:1.22-alpine" in argv
+    image_idx = argv.index("golang:1.22-alpine")
+    # `go run poc.go` — interpreter is two tokens.
+    assert argv[image_idx + 1 : image_idx + 4] == ["go", "run", "poc.go"]
+
+
+def test_run_poc_routes_ruby_to_ruby_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _capture_subprocess(monkeypatch)
+    poc = _write_poc(tmp_path, ".rb")
+    profile = profile_for_extension(".rb")
+
+    _run_poc(poc, work_dir=tmp_path, profile=profile, no_sandbox=False)
+
+    argv = calls[0]
+    assert "ruby:3.3-alpine" in argv
+    image_idx = argv.index("ruby:3.3-alpine")
+    assert argv[image_idx + 1] == "ruby"
+    assert argv[image_idx + 2] == "poc.rb"
+
+
+def test_run_validator_logs_unsupported_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PoC with an unknown extension is logged and skipped, not crashed on."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    state = load_or_create(repo_dir, engine="codeql", temperature=0.0, target_bug_classes=[])
+    findings_dir = state.run_dir / "findings"
+    findings_dir.mkdir()
+    (findings_dir / "F-007.md").write_text(
+        render_finding(
+            Finding(
+                finding_id="F-007",
+                nomination_id="N-007",
+                flow_id="F7",
+                cwe="CWE-79",
+                status="unverified",
+                title="t",
+                body="b",
+            )
+        ),
+        encoding="utf-8",
+    )
+    sandbox_dir = state.run_dir / "sandbox" / "F-007"
+    sandbox_dir.mkdir(parents=True)
+    (sandbox_dir / "poc.rs").write_text("fn main() {}\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", "/nonexistent")  # skip the LLM skill loop
+
+    log_path = run_validator(state, repo_dir=repo_dir)
+    log_text = log_path.read_text(encoding="utf-8")
+
+    assert "F-007" in log_text
+    assert "unsupported-poc-language" in log_text
+    # Finding stays unverified — we never executed anything.
+    f = parse_finding((findings_dir / "F-007.md").read_text(encoding="utf-8"))
+    assert f.status == "unverified"
+
+
+def test_run_poc_local_rejects_non_python(tmp_path: Path) -> None:
+    """``--no-sandbox`` only supports Python; other languages must use Docker."""
+    poc = _write_poc(tmp_path, ".js")
+    profile = profile_for_extension(".js")
+    with pytest.raises(SandboxUnavailableError) as info:
+        _run_poc(poc, work_dir=tmp_path, profile=profile, no_sandbox=True)
+    assert "javascript" in str(info.value).lower()
