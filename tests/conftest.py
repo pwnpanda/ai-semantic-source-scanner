@@ -1,20 +1,38 @@
 """Shared pytest fixtures."""
 
-import os
-from collections.abc import Iterator
-from pathlib import Path
+from __future__ import annotations
 
-import pytest
+import os
+import shutil
+
+# typer / click / rich determine ``--help`` rendering width from (in
+# order) ``$COLUMNS``, the TTY size, then a hard-coded 80-col fallback.
+# Hosted CI runners have no TTY and inconsistent ``$COLUMNS`` handling
+# across pytest plugins (some import-time plugins read width before our
+# ``conftest`` runs), so set the env vars **and** monkey-patch
+# ``shutil.get_terminal_size`` before any other test module imports
+# typer/rich. This makes ``--help`` output width-invariant in every
+# environment.
+os.environ["COLUMNS"] = "200"
+os.environ["LINES"] = "50"
+os.environ.setdefault("TERM", "xterm-256color")
+_FORCED_SIZE = os.terminal_size((200, 50))
+shutil.get_terminal_size = lambda fallback=(200, 50): _FORCED_SIZE  # type: ignore[assignment]
+
+import re  # noqa: E402 - intentional ordering
+from collections.abc import Iterator  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
-# Force a wide terminal for the whole session. typer / click format their
-# ``--help`` output against ``$COLUMNS`` (or the TTY width when no env var
-# is set); GitHub Actions runners have no TTY and default to a narrow
-# width, which truncates option names like ``--port`` to ``-…`` and breaks
-# tests that assert the full text appears in ``--help`` output. Setting
-# this once in conftest keeps all CLI help tests width-invariant.
-os.environ.setdefault("COLUMNS", "200")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences so help-text assertions stay readable."""
+    return _ANSI_RE.sub("", text)
 
 
 @pytest.fixture
