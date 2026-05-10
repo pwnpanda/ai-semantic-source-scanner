@@ -715,8 +715,10 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
         ),
     ] = False,
 ) -> None:
-    """End-to-end pipeline: prep → nominate → gate-1 → analyze → gate-2 → validate → gate-3 → report.
+    """End-to-end pipeline driver.
 
+    Runs ``prep → nominate → gate-1 → analyze → gate-2 → validate →
+    gate-3 → report`` in one shot.
     Re-running the same target resumes after the last completed stage
     (state lives at ``<cache>/<repo_id>/run.state.json``). Use ``--phases``
     or ``--from``/``--to`` to slice the pipeline; ``--yes`` runs unattended.
