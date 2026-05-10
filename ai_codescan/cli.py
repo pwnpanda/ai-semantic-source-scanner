@@ -398,15 +398,17 @@ def view(
         repo_id = repos[0]
     db_path = cache_root / repo_id / "index.duckdb"
     conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        if symbol:
+            row = conn.execute("SELECT file FROM symbols WHERE id = ?", [symbol]).fetchone()
+            if not row:
+                typer.echo(f"unknown symbol id: {symbol}", err=True)
+                raise typer.Exit(code=1)
+            file = row[0]
 
-    if symbol:
-        row = conn.execute("SELECT file FROM symbols WHERE id = ?", [symbol]).fetchone()
-        if not row:
-            typer.echo(f"unknown symbol id: {symbol}", err=True)
-            raise typer.Exit(code=1)
-        file = row[0]
-
-    typer.echo(render_file_view(conn, file=file))
+        typer.echo(render_file_view(conn, file=file))
+    finally:
+        conn.close()
 
 
 @app.command()

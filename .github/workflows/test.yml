@@ -16,7 +16,7 @@ concurrency:
 jobs:
   lint-types-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -30,8 +30,29 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
 
-      - name: Install project and dev deps
+      - name: Install Python project + dev deps
         run: uv sync --all-groups
+
+      # The Node AST worker (ai_codescan/ast/node_worker) ships
+      # tree-sitter + per-language grammars as a pnpm workspace. The
+      # prep / smoke tests spawn ``node worker.mjs``, which fails to
+      # resolve ``tree-sitter`` if these aren't installed.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@5d445ecbfcb90fdf1556a629d018c79e97ff973b  # v6.0.6
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ai_codescan/ast/node_worker/pnpm-lock.yaml
+
+      - name: Install Node AST worker deps
+        working-directory: ai_codescan/ast/node_worker
+        run: pnpm install --frozen-lockfile
 
       - name: Lint (ruff check)
         run: uv run ruff check ai_codescan/ tests/
