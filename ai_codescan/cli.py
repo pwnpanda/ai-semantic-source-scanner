@@ -198,9 +198,7 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
                 # CodeQL's java-kotlin extractor handles both regardless.
                 project_dir = snapshot_root / project.base_path
                 java_count = sum(1 for _ in project_dir.rglob("*.java"))
-                kotlin_count = sum(
-                    1 for p in project_dir.rglob("*") if p.suffix in {".kt", ".kts"}
-                )
+                kotlin_count = sum(1 for p in project_dir.rglob("*") if p.suffix in {".kt", ".kts"})
                 language = "kotlin" if kotlin_count > java_count else "java"
             elif project.kind is ProjectKind.GO:
                 language = "go"
@@ -910,9 +908,7 @@ def taint_schema(  # noqa: PLR0911, PLR0913, PLR0912, PLR0915 - CLI orchestrator
         if schema_path.is_file():
             typer.echo(f"schema.taint.yml already exists at {schema_path}; not overwriting")
             return
-        example_path = (
-            Path(__file__).resolve().parent.parent / "docs" / "schema.taint.yml.example"
-        )
+        example_path = Path(__file__).resolve().parent.parent / "docs" / "schema.taint.yml.example"
         if not example_path.is_file():
             typer.echo(f"example file missing at {example_path}", err=True)
             raise typer.Exit(code=1)

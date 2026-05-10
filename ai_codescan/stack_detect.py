@@ -914,9 +914,12 @@ def _detect_yaml_frameworks(pkg_dir: Path) -> set[str]:
     workflows = pkg_dir / ".github" / "workflows"
     if workflows.is_dir() and any(workflows.glob("*.yml")) | any(workflows.glob("*.yaml")):
         frameworks.add("github-actions")
-    if (pkg_dir / "docker-compose.yml").is_file() or (
-        pkg_dir / "docker-compose.yaml"
-    ).is_file() or (pkg_dir / "compose.yml").is_file() or (pkg_dir / "compose.yaml").is_file():
+    if (
+        (pkg_dir / "docker-compose.yml").is_file()
+        or (pkg_dir / "docker-compose.yaml").is_file()
+        or (pkg_dir / "compose.yml").is_file()
+        or (pkg_dir / "compose.yaml").is_file()
+    ):
         frameworks.add("docker-compose")
     if (pkg_dir / "Chart.yaml").is_file():
         frameworks.add("helm")

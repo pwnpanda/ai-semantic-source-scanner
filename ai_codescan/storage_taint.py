@@ -120,7 +120,10 @@ def detect_sql_storage_ids(sql_text: str, *, dialect: str | None = None) -> list
     out: list[str] = []
     try:
         tree = sqlglot.parse_one(sql_text, read=dialect)
-    except sqlglot.errors.ParseError:
+    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError):
+        # sqlglot raises TokenError (not ParseError) for malformed lexemes
+        # like an unterminated quote. Treat both as "not SQL" — caller
+        # asked us to be tolerant of arbitrary callee-text strings.
         return []
     if tree is None:
         return []
@@ -153,7 +156,9 @@ def classify_sql_op(sql_text: str) -> str | None:
     """Return ``'write'`` for INSERT/UPDATE, ``'read'`` for SELECT, else ``None``."""
     try:
         tree = sqlglot.parse_one(sql_text)
-    except sqlglot.errors.ParseError:
+    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError):
+        # See ``detect_sql_storage_ids`` — sqlglot can raise TokenError on
+        # malformed lexemes; treat as "not SQL".
         return None
     if tree is None:
         return None

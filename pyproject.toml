@@ -29,6 +29,7 @@ module-root = ""
 dev = [
   "pytest>=8.3",
   "pytest-cov>=5.0",
+  "hypothesis>=6.115",
   "ruff>=0.7",
   "ty>=0.0.1a1",
   "grpcio-tools>=1.66",
@@ -52,6 +53,30 @@ ignore = ["S101"]
 # `environment.root` replaces the deprecated `src.root` (ty 0.0.34+).
 [tool.ty.environment]
 root = ["ai_codescan", "tests"]
+
+[tool.ty.rules]
+# Strictness lifts beyond the default rule set. Each entry escalates a
+# default-warn rule to ``error`` (so ``ty check`` fails on it), or enables
+# a default-off rule worth catching in this codebase. Documented one
+# rationale per group so removing one never feels arbitrary.
+#
+# Implicit type holes in public APIs.
+unresolved-import = "error"
+unresolved-attribute = "error"
+unresolved-reference = "error"
+# Surfaces typos like ``foo: list[Path] = (...)`` where the assignment is
+# a tuple, before the linter catches it via PLE.
+invalid-assignment = "error"
+# Catches return-type mismatches in public functions, plus ``return``
+# without a value where the signature says ``-> int``.
+invalid-return-type = "error"
+# Promote argument-shape errors to hard fails — ty's default is ``warn``.
+missing-argument = "error"
+too-many-positional-arguments = "error"
+unknown-argument = "error"
+# Argument-type and parameter-default mismatches.
+invalid-argument-type = "error"
+invalid-parameter-default = "error"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

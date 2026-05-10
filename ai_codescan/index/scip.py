@@ -114,8 +114,7 @@ def _build_scip_java(project_root: Path, *, scip_path: Path) -> None:
         produced = project_root / "index.scip"
         if not produced.is_file():
             raise RuntimeError(
-                f"scip-java did not produce a SCIP index at {scip_path} "
-                f"(also checked {produced})"
+                f"scip-java did not produce a SCIP index at {scip_path} (also checked {produced})"
             )
         shutil.move(str(produced), str(scip_path))
 
@@ -143,8 +142,7 @@ def _build_scip_go(project_root: Path, *, scip_path: Path) -> None:
         produced = project_root / "index.scip"
         if not produced.is_file():
             raise RuntimeError(
-                f"scip-go did not produce a SCIP index at {scip_path} "
-                f"(also checked {produced})"
+                f"scip-go did not produce a SCIP index at {scip_path} (also checked {produced})"
             )
         shutil.move(str(produced), str(scip_path))
 

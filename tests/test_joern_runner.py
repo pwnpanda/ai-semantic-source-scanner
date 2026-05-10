@@ -16,9 +16,7 @@ from ai_codescan.engines import joern as joern_eng
 
 
 def _has_joern() -> bool:
-    return (
-        shutil.which("joern") is not None and shutil.which("joern-parse") is not None
-    )
+    return shutil.which("joern") is not None and shutil.which("joern-parse") is not None
 
 
 def _has_php() -> bool:
@@ -44,9 +42,7 @@ def test_is_available_returns_bool() -> None:
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_joern(), reason="joern cli not installed")
-def test_joern_runs_against_tiny_vuln_javascript(
-    tmp_path: Path, fixtures_dir: Path
-) -> None:
+def test_joern_runs_against_tiny_vuln_javascript(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build CPG + run queries against tiny-vuln (JavaScript)."""
     jsonl = joern_eng.run_joern(
         fixtures_dir / "tiny-vuln",
@@ -56,16 +52,14 @@ def test_joern_runs_against_tiny_vuln_javascript(
     )
     assert jsonl.is_file()
     flows = joern_eng.parse_flows(jsonl)
-    assert any(
-        f.get("cwe") == "CWE-89" and f.get("sink_name") == "query" for f in flows
-    ), f"expected CWE-89 flow with sink_name=query in {flows!r}"
+    assert any(f.get("cwe") == "CWE-89" and f.get("sink_name") == "query" for f in flows), (
+        f"expected CWE-89 flow with sink_name=query in {flows!r}"
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_joern(), reason="joern cli not installed")
-def test_joern_runs_against_tiny_flask_python(
-    tmp_path: Path, fixtures_dir: Path
-) -> None:
+def test_joern_runs_against_tiny_flask_python(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build CPG + run queries against tiny-flask (Python)."""
     jsonl = joern_eng.run_joern(
         fixtures_dir / "tiny-flask",
@@ -75,16 +69,14 @@ def test_joern_runs_against_tiny_flask_python(
     )
     assert jsonl.is_file()
     flows = joern_eng.parse_flows(jsonl)
-    assert any(
-        f.get("cwe") == "CWE-89" and f.get("sink_name") == "execute" for f in flows
-    ), f"expected CWE-89 flow with sink_name=execute in {flows!r}"
+    assert any(f.get("cwe") == "CWE-89" and f.get("sink_name") == "execute" for f in flows), (
+        f"expected CWE-89 flow with sink_name=execute in {flows!r}"
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_joern(), reason="joern cli not installed")
-def test_joern_runs_against_tiny_spring_java(
-    tmp_path: Path, fixtures_dir: Path
-) -> None:
+def test_joern_runs_against_tiny_spring_java(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build CPG + run queries against tiny-spring (Java)."""
     jsonl = joern_eng.run_joern(
         fixtures_dir / "tiny-spring",
@@ -94,10 +86,9 @@ def test_joern_runs_against_tiny_spring_java(
     )
     assert jsonl.is_file()
     flows = joern_eng.parse_flows(jsonl)
-    assert any(
-        f.get("cwe") == "CWE-89" and f.get("sink_name") == "executeQuery"
-        for f in flows
-    ), f"expected CWE-89 flow with sink_name=executeQuery in {flows!r}"
+    assert any(f.get("cwe") == "CWE-89" and f.get("sink_name") == "executeQuery" for f in flows), (
+        f"expected CWE-89 flow with sink_name=executeQuery in {flows!r}"
+    )
 
 
 @pytest.mark.integration
@@ -112,16 +103,14 @@ def test_joern_runs_against_tiny_gin_go(tmp_path: Path, fixtures_dir: Path) -> N
     )
     assert jsonl.is_file()
     flows = joern_eng.parse_flows(jsonl)
-    assert any(
-        f.get("cwe") == "CWE-89" and f.get("sink_name") == "Query" for f in flows
-    ), f"expected CWE-89 flow with sink_name=Query in {flows!r}"
+    assert any(f.get("cwe") == "CWE-89" and f.get("sink_name") == "Query" for f in flows), (
+        f"expected CWE-89 flow with sink_name=Query in {flows!r}"
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_joern(), reason="joern cli not installed")
-def test_joern_runs_against_tiny_sinatra_ruby(
-    tmp_path: Path, fixtures_dir: Path
-) -> None:
+def test_joern_runs_against_tiny_sinatra_ruby(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build CPG + run queries against tiny-sinatra (Ruby).
 
     Joern's rubysrc2cpg frontend is officially marked beta — it produces
@@ -162,9 +151,7 @@ def test_joern_runs_against_tiny_slim_php(tmp_path: Path, fixtures_dir: Path) ->
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _has_joern(), reason="joern cli not installed")
-def test_joern_runs_against_tiny_aspnet_csharp(
-    tmp_path: Path, fixtures_dir: Path
-) -> None:
+def test_joern_runs_against_tiny_aspnet_csharp(tmp_path: Path, fixtures_dir: Path) -> None:
     """Build CPG + run queries against tiny-aspnet (C#)."""
     jsonl = joern_eng.run_joern(
         fixtures_dir / "tiny-aspnet",
@@ -174,7 +161,6 @@ def test_joern_runs_against_tiny_aspnet_csharp(
     )
     assert jsonl.is_file()
     flows = joern_eng.parse_flows(jsonl)
-    assert any(
-        f.get("cwe") == "CWE-89" and f.get("sink_name") == "ExecuteReader"
-        for f in flows
-    ), f"expected CWE-89 flow with sink_name=ExecuteReader in {flows!r}"
+    assert any(f.get("cwe") == "CWE-89" and f.get("sink_name") == "ExecuteReader" for f in flows), (
+        f"expected CWE-89 flow with sink_name=ExecuteReader in {flows!r}"
+    )

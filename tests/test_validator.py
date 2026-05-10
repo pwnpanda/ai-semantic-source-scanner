@@ -219,9 +219,7 @@ def test_run_poc_routes_javascript_to_node_image(
     assert argv[image_idx + 2] == "poc.js"
 
 
-def test_run_poc_routes_go_to_golang_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_poc_routes_go_to_golang_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _capture_subprocess(monkeypatch)
     poc = _write_poc(tmp_path, ".go")
     profile = profile_for_extension(".go")
@@ -235,9 +233,7 @@ def test_run_poc_routes_go_to_golang_image(
     assert argv[image_idx + 1 : image_idx + 4] == ["go", "run", "poc.go"]
 
 
-def test_run_poc_routes_ruby_to_ruby_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_poc_routes_ruby_to_ruby_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _capture_subprocess(monkeypatch)
     poc = _write_poc(tmp_path, ".rb")
     profile = profile_for_extension(".rb")

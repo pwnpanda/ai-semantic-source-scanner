@@ -588,9 +588,7 @@ def test_yaml_docker_compose_detected(tmp_path: Path) -> None:
 def test_yaml_helm_chart_detected(tmp_path: Path) -> None:
     pkg = tmp_path / "chart"
     pkg.mkdir()
-    (pkg / "Chart.yaml").write_text(
-        "apiVersion: v2\nname: app\nversion: 0.1.0\n", encoding="utf-8"
-    )
+    (pkg / "Chart.yaml").write_text("apiVersion: v2\nname: app\nversion: 0.1.0\n", encoding="utf-8")
     p = detect_projects(pkg)[0]
     assert p.kind is ProjectKind.YAML
     assert "helm" in p.frameworks

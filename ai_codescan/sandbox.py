@@ -164,9 +164,7 @@ class LanguageProfile:
 
 
 _PROFILES: dict[str, LanguageProfile] = {
-    "python": LanguageProfile(
-        "python", ".py", "python:3.13-slim", "python3", local_supported=True
-    ),
+    "python": LanguageProfile("python", ".py", "python:3.13-slim", "python3", local_supported=True),
     "javascript": LanguageProfile("javascript", ".js", "node:22-alpine", "node"),
     # TypeScript runs through tsx (https://tsx.is) — no compile step required.
     "typescript": LanguageProfile("typescript", ".ts", "node:22-alpine", "npx --yes tsx"),

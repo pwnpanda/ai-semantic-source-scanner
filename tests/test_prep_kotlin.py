@@ -23,9 +23,7 @@ def _has_node() -> bool:
 
 
 @pytest.mark.skipif(not _has_node(), reason="node runtime required for AST extraction")
-def test_prep_on_tiny_ktor_indexes_kotlin_symbols(
-    tmp_path: Path, fixtures_dir: Path
-) -> None:
+def test_prep_on_tiny_ktor_indexes_kotlin_symbols(tmp_path: Path, fixtures_dir: Path) -> None:
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
     snap, db_path = run_prep(
@@ -40,9 +38,7 @@ def test_prep_on_tiny_ktor_indexes_kotlin_symbols(
 
     conn = duckdb.connect(str(db_path), read_only=True)
     try:
-        files = conn.execute(
-            "SELECT path FROM files WHERE path LIKE '%App.kt'"
-        ).fetchall()
+        files = conn.execute("SELECT path FROM files WHERE path LIKE '%App.kt'").fetchall()
         assert files, "tiny-ktor App.kt was not ingested"
 
         symbols = conn.execute(

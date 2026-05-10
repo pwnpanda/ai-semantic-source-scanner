@@ -1,0 +1,40 @@
+# Pre-commit hooks for ai-codescan.
+#
+# Run via ``prek run`` (or ``pre-commit run``); install with ``prek install``
+# so each commit triggers them automatically. The hooks mirror what the
+# ``test`` GitHub Actions workflow runs on every push / PR — keeping local
+# and CI parity so a passing pre-commit is also a passing CI.
+#
+# Slow tests are deliberately left out of the commit hook (``pytest`` runs
+# in CI). Local quick-check is ``uv run pytest tests/ -m "not integration"``.
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        language: system
+        entry: uv run ruff check
+        types: [python]
+        # ``ai_codescan/third_party/`` is generated protobuf code that
+        # mirrors upstream output; never lint or reformat it.
+        exclude: ^ai_codescan/third_party/
+        require_serial: false
+
+      - id: ruff-format
+        name: ruff format
+        language: system
+        entry: uv run ruff format
+        types: [python]
+        exclude: ^ai_codescan/third_party/
+        require_serial: false
+
+      - id: ty-check
+        name: ty check
+        language: system
+        entry: uv run ty check ai_codescan/
+        # ``ty check`` resolves the whole project; running it per-file is
+        # slower than running it once on the package root.
+        pass_filenames: false
+        files: \.py$
+        require_serial: true
