@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 import duckdb
@@ -11,6 +12,20 @@ from typer.testing import CliRunner
 from ai_codescan.cli import app
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_WS_RE = re.compile(r"\s+")
+
+
+def _help_text(stdout: str) -> str:
+    """Normalize help output for substring matching.
+
+    Strips ANSI escape codes and collapses runs of whitespace (including
+    newlines) to single spaces. Help-text assertions then survive any
+    rich-panel wrapping or column-width fluctuation in the test
+    environment.
+    """
+    return _WS_RE.sub(" ", _ANSI_RE.sub("", stdout))
 
 
 def test_help_shows_subcommands() -> None:
@@ -24,8 +39,9 @@ def test_help_shows_subcommands() -> None:
 def test_prep_help_shows_flags() -> None:
     result = runner.invoke(app, ["prep", "--help"])
     assert result.exit_code == 0
-    assert "--cache-dir" in result.stdout
-    assert "--commit" in result.stdout
+    out = _help_text(result.stdout)
+    assert "--cache-dir" in out
+    assert "--commit" in out
 
 
 def test_cache_list_handles_missing_root(tmp_path: Path) -> None:
@@ -305,15 +321,17 @@ def test_install_skills_command_runs() -> None:
 def test_nominate_help_advertises_llm_flags() -> None:
     result = runner.invoke(app, ["nominate", "--help"])
     assert result.exit_code == 0
-    assert "--llm-provider" in result.stdout
-    assert "--llm-model" in result.stdout
+    out = _help_text(result.stdout)
+    assert "--llm-provider" in out
+    assert "--llm-model" in out
 
 
 def test_run_help_advertises_llm_flags() -> None:
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "--llm-provider" in result.stdout
-    assert "--llm-model" in result.stdout
+    out = _help_text(result.stdout)
+    assert "--llm-provider" in out
+    assert "--llm-model" in out
 
 
 def test_nominate_rejects_unknown_provider(
@@ -377,14 +395,15 @@ def test_nominate_persists_llm_config_to_run_json(
 def test_analyze_help_advertises_llm_flags() -> None:
     result = runner.invoke(app, ["analyze", "--help"])
     assert result.exit_code == 0
-    assert "--llm-provider" in result.stdout
-    assert "--llm-model" in result.stdout
+    out = _help_text(result.stdout)
+    assert "--llm-provider" in out
+    assert "--llm-model" in out
 
 
 def test_gate_2_help_advertises_yes() -> None:
     result = runner.invoke(app, ["gate-2", "--help"])
     assert result.exit_code == 0
-    assert "--yes" in result.stdout
+    assert "--yes" in _help_text(result.stdout)
 
 
 def test_gate_2_yes_short_circuits(tmp_path: Path, fixtures_dir: Path) -> None:
@@ -411,21 +430,23 @@ def test_gate_2_yes_short_circuits(tmp_path: Path, fixtures_dir: Path) -> None:
 def test_validate_help_advertises_no_sandbox() -> None:
     result = runner.invoke(app, ["validate", "--help"])
     assert result.exit_code == 0
-    assert "--no-sandbox" in result.stdout
-    assert "--llm-provider" in result.stdout
+    out = _help_text(result.stdout)
+    assert "--no-sandbox" in out
+    assert "--llm-provider" in out
 
 
 def test_gate_3_help_advertises_yes() -> None:
     result = runner.invoke(app, ["gate-3", "--help"])
     assert result.exit_code == 0
-    assert "--yes" in result.stdout
+    assert "--yes" in _help_text(result.stdout)
 
 
 def test_report_help_advertises_flags() -> None:
     result = runner.invoke(app, ["report", "--help"])
     assert result.exit_code == 0
-    assert "--report-dir" in result.stdout
-    assert "--bugbounty" in result.stdout
+    out = _help_text(result.stdout)
+    assert "--report-dir" in out
+    assert "--bugbounty" in out
 
 
 def test_report_writes_for_verified_finding(tmp_path: Path, fixtures_dir: Path) -> None:
@@ -469,9 +490,10 @@ def test_report_writes_for_verified_finding(tmp_path: Path, fixtures_dir: Path) 
 def test_visualize_help_advertises_flags() -> None:
     result = runner.invoke(app, ["visualize", "--help"])
     assert result.exit_code == 0
-    assert "--fmt" in result.stdout
-    assert "--cwe" in result.stdout
-    assert "--limit" in result.stdout
+    out = _help_text(result.stdout)
+    assert "--fmt" in out
+    assert "--cwe" in out
+    assert "--limit" in out
 
 
 def test_visualize_writes_dot(tmp_path: Path, fixtures_dir: Path) -> None:
@@ -504,9 +526,10 @@ def test_visualize_writes_dot(tmp_path: Path, fixtures_dir: Path) -> None:
 def test_serve_help_advertises_flags() -> None:
     result = runner.invoke(app, ["serve", "--help"])
     assert result.exit_code == 0
-    assert "--port" in result.stdout
-    assert "--host" in result.stdout
-    assert "--open" in result.stdout
+    out = _help_text(result.stdout)
+    assert "--port" in out
+    assert "--host" in out
+    assert "--open" in out
 
 
 def test_install_skills_protect_and_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
