@@ -110,25 +110,39 @@ if contents[insert_at:insert_at + 1] == "\n":
     insert_at += 1
 new_contents = contents[:insert_at] + body + "\n\n" + contents[insert_at:]
 noms_path.write_text(new_contents, encoding="utf-8")
+print(stream)  # echo the stream for progress logging
 PY
 }
 
+total=$(grep -cve '^[[:space:]]*$' "$QUEUE" || true)
+mkdir -p "$RUN_DIR/.done"
+done_count=$(find "$RUN_DIR/.done" -maxdepth 1 -type f ! -name '*.stdout' 2>/dev/null | wc -l | tr -d ' ')
+echo "[nominate] queue: $total candidates ($done_count already done)" >&2
+
+idx=0
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
+  idx=$((idx + 1))
   candidate_id=$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])')
   done_marker="$RUN_DIR/.done/${candidate_id}"
   if [[ -f "$done_marker" ]]; then
+    echo "[nominate] $idx/$total $candidate_id … skip (already done)" >&2
     continue
   fi
-  mkdir -p "$RUN_DIR/.done"
+  printf '[nominate] %d/%d %s … ' "$idx" "$total" "$candidate_id" >&2
   iter_log="$RUN_DIR/.done/${candidate_id}.stdout"
+  start_ts=$(date +%s)
   if ! render_prompt "$line" | invoke_llm > "$iter_log"; then
-    echo "warning: candidate $candidate_id failed (llm error)" >&2
+    echo "FAIL (llm error)" >&2
     continue
   fi
-  if ! append_nomination_from_stdout "$iter_log"; then
-    echo "warning: candidate $candidate_id produced no nomination block" >&2
+  stream=$(append_nomination_from_stdout "$iter_log" 2>&1) || stream=""
+  elapsed=$(( $(date +%s) - start_ts ))
+  if [[ -z "$stream" || ! "$stream" =~ ^[ABC]$ ]]; then
+    echo "FAIL no block (${elapsed}s)" >&2
     continue
   fi
+  echo "ok → Stream $stream (${elapsed}s)" >&2
   touch "$done_marker"
 done < "$QUEUE"
+echo "[nominate] done" >&2

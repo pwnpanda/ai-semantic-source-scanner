@@ -90,14 +90,29 @@ PY
 HINTS_PATH="${AI_CODESCAN_HINTS_PATH:-}"
 TARGET_LANG="${AI_CODESCAN_TARGET_LANG:-}"
 
+# Count only findings still ``unverified`` — everything else is skipped.
+total=0
+for finding in "$FINDINGS_DIR"/*.md; do
+  [[ -f "$finding" ]] || continue
+  status_line="$(grep -E '^status:' "$finding" | head -1 || true)"
+  [[ "$status_line" == *"unverified"* ]] && total=$((total + 1))
+done
+done_count=$(find "$RUN_DIR/.done-validate" -maxdepth 1 -type f ! -name '*.stdout' 2>/dev/null | wc -l | tr -d ' ')
+echo "[validate] queue: $total unverified findings ($done_count already done)" >&2
+
+idx=0
 for finding in "$FINDINGS_DIR"/*.md; do
   [[ -f "$finding" ]] || continue
   finding_id="$(basename "$finding" .md)"
-  done_marker="$RUN_DIR/.done-validate/${finding_id}"
-  [[ -f "$done_marker" ]] && continue
 
   status_line="$(grep -E '^status:' "$finding" | head -1 || true)"
   if [[ "$status_line" != *"unverified"* ]]; then
+    continue
+  fi
+  idx=$((idx + 1))
+  done_marker="$RUN_DIR/.done-validate/${finding_id}"
+  if [[ -f "$done_marker" ]]; then
+    echo "[validate] $idx/$total $finding_id … skip (already done)" >&2
     continue
   fi
 
@@ -106,15 +121,21 @@ for finding in "$FINDINGS_DIR"/*.md; do
   poc_dir="$RUN_DIR/sandbox/${finding_id}"
   mkdir -p "$poc_dir"
 
+  printf '[validate] %d/%d %s … ' "$idx" "$total" "$finding_id" >&2
   iter_log="$RUN_DIR/.done-validate/${finding_id}.stdout"
+  start_ts=$(date +%s)
   if ! render_prompt "$finding" "$slice_file" "$HINTS_PATH" "$TARGET_LANG" \
        | invoke_llm > "$iter_log"; then
-    echo "warning: $finding_id PoC author failed (llm error)" >&2
+    echo "FAIL (llm error)" >&2
     continue
   fi
-  if ! write_poc_from_stdout "$iter_log" "$poc_dir" >/dev/null; then
-    echo "warning: $finding_id produced no PoC block" >&2
+  poc_path=$(write_poc_from_stdout "$iter_log" "$poc_dir" 2>/dev/null) || poc_path=""
+  elapsed=$(( $(date +%s) - start_ts ))
+  if [[ -z "$poc_path" ]]; then
+    echo "FAIL no PoC block (${elapsed}s)" >&2
     continue
   fi
+  echo "ok → $(basename "$poc_path") (${elapsed}s)" >&2
   touch "$done_marker"
 done
+echo "[validate] done" >&2

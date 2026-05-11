@@ -69,11 +69,17 @@ out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
 PY
 }
 
+echo "[llm-heavy] walking source tree (single LLM pass; this can take minutes)" >&2
 iter_log="$RUN_DIR/.llm_heavy.stdout"
+start_ts=$(date +%s)
 if ! render_prompt | invoke_llm > "$iter_log"; then
-  echo "warning: llm-heavy walker failed (llm error)" >&2
+  echo "[llm-heavy] FAIL (llm error)" >&2
   exit 0
 fi
 if ! write_flows_from_stdout "$iter_log"; then
-  echo "warning: llm-heavy walker produced no flows block" >&2
+  echo "[llm-heavy] FAIL no flows block" >&2
+  exit 0
 fi
+elapsed=$(( $(date +%s) - start_ts ))
+count=$(wc -l < "$OUT" 2>/dev/null | tr -d ' ')
+echo "[llm-heavy] done: ${count:-0} flows in ${elapsed}s" >&2

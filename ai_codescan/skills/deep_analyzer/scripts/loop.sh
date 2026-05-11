@@ -60,28 +60,44 @@ out_path.write_text(body + "\n", encoding="utf-8")
 PY
 }
 
+total=$(grep -cE '^- \[ \] N-' "$QUEUE" || true)
+done_count=$(find "$RUN_DIR/.done-analyze" -maxdepth 1 -type f ! -name '*.stdout' 2>/dev/null | wc -l | tr -d ' ')
+echo "[analyze] queue: $total nominations ($done_count already done)" >&2
+
+idx=0
 while IFS= read -r line; do
   if [[ ! "$line" =~ ^-\ \[\ \]\ (N-[A-Za-z0-9_-]+)\ \|\ ([^|]+)\ \|\ ([^|]+)\ \| ]]; then
     continue
   fi
+  idx=$((idx + 1))
   nom_id="${BASH_REMATCH[1]}"
   done="$RUN_DIR/.done-analyze/${nom_id}"
-  [[ -f "$done" ]] && continue
+  if [[ -f "$done" ]]; then
+    echo "[analyze] $idx/$total $nom_id … skip (already done)" >&2
+    continue
+  fi
   finding_id="F-${nom_id#N-}"
   finding_path="$RUN_DIR/findings/${finding_id}.md"
   slice_file="$RUN_DIR/slices/${nom_id}.json"
   if [[ ! -f "$slice_file" ]]; then
-    echo "no slice for $nom_id (skipping)" >&2
+    echo "[analyze] $idx/$total $nom_id … skip (no slice)" >&2
     continue
   fi
+  printf '[analyze] %d/%d %s … ' "$idx" "$total" "$nom_id" >&2
   iter_log="$RUN_DIR/.done-analyze/${nom_id}.stdout"
+  start_ts=$(date +%s)
   if ! render_prompt "$line" "$slice_file" | invoke_llm > "$iter_log"; then
-    echo "warning: $nom_id failed (llm error)" >&2
+    echo "FAIL (llm error)" >&2
     continue
   fi
   if ! write_finding_from_stdout "$iter_log" "$finding_path"; then
-    echo "warning: $nom_id produced no finding block" >&2
+    elapsed=$(( $(date +%s) - start_ts ))
+    echo "FAIL no block (${elapsed}s)" >&2
     continue
   fi
+  status=$(grep -E '^status:' "$finding_path" | head -1 | awk '{print $2}')
+  elapsed=$(( $(date +%s) - start_ts ))
+  echo "ok → ${status:-unknown} (${elapsed}s)" >&2
   touch "$done"
 done < "$QUEUE"
+echo "[analyze] done" >&2
