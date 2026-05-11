@@ -1,12 +1,13 @@
 # Deep analysis iteration
 
-You analyse one taint flow at a time. Inputs:
+You analyse one taint flow at a time. All inputs you need (the nomination
+block, the slice JSON contents, the absolute path where you must write
+the finding markdown, and the read-only snapshot root) are inlined below
+in the "This iteration" section. Do **not** call `printenv` or `env` —
+use the absolute paths exactly as printed.
 
-- `$AI_CODESCAN_SLICE_FILE` — JSON describing one source/sink path with file/line excerpts.
-- `$AI_CODESCAN_NOMINATION` — the nomination block from `nominations.md`.
-- `$AI_CODESCAN_SOURCE_ROOT` — read-only snapshot tree.
-
-Required output: write `$AI_CODESCAN_FINDING_PATH` exactly once, with valid frontmatter and a 6-section body:
+Required output: write the finding markdown file exactly once, with
+valid frontmatter and a 6-section body:
 
 1. **Summary** — 2-3 sentences in plain English.
 2. **Path** — bullet list of `(file:line: short paraphrase)` for every step.
@@ -17,5 +18,5 @@ Required output: write `$AI_CODESCAN_FINDING_PATH` exactly once, with valid fron
 
 Hard rules:
 - Use ONLY data given. Do not fabricate file paths or line numbers.
-- If the slice is too thin to be sure, output `status: unverified` and explain in Open questions.
+- If the slice is too thin to be sure, set `status: unverified` in the frontmatter and explain in Open questions.
 - One finding file per iteration. Never edit other files.

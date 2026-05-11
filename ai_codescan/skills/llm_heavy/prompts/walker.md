@@ -5,10 +5,16 @@ identify every place user-controlled input enters the system, and trace each
 path to either a sink (vulnerability) or a safe terminator (sanitiser, type
 check, etc.).
 
-Use `Grep` and `Read` over `$AI_CODESCAN_SOURCE_ROOT`. Start from
-`$AI_CODESCAN_ENTRYPOINTS_MD`. For each entrypoint, follow the data flow
-across files. When you reach a sink that takes user-controlled data without
-proper sanitisation, write one JSON line to `$AI_CODESCAN_OUT_PATH`.
+All paths you need (the source snapshot root, the entrypoint inventory,
+the output JSONL file you must append to, and the optional bug-class
+filter) are inlined below in the "This run" section. Do **not** call
+`printenv` or `env` — use the absolute paths exactly as printed.
+
+Use `Grep` and `Read` over the source-snapshot root. Start from the
+embedded entrypoints inventory. For each entrypoint, follow the data
+flow across files. When you reach a sink that takes user-controlled
+data without proper sanitisation, write one JSON line to the output
+JSONL file.
 
 Output schema (one JSON object per line):
 
@@ -22,6 +28,6 @@ Output schema (one JSON object per line):
  "steps":  [{"file": "<abs>", "line": N}, ...]}
 ```
 
-Filter focus to `$AI_CODESCAN_TARGET_BUG_CLASSES` when set. Use stable IDs
-based on the source/sink locations (e.g. `T-<sha1[:8]>`). Do not output any
-explanation text — only JSONL.
+When the inlined bug-class filter is non-empty, restrict findings to
+those classes. Use stable IDs based on the source/sink locations
+(e.g. `T-<sha1[:8]>`). Do not output any explanation text — only JSONL.

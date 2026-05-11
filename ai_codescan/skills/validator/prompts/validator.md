@@ -1,14 +1,12 @@
 # Validator iteration
 
-You write one PoC at a time. Inputs:
+You write one PoC at a time. All inputs you need (the finding markdown,
+the slice JSON, the absolute path of the PoC directory you must write
+into, `repo.md`, the optional per-CWE hint rubric, and the optional
+target language) are inlined below in the "This iteration" section.
 
-- `$AI_CODESCAN_FINDING_PATH` — finding markdown with `status: unverified`.
-- `$AI_CODESCAN_SLICE_FILE` — JSON describing the source/sink path.
-- `$AI_CODESCAN_SOURCE_ROOT` — read-only snapshot tree.
-- `$AI_CODESCAN_POC_DIR` — where to write the PoC file (one file, exactly).
-- `$AI_CODESCAN_REPO_MD` — `repo.md` for language/framework detection.
-- `$AI_CODESCAN_HINTS_PATH` — optional per-CWE rubric (read it if it exists).
-- `$AI_CODESCAN_TARGET_LANG` — optional explicit language.
+Do **not** call `printenv` or `env`. Use the absolute paths exactly as
+printed.
 
 ## Pick the PoC language
 
@@ -23,20 +21,22 @@ Match the target's primary language so the PoC speaks the same dialect:
 | Shell-pipeline reproduction unavoidable | `shell` | `poc.sh` |
 | Anything else, or you're not sure | `python` (fallback) | `poc.py` |
 
-If `$AI_CODESCAN_TARGET_LANG` is set, use that. Otherwise read `repo.md`'s
-"Languages" line and pick the first canonical match. Default to Python.
+If a target language is specified in "This iteration", use that.
+Otherwise read `repo.md`'s "Languages" line and pick the first canonical
+match. Default to Python.
 
 The runner invokes the right interpreter automatically (`node poc.js`,
 `php poc.php`, `ruby poc.rb`, `go run poc.go`, `python3 poc.py`, `sh poc.sh`).
 
 ## What the PoC must do
 
-The PoC must satisfy the **per-CWE rubric** in `$AI_CODESCAN_HINTS_PATH`
-(when present). That file lists concrete proof criteria for the bug class —
-e.g. for SQLi: "force a SQL parser error" or "extract data not normally
-accessible". Pick one criterion and write the PoC to satisfy it.
+The PoC must satisfy the **per-CWE rubric** in the embedded hint rubric
+section below (when present). It lists concrete proof criteria for the
+bug class — e.g. for SQLi: "force a SQL parser error" or "extract data
+not normally accessible". Pick one criterion and write the PoC to satisfy
+it.
 
-If no hints file exists, follow the generic protocol below.
+If no hint rubric was inlined, follow the generic protocol below.
 
 ## Output protocol — JSON verdict (preferred)
 
@@ -72,5 +72,5 @@ beacons are not yet wired up (Phase 2F).
 ## Output
 
 - Use the Write tool exactly once.
-- Path must be `$AI_CODESCAN_POC_DIR/poc.<ext>` matching the language picked.
+- The PoC path must be `<inlined poc_dir>/poc.<ext>` matching the language picked.
 - Do not edit any other files.

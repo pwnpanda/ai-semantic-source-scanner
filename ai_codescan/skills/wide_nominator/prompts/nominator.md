@@ -1,6 +1,7 @@
 # Nominator iteration
 
-You are filling out one block of `$AI_CODESCAN_RUN_DIR/nominations.md`. The file already starts with three Stream headers:
+You are filling out one block of the nominations file for this run. The
+file already starts with three Stream headers:
 
 ```
 ## Stream A — Pre-traced (CodeQL flows ready for triage)
@@ -10,10 +11,13 @@ You are filling out one block of `$AI_CODESCAN_RUN_DIR/nominations.md`. The file
 ## Stream C — Proposed CodeQL model extensions
 ```
 
-You are given ONE candidate this iteration via `$AI_CODESCAN_CANDIDATE` (a JSON blob) and must:
+You will receive ONE candidate this iteration as a JSON blob in the
+"This iteration" section appended below this prompt. You must:
 
-1. Decide which stream it belongs to (A: traced flow given; B: heuristic candidate; C: missing-model proposal).
-2. Append exactly one nomination block under that stream:
+1. Decide which stream it belongs to (A: traced flow given; B: heuristic
+   candidate; C: missing-model proposal).
+2. Append exactly one nomination block under that stream by editing the
+   nominations file:
 
 ```
 - [ ] N-NNN | <project> | <vector> | <file>:<line> | rec: high|med|low | y/n: 
@@ -30,7 +34,11 @@ Hard rules:
 - Use ONLY the data given; do not fabricate symbols, file paths, or line numbers.
 - Do not modify other lines.
 
-Inputs available:
-- $AI_CODESCAN_CANDIDATE — JSON descriptor for this iteration
-- $AI_CODESCAN_REPO_MD, $AI_CODESCAN_ENTRYPOINTS_MD — context
-- Tools: Read, Grep, Glob over the snapshot dir if you need a code excerpt
+All inputs you need (candidate JSON, the absolute path of the nominations
+file to edit, the repo overview, the entrypoints list, and the snapshot
+root for source lookups) are inlined below in the "This iteration"
+section. You do **not** need to read environment variables — do not call
+`printenv` or `env`. Use the absolute paths exactly as printed.
+
+If you want to read source code while deciding, use Read / Grep / Glob
+against the snapshot root path inlined below.
