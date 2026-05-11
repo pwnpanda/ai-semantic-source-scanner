@@ -1,0 +1,116 @@
+{
+  "template_id": "archivist-schema-v2-resilient",
+  "version": "2.2",
+  "generated_at": "2026-05-11T13:12:14Z",
+
+  "session_summary": "Continued building the ai-codescan SAST pipeline (pwnpanda/ai-semantic-source-scanner). Ran the deterministic engines against klassekartet-2.0 (frontend) and klassekartet-backend, wrote a markdown report at /home/robin/git/priv/klassekartet-frontend-report/README.md, then built a one-shot end-to-end orchestrator (`ai-codescan run`) with state persistence, HITL prompts, and stage-resume. Surfaced and fixed seven downstream issues exposed by real scans: engine default, SARIF ingest dropping pattern-only rules, CWE extraction from rule properties, narrow nominator authz regex, env-var-dependent skill loops, file-write-tool permission failures, and silent CI test renderer. Closed by cutting a `dev` branch from `main`.",
+  "conversation_type": "technical",
+  "session_scope": "broad",
+  "session_tags": ["ai-codescan", "sast", "klassekartet", "orchestrator", "semgrep", "joern", "codeql", "cwe-208", "duckdb", "claude-cli", "firebase", "express", "stdout-sentinels", "git-dev-branch"],
+
+  "key_topics": [
+    "Verify dedup fix on klassekartet-2.0 (joern=168 -> deduped=84)",
+    "Build single-command pipeline wrapper `ai-codescan run` (prep->nominate->gate-1->analyze->gate-2->validate->gate-3->report)",
+    "Persistent run.state.json with resume-after-stage semantics",
+    "Interactive interrupts (terminal bell + flag hint) for HITL gates, rate-limit/auth failures, zero-output stages, and missing LLM provider/model",
+    "Write klassekartet-frontend-report README documenting 84 deduped Joern flows in functions/screensShare.js + stripeFeideWebhook.js",
+    "Diagnose 'klassekartet-backend run produced 0 findings' bug cluster",
+    "Add `--engine` to `run`, default `hybrid`",
+    "Fix SARIF ingest dropping pattern-only Semgrep results (no codeFlows)",
+    "Fix CWE extraction to read tool.driver.rules[*].properties.tags",
+    "Broaden nominator's authz-symbol regex (verifyAdminKey, apiKey, hasRole, isOwner, requireAuth, guard, ...)",
+    "Bundle Semgrep custom rule semgrep_rules/timing-attack.yaml (CWE-208 taint mode, process.env source -> equality sink)",
+    "Inline skill-loop inputs into prompts so agentic LLM CLIs don't need env-var access",
+    "Switch all four skill loops to stdout-sentinel output protocol so they don't depend on Edit/Write tool permissions",
+    "Add per-iteration progress logging to stderr ('[nominate] 1/30 N-... ok -> Stream A (47s)')",
+    "Make CI help-text tests width-invariant via ANSI+whitespace strip in _help_text()",
+    "Cut `dev` branch tracking origin/dev for future work; keep main pushable"
+  ],
+  "key_statistics": {
+    "approximate_turns": 32,
+    "tools_invoked": ["Bash", "Read", "Edit", "Write", "AskUserQuestion", "TaskOutput", "ToolSearch", "Skill"],
+    "files_touched": [
+      "ai_codescan/runs/orchestrator.py",
+      "ai_codescan/cli.py",
+      "ai_codescan/engines/semgrep.py",
+      "ai_codescan/engines/semgrep_rules/timing-attack.yaml",
+      "ai_codescan/ingest/sarif.py",
+      "ai_codescan/nominator.py",
+      "ai_codescan/skills/wide_nominator/scripts/loop.sh",
+      "ai_codescan/skills/wide_nominator/prompts/nominator.md",
+      "ai_codescan/skills/deep_analyzer/scripts/loop.sh",
+      "ai_codescan/skills/deep_analyzer/prompts/analyzer.md",
+      "ai_codescan/skills/validator/scripts/loop.sh",
+      "ai_codescan/skills/validator/prompts/validator.md",
+      "ai_codescan/skills/llm_heavy/scripts/loop.sh",
+      "ai_codescan/skills/llm_heavy/prompts/walker.md",
+      "tests/test_orchestrator.py",
+      "tests/conftest.py",
+      "tests/test_cli.py",
+      ".github/workflows/test.yml",
+      "/home/robin/git/priv/klassekartet-frontend-report/README.md"
+    ],
+    "languages_or_frameworks": ["Python 3.13", "Typer/Click", "Rich", "DuckDB", "Semgrep", "CodeQL", "Joern", "tree-sitter", "Bash", "Firebase Callable", "Firestore", "Express", "pytest", "hypothesis", "ruff", "ty", "pnpm", "node-gyp", "GitHub Actions"]
+  },
+
+  "roles_and_personas": "User: pwnpanda (Robin), pragmatic security engineer building a private SAST tool against personal-scope targets; blunt, autonomy-friendly, spots gaps fast. Claude: implementer + co-engineer with full repo access, makes design calls and commits inline. No persona shifts.",
+  "tone_fragments": [
+    { "turn_range": "1-3", "tone": "verification-focused", "notes": "User opening: 'Are we still running?' -> Claude pulls cached DB and confirms dedup fix landed; pivots to running LLM stages." },
+    { "turn_range": "4-9", "tone": "design-collaborative", "notes": "Wrapper design dialogue via AskUserQuestion; user picks full pipeline + all-interrupt mode + cache-dir state file." },
+    { "turn_range": "10-15", "tone": "diagnostic-skeptical", "notes": "User pushed back hard on '0 findings' from backend ('It is crazy that it has 0 findings. I don't believe that is correct'). Triggered four-bug investigation." },
+    { "turn_range": "16-23", "tone": "iterative-debugging", "notes": "Each LLM-skill failure (env vars blocked -> Edit tool denied -> blank screen) prompted a focused fix; user surfaced each via terminal paste." },
+    { "turn_range": "24-30", "tone": "stabilization", "notes": "CI help-text tests went red twice; conftest fix failed, switched to assertion-level ANSI strip." },
+    { "turn_range": "31-32", "tone": "process-tightening", "notes": "User asks to cut dev branch - wants future commits to land off-main." }
+  ],
+
+  "prompting_strategies": "Two-phase: (a) Claude diagnoses by querying DuckDB and reading code, (b) proposes fix with explicit file:line references then implements + lints + commits + pushes. AskUserQuestion used twice for design decisions (interrupt policy, branch name). User-driven micro-feedback loops: each error paste from terminal becomes a new fix turn.",
+  "micro_prompts_used": [
+    "Diagnose why <stage> returned 0 findings; verify with DuckDB query and source reading.",
+    "Run the static engines (CodeQL+Semgrep+Joern hybrid) and explain each engine's contribution / gaps.",
+    "Add a Semgrep taint rule for <CWE>: source <X>, sink <Y>, sanitizers <Z>; bundle under engines/semgrep_rules/.",
+    "Inline per-iteration inputs into LLM prompts; emit results via stdout sentinels to bypass sandbox tool-permission failures.",
+    "Per-iteration progress to stderr: '[stage] idx/total <id> ... ok -> <outcome> (Ns)'.",
+    "Lint+type-check+test, commit with multi-paragraph imperative-mood message + Co-Authored-By trailer, push."
+  ],
+  "model_adaptations": "Claude shortened end-of-turn summaries as the session progressed (per user style); switched from verbose investigation prose to terse 'symptom -> root cause -> fix -> push' blocks; used AskUserQuestion only at genuine design forks, not for clarifications.",
+
+  "tooling_context": {
+    "tools_used": ["git", "gh (implicit via origin push)", "uv", "pytest", "ruff", "ty", "duckdb CLI via uv run python", "semgrep (uv tool installed mid-session)", "claude-code (target LLM)", "ai-codescan CLI"],
+    "tool_notes": "claude-code in `claude -p` headless mode silently consumes prompts; sandbox blocks `printenv`/`env` (cause of nominator silent-failure) and blocks Edit/Write on /tmp paths outside project (cause of N-001 'denied permission'). Fixed by inlining inputs into prompt and switching outputs to stdout sentinels. Earlier session: `claude` is aliased to ~/.claude/auto-resume wrapper. Semgrep installed via `uv tool install semgrep` mid-session. Nominator stdin-pipe `| tail -60` blocked stdout output and stalled the original background invocation."
+  },
+  "multimodal_elements": ["DuckDB query output tables", "SARIF JSON excerpts", "Joern Scala query snippets", "bash heredoc commit messages", "JS/Firebase source excerpts (screensShare.js, adminAuth.js, stripeFeideWebhook.js)", "Semgrep YAML rule definitions", "Markdown report with structured findings table"],
+
+  "future_goals": [
+    "Re-run `ai-codescan run /home/robin/git/priv/klassekartet-backend --llm-provider claude --yes` end-to-end with the stdout-sentinel + progress patches; verify CWE-208 lands in a verified finding and report.md",
+    "Watch CI on origin/dev (and main at ebc1882/80f4583) - confirm node-gyp Kotlin fix + width-invariant help tests stay green",
+    "Resolve task #105 (multi-language monorepo end-to-end test) - needs a real polyglot fixture from the user",
+    "Promote more Joern false-positive shapes (e.g. Firestore where('==') flagged as CWE-943) by tightening the Scala queries or adding analyzer-side dismissal heuristics",
+    "Consider adding more Semgrep custom rules: Express request.body -> res.send (reflected XSS), insecure JWT verify, fs.readFile(req.body.*) path traversal",
+    "Investigate whether to enable GitHub branch protection on main (user opted out for now; revisit when collaborators land)"
+  ],
+  "handoff_recommendations": "The full pipeline now works end-to-end against klassekartet-backend in principle but has NOT been re-run after the last three skill-loop patches (864764e/870da8e/80f4583). First action: nuke /tmp/scan-cache/klassekartet-backend-76bf36fa/runs/ and rerun `uv run ai-codescan --cache-dir /tmp/scan-cache run /home/robin/git/priv/klassekartet-backend --llm-provider claude --yes`. Expect to see `[nominate] N/M` progress on stderr and a CWE-208 finding flowing through analyze -> validate -> report. Local working branch is now `dev` (tracks origin/dev); main and dev both at 80f4583. Cached scan dbs at /tmp/scan-cache/klassekartet-{2.0,backend}-*. Backup caches under same prefix with `.codeql-only-backup` / `.no-rule` / `.before-fix` / `.before-cwe` suffixes (safe to delete once content is verified). Klassekartet frontend report lives at /home/robin/git/priv/klassekartet-frontend-report/README.md.",
+  "handoff_format": "structured",
+
+  "debug_events": [
+    "Background nominator (task bocx9zkpf) stalled with empty stdout - root cause: `| tail -60` in the invocation pipe held output until EOF; the LLM CLI itself was alive but invisible.",
+    "First klassekartet-2.0 dedup query showed 168 rows with both `screensShare.js` and `functions/screensShare.js` at 82 - DB was from before the path canonicalization fix; re-scan confirmed 84 deduped post-fix.",
+    "klassekartet-backend run: orchestrator printed `engine: codeql` (not hybrid) - orchestrator's _argv_for never passed --engine. After fix, semgrep still returned 0 because SARIF ingest required codeFlows array.",
+    "Custom Semgrep rule fired (10 SARIF results) but flows table got CWE=NULL - Semgrep stores CWE on tool.driver.rules[*].properties.tags, not per-result tags. Fixed by building rule_id -> tags map.",
+    "Nominator skill loop returned empty Stream B despite 63 SCIP symbols - authz regex was too narrow (only authoriz/authent/permission). Broadened to 22 patterns; `verifyAdminKey` now matched.",
+    "Inside the LLM agent: 'I can't read $AI_CODESCAN_* environment variables - every shell command is blocked by the sandbox.' Fix: inline candidate JSON + paths into prompt body.",
+    "Next LLM turn: 'the Edit tool was denied permission twice'. Fix: switch all skill outputs to stdout sentinels, harness writes files.",
+    "User: 'It is just a blank screen'. Fix: per-iteration stderr progress markers across all four skill loops.",
+    "CI help-text tests went red twice in a row - first conftest setdefault, then unconditional override + monkey-patched shutil.get_terminal_size. Both insufficient because pytest-cov imports the package before conftest. Fixed by stripping ANSI and collapsing whitespace at the assertion level.",
+    "Goal-drift moment: user mid-session realized 'I want a CLI or wrapper that handles all phases' - Claude paused active LLM verification to build the wrapper first; the LLM stages were never re-verified end-to-end in this session."
+  ],
+  "ethical_notes": "Defensive security context (private repo, user-owned targets). klassekartet-2.0 and klassekartet-backend belong to a third party (larselele); the user is scanning them as a known consenting party. CWE-208 finding in src/middleware/adminAuth.js is genuine and noted in the report as a hardening recommendation, not exploited.",
+  "annotation_notes": "Strong inversion-of-causation pattern this session: every '0 findings looks wrong' moment compounded into multiple latent bugs (engine default + SARIF ingest + CWE map + nominator regex + sandbox env-vars + sandbox tool perms). Treat user's gut-skepticism ('I don't believe that is correct') as a load-bearing signal - three distinct fixes flowed from that one challenge. Also: user explicitly preferred shorter end-of-turn summaries; Claude shortened progressively but still wrote one full sentence too many on the dev-branch creation. The 'progress to stderr' fix is the kind of UX polish that should have been there from day one of the orchestrator; flag this pattern in future work - orchestrators wrapping slow external calls need progress markers from the start.",
+
+  "style_guidelines": {
+    "preferred_verbosity": "brief",
+    "formatting_preferences": "markdown",
+    "domain_vocabulary": ["taint flow", "sink class", "CWE", "SARIF", "codeFlows", "threadFlows", "Joern CPG", "Semgrep taint mode", "pattern-sources/pattern-sinks", "Firestore IDOR", "mass assignment", "timing attack", "constant-time comparison", "HITL gate", "stream A/B/C nominations", "snapshot root", "skill loop", "stdout sentinel", "tree-sitter ABI", "SCIP symbol", "deduped flows", "fixpoint round"]
+  },
+
+  "value_provenance": "Turned a 'scanner returned 0' moment of distrust into a one-shot end-to-end wrapper plus seven concrete correctness/UX fixes in the deterministic engine layer, the SARIF ingest, the LLM skill loops, and the CI harness - and got a real CWE-208 finding to surface in the index. The bundled Semgrep timing-attack rule and the inlined-prompt + stdout-sentinel protocol are the durable wins; the wrapper itself is the headline UX deliverable."
+}
