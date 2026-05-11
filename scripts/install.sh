@@ -10,7 +10,6 @@
 #   AICS_INSTALL_JOERN=yes bash scripts/install.sh        # force-install Joern
 #   AICS_INSTALL_JOERN=no  bash scripts/install.sh        # skip Joern
 #   AICS_RUNTIME=podman    bash scripts/install.sh        # docker | podman | none
-#   AICS_INSTALL_INTERACTSH=no bash scripts/install.sh    # skip interactsh
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,30 +29,96 @@ err()  { printf '%sxx %s%s\n' "$BOLD$RED"    "$*" "$RESET" >&2; }
 
 interactive() { [[ "${AICS_NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; }
 
+first_line_with_timeout() {
+  # first_line_with_timeout <seconds> <command> [args...]
+  local seconds="$1" output rc first_line
+  shift
+  if output="$(probe_first_line_with_timeout "$seconds" "$@")"; then
+    printf '%s' "$output"
+    return 0
+  fi
+  rc=$?
+  if [[ "$rc" == "124" ]]; then
+    printf 'present (version timed out)'
+  else
+    printf '%s' "${output:-present}"
+  fi
+}
+
+probe_first_line_with_timeout() {
+  # probe_first_line_with_timeout <seconds> <command> [args...]
+  local seconds="$1" output rc first_line
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    if output="$(timeout "${seconds}s" "$@" 2>&1)"; then
+      rc=0
+    else
+      rc=$?
+    fi
+  else
+    if output="$("$@" 2>&1)"; then
+      rc=0
+    else
+      rc=$?
+    fi
+  fi
+  first_line="${output%%$'\n'*}"
+  printf '%s' "${first_line:-present}"
+  return "$rc"
+}
+
 ask_yes_no() {
-  local prompt="$1" default="$2" reply
+  local prompt="$1" default="$2" reply normalized
   if ! interactive; then
     [[ "$default" == "y" ]]; return $?
   fi
   local hint="[y/N]"; [[ "$default" == "y" ]] && hint="[Y/n]"
-  read -r -p "$prompt $hint " reply || reply=""
+  printf '%s %s ' "$prompt" "$hint" >&2
+  read -r reply || reply=""
   reply="${reply:-$default}"
-  [[ "$reply" =~ ^[Yy]$ ]]
+  normalized="${reply,,}"
+  [[ "$normalized" == "y" || "$normalized" == "yes" ]]
+}
+
+normalize_choice() {
+  # normalize_choice <value> <default> <choice1> <choice2> ...
+  local value="$1" default="$2"; shift 2
+  local choices=("$@") normalized i c
+
+  value="${value:-$default}"
+  normalized="${value,,}"
+
+  if [[ "$normalized" =~ ^[0-9]+$ ]]; then
+    if (( normalized >= 1 && normalized <= ${#choices[@]} )); then
+      printf '%s' "${choices[$((normalized - 1))]}"; return 0
+    fi
+    return 1
+  fi
+
+  for c in "${choices[@]}"; do
+    if [[ "$c" == "$normalized" || "${c:0:1}" == "$normalized" ]]; then
+      printf '%s' "$c"; return 0
+    fi
+  done
+  return 1
 }
 
 ask_choice() {
   # ask_choice <prompt> <default> <choice1> <choice2> ...
   local prompt="$1" default="$2"; shift 2
-  local choices=("$@") reply
+  local choices=("$@") reply selected i
   if ! interactive; then
     printf '%s' "$default"; return 0
   fi
-  printf '%s [%s]\n' "$prompt" "$(IFS=/; echo "${choices[*]}")"
-  read -r -p "  default: $default > " reply || reply=""
-  reply="${reply:-$default}"
-  for c in "${choices[@]}"; do
-    if [[ "$c" == "$reply" ]]; then printf '%s' "$c"; return 0; fi
+  printf '%s [%s]\n' "$prompt" "$(IFS=/; echo "${choices[*]}")" >&2
+  for i in "${!choices[@]}"; do
+    printf '  %d) %s\n' "$((i + 1))" "${choices[$i]}" >&2
   done
+  printf '  default: %s > ' "$default" >&2
+  read -r reply || reply=""
+  if selected="$(normalize_choice "$reply" "$default" "${choices[@]}")"; then
+    printf '%s' "$selected"; return 0
+  fi
   warn "unknown choice '$reply'; using default '$default'"
   printf '%s' "$default"
 }
@@ -108,7 +173,11 @@ say "Required tools OK"
 # Python venv + deps  (auto: uv handles everything)
 # ---------------------------------------------------------------------------
 say "Creating Python venv (.venv) and syncing deps"
-uv venv >/dev/null
+if [[ -d .venv ]]; then
+  say "Python venv already exists; reusing .venv"
+else
+  uv venv >/dev/null
+fi
 uv sync --all-groups --quiet
 say "Python deps installed"
 
@@ -123,7 +192,7 @@ say "Node worker ready"
 # Auto-install scip-typescript via npm if missing
 # ---------------------------------------------------------------------------
 if command -v scip-typescript >/dev/null 2>&1; then
-  say "scip-typescript: $(scip-typescript --version 2>&1 | head -1)"
+  say "scip-typescript: $(first_line_with_timeout 5 scip-typescript --version)"
 else
   say "Installing scip-typescript (npm global)"
   npm install -g @sourcegraph/scip-typescript
@@ -133,7 +202,7 @@ fi
 # Auto-install Graphviz (`dot`) if missing
 # ---------------------------------------------------------------------------
 if command -v dot >/dev/null 2>&1; then
-  say "graphviz: $(dot -V 2>&1 | head -1)"
+  say "graphviz: $(first_line_with_timeout 5 dot -V)"
 else
   say "Installing graphviz (for visualize --fmt svg|png)"
   sys_install graphviz || warn "visualize will only emit DOT until graphviz is present"
@@ -143,7 +212,7 @@ fi
 # Auto-install CodeQL if missing
 # ---------------------------------------------------------------------------
 if command -v codeql >/dev/null 2>&1; then
-  say "codeql: $(codeql --version 2>&1 | head -1)"
+  say "codeql: $(first_line_with_timeout 5 codeql --version)"
 else
   if ask_yes_no "Install CodeQL CLI 2.25+ (~600 MB)?" "y"; then
     CQ_DEST="$HOME/.local/share/codeql"
@@ -153,7 +222,7 @@ else
     unzip -q -o /tmp/codeql.zip -d "$CQ_DEST/.."
     rm -f /tmp/codeql.zip
     ln -sf "$CQ_DEST/codeql" "$HOME/.local/bin/codeql"
-    say "codeql -> $("$HOME"/.local/bin/codeql --version 2>&1 | head -1)"
+    say "codeql -> $(first_line_with_timeout 5 "$HOME"/.local/bin/codeql --version)"
     case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) warn "Add \$HOME/.local/bin to PATH" ;; esac
   fi
 fi
@@ -169,18 +238,21 @@ echo "  none    - no container; PoC validation is DISABLED, only PoC generation 
 RUNTIME="${AICS_RUNTIME:-}"
 if [[ -z "$RUNTIME" ]]; then
   RUNTIME="$(ask_choice "Pick a runtime" "docker" docker podman none)"
+elif ! RUNTIME="$(normalize_choice "$RUNTIME" "docker" docker podman none)"; then
+  warn "unknown AICS_RUNTIME='${AICS_RUNTIME}'; using default 'docker'"
+  RUNTIME="docker"
 fi
 case "$RUNTIME" in
   docker)
     if command -v docker >/dev/null 2>&1; then
-      say "docker: $(docker --version 2>&1 | head -1)"
+      say "docker: $(first_line_with_timeout 5 docker --version)"
     else
       err "docker not on PATH; install Docker Desktop / docker-ce, then re-run"
       RUNTIME="none"; warn "downgrading to runtime=none"
     fi ;;
   podman)
     if command -v podman >/dev/null 2>&1; then
-      say "podman: $(podman --version 2>&1 | head -1)"
+      say "podman: $(first_line_with_timeout 5 podman --version)"
     else
       say "Installing podman"
       sys_install podman || { err "podman install failed"; RUNTIME="none"; warn "downgrading to runtime=none"; }
@@ -197,46 +269,12 @@ print("saved")
 PY
 
 # ---------------------------------------------------------------------------
-# interactsh (out-of-band callback for validator verdict v2)
-# ---------------------------------------------------------------------------
-echo
-if command -v interactsh-client >/dev/null 2>&1; then
-  say "interactsh-client: $(interactsh-client -version 2>&1 | head -1)"
-else
-  if [[ "${AICS_INSTALL_INTERACTSH:-}" == "no" ]]; then
-    warn "Skipping interactsh (env override)"
-  elif ask_yes_no "Install interactsh-client (Project Discovery; out-of-band callback proof)?" "y"; then
-    if command -v go >/dev/null 2>&1; then
-      say "Installing via \`go install\`"
-      GOBIN="$HOME/.local/bin" go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
-    else
-      say "go missing; downloading prebuilt release"
-      INT_DEST="$HOME/.local/share/interactsh"
-      mkdir -p "$INT_DEST" "$HOME/.local/bin"
-      latest=$(curl -fsSL https://api.github.com/repos/projectdiscovery/interactsh/releases/latest | grep -oE '"tag_name": "v[0-9.]+"' | head -1 | cut -d'"' -f4)
-      asset_url=$(curl -fsSL "https://api.github.com/repos/projectdiscovery/interactsh/releases/tags/$latest" \
-        | grep -oE '"browser_download_url": "[^"]*linux_amd64.zip"' | head -1 | cut -d'"' -f4)
-      [[ -n "$asset_url" ]] || { err "no linux_amd64 release asset"; exit 1; }
-      curl -fsSL -o /tmp/interactsh.zip "$asset_url"
-      unzip -q -o /tmp/interactsh.zip -d "$INT_DEST"
-      rm -f /tmp/interactsh.zip
-      ln -sf "$INT_DEST/interactsh-client" "$HOME/.local/bin/interactsh-client"
-    fi
-    if command -v interactsh-client >/dev/null 2>&1; then
-      say "interactsh-client installed"
-    else
-      warn "install attempted but binary not on PATH; check $HOME/.local/bin"
-    fi
-  fi
-fi
-
-# ---------------------------------------------------------------------------
 # LLM CLIs — informational only, user picks
 # ---------------------------------------------------------------------------
 echo
 status_check() {
   if command -v "$2" >/dev/null 2>&1; then
-    printf '  %s[OK]%s    %-22s %s\n' "$GREEN" "$RESET" "$1" "($($2 --version 2>&1 | head -1))"
+    printf '  %s[OK]%s    %-22s %s\n' "$GREEN" "$RESET" "$1" "($(first_line_with_timeout 5 "$2" --version))"
   else
     printf '  %s[MISSING]%s %-15s %s\n' "$YELLOW" "$RESET" "$1" "$3"
   fi
@@ -250,8 +288,11 @@ status_check "codex"   codex   "https://github.com/openai/codex (npm i -g @opena
 # Joern — opt-in heavyweight install
 # ---------------------------------------------------------------------------
 echo
-if command -v joern >/dev/null 2>&1; then
-  say "Joern already installed: $(joern --version 2>/dev/null | head -1 || echo present)"
+JOERN_DEST="${AICS_JOERN_DIR:-$HOME/.local/share/joern}"
+JOERN_LINK_DIR="${AICS_JOERN_LINK_DIR:-$HOME/.local/bin}"
+JOERN_VERSION="${AICS_JOERN_VERSION:-}"
+if command -v joern >/dev/null 2>&1 && [[ "${AICS_REINSTALL_JOERN:-}" != "yes" ]]; then
+  say "Joern already installed: $(first_line_with_timeout 8 joern --help)"
 elif [[ "${AICS_INSTALL_JOERN:-}" == "no" ]]; then
   warn "Skipping Joern (AICS_INSTALL_JOERN=no). Hybrid mode falls back to CodeQL + Semgrep."
 else
@@ -262,14 +303,69 @@ else
   echo "  Skippable:     yes — \`--engine codeql\` and \`--engine hybrid\` (CodeQL + Semgrep) work without it"
   echo
   if [[ "${AICS_INSTALL_JOERN:-}" == "yes" ]] || ask_yes_no "Install Joern now?" "n"; then
-    say "Installing Joern via the official installer"
-    curl -fsSL https://github.com/joernio/joern/releases/latest/download/joern-install.sh -o /tmp/joern-install.sh
-    bash /tmp/joern-install.sh --version=latest --install-dir="$HOME/.local/share/joern" --link-dir="$HOME/.local/bin"
-    rm -f /tmp/joern-install.sh
-    if command -v joern >/dev/null 2>&1; then
-      say "Joern installed: $(joern --version 2>/dev/null | head -1 || echo ok)"
+    command -v curl >/dev/null 2>&1 || { err "curl is required to install Joern"; exit 1; }
+    command -v unzip >/dev/null 2>&1 || { err "unzip is required to install Joern"; exit 1; }
+
+    JOERN_ZIP="$(mktemp /tmp/joern-cli.XXXXXX.zip)"
+    if [[ -n "$JOERN_VERSION" ]]; then
+      JOERN_URL="https://github.com/joernio/joern/releases/download/$JOERN_VERSION/joern-cli.zip"
     else
-      warn "Joern installer ran but \`joern\` is not on PATH; add \$HOME/.local/bin to PATH"
+      JOERN_URL="https://github.com/joernio/joern/releases/latest/download/joern-cli.zip"
+    fi
+
+    if [[ -d "$JOERN_DEST/joern-cli" ]]; then
+      if [[ "${AICS_REINSTALL_JOERN:-}" == "yes" ]] || ask_yes_no "Replace existing Joern install at $JOERN_DEST/joern-cli?" "n"; then
+        rm -rf "$JOERN_DEST/joern-cli"
+      else
+        say "Reusing existing Joern install at $JOERN_DEST/joern-cli"
+      fi
+    fi
+
+    if [[ ! -d "$JOERN_DEST/joern-cli" ]]; then
+      say "Downloading Joern from $JOERN_URL"
+      if [[ -t 1 ]]; then
+        curl -fL --retry 3 --retry-delay 2 --progress-bar -o "$JOERN_ZIP" "$JOERN_URL"
+      else
+        curl -fL --retry 3 --retry-delay 2 -o "$JOERN_ZIP" "$JOERN_URL"
+      fi
+      say "Validating Joern archive (this can take a minute)"
+      unzip -tq "$JOERN_ZIP" >/dev/null || { err "downloaded Joern archive is not a valid zip"; exit 1; }
+      say "Extracting Joern to $JOERN_DEST (this can take several minutes)"
+      mkdir -p "$JOERN_DEST"
+      unzip -q -o "$JOERN_ZIP" -d "$JOERN_DEST"
+      say "Joern archive extracted"
+    fi
+    rm -f "$JOERN_ZIP"
+
+    say "Linking Joern tools into $JOERN_LINK_DIR"
+    mkdir -p "$JOERN_LINK_DIR"
+    for exe in \
+      joern joern-parse c2cpg.sh ghidra2cpg jssrc2cpg.sh javasrc2cpg \
+      jimple2cpg kotlin2cpg php2cpg rubysrc2cpg pysrc2cpg joern-export \
+      joern-flow joern-scan joern-slice; do
+      [[ -e "$JOERN_DEST/joern-cli/$exe" ]] && ln -sf "$JOERN_DEST/joern-cli/$exe" "$JOERN_LINK_DIR/$exe"
+    done
+
+    JOERN_BIN="$JOERN_DEST/joern-cli/joern"
+    JOERN_PARSE_BIN="$JOERN_DEST/joern-cli/joern-parse"
+    [[ -x "$JOERN_BIN" ]] || { err "Joern binary missing after install: $JOERN_BIN"; exit 1; }
+    [[ -x "$JOERN_PARSE_BIN" ]] || { err "joern-parse missing after install: $JOERN_PARSE_BIN"; exit 1; }
+
+    say "Verifying Joern startup (can take up to 90 seconds)"
+    if joern_status="$(probe_first_line_with_timeout 90 "$JOERN_BIN" --help)"; then
+      say "Joern starts: $joern_status"
+    else
+      err "Joern installed, but startup check failed: $joern_status"
+      exit 1
+    fi
+    if joern_parse_status="$(probe_first_line_with_timeout 90 "$JOERN_PARSE_BIN" --list-languages)"; then
+      say "joern-parse works: $joern_parse_status"
+    else
+      err "Joern installed, but joern-parse check failed: $joern_parse_status"
+      exit 1
+    fi
+    if ! command -v joern >/dev/null 2>&1; then
+      warn "Joern installed, but \`joern\` is not on PATH; add $JOERN_LINK_DIR to PATH"
     fi
   else
     say "Skipped Joern. Re-run with \`AICS_INSTALL_JOERN=yes bash scripts/install.sh\` to pick up later."

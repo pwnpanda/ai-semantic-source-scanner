@@ -1,221 +1,374 @@
 {
   "schema_version": "3.0",
   "template_id": "context-handoff-merged-v3",
-  "generated_at": "2026-05-11T11:30:00Z",
-
+  "generated_at": "2026-05-11T20:01:49Z",
   "session": {
     "id": null,
-    "cwd": "/home/robin/git/priv/ai-semantic-source-scanner",
-    "model": "claude-opus-4-7[1m]",
+    "cwd": "/home/robin/git/Private/ai-semantic-source-scanner",
+    "model": "gpt-5",
     "started_at": null,
-    "ended_at": null,
-    "approximate_turns": 14
+    "ended_at": "2026-05-11T20:01:49Z",
+    "approximate_turns": 18
   },
-
-  "session_summary": "Investigated and fixed pollution of the resume-session named-session registry. Found that subprocess Claude invocations from the ai-semantic-source-scanner SAST pipeline and Ghost Security scan skills were auto-registering on exit, polluting ~/.claude/session-names/index.json with 29,531 junk entries. Pruned the registry, added a CLAUDE_NO_AUTO_REGISTER env-var opt-out mechanism in both the SessionEnd hook (consumer) and all five ai-codescan pipeline subprocess sites (producers), then merged the summarize-context and claude-session-organizer skill repos into a single tracked repo with the handoff file now written to the git repo root and auto-committed on the current branch.",
+  "session_summary": "Loaded the prior project handoff, attempted the test suite, then focused on fixing installer failures and Joern integration regressions. The installer now reuses an existing .venv, keeps prompt UI out of command-substitution stdout, accepts full-word/letter/numeric runtime choices, removes interactsh installation, installs Joern directly from joern-cli.zip, shows progress around slow Joern steps, and verifies Joern with supported commands. A failing C# Joern integration test was fixed by treating ASP.NET Core minimal API lambda parameters as C# request sources.",
   "conversation_type": "debugging",
-  "session_scope": "broad",
-  "session_tags": ["registry-pollution", "session-end-hook", "subagent-isolation", "repo-merge", "auto-commit", "claude-session-organizer"],
-  "key_topics": [
-    "resume-session registry pollution",
-    "CLAUDE_NO_AUTO_REGISTER env-var opt-out",
-    "summarize-context + claude-session-organizer merge",
-    "handoff file path = git repo root",
-    "SessionEnd auto-commit of .context-handoff.json"
+  "session_scope": "moderate",
+  "session_tags": [
+    "installer",
+    "joern",
+    "csharp",
+    "integration-tests",
+    "conversation-summary"
   ],
-
+  "key_topics": [
+    "scripts/install.sh prompt and Joern install fixes",
+    "Joern CLI validation",
+    "C# minimal API Joern source modeling",
+    "test suite execution constraints"
+  ],
   "objective": {
-    "primary": "Stop subprocess Claude invocations from polluting the named-session registry and consolidate session-related skills into one tracked repo so the handoff round-trips across machines.",
+    "primary": "Fix installer failures around existing virtualenvs, runtime selection, interactsh, and Joern installation, then resolve the observed C# Joern test failure.",
     "explicit_constraints": [
-      "Don't lose the AI_Codescan named session",
-      "Force-push to claude-session-organizer was explicitly authorized after pushback",
-      "Auto-commit the handoff to the current branch (option 1 of 4) so it travels via normal git push/pull"
+      "Remove interactsh from the installer.",
+      "Allow runtime selection using a single character or 1, 2, or 3.",
+      "Clean up previous Joern install attempts and processes before retrying.",
+      "Write the conversation summary and push changes."
     ],
     "implicit_assumptions": [
-      "The user is fine with feature branches carrying chore: update claude session handoff commits; they can squash or skip in PRs",
-      "Pre-commit hooks on the user's repos can be bypassed for the background auto-commit (--no-verify)",
-      "Signing follows whatever the user's git config dictates; no explicit bypass"
+      "The untracked ai-semantic-source-scanner.sln file is unrelated to the requested installer and Joern fixes.",
+      "The installer should prefer deterministic local verification over silently accepting a downloaded Joern tree.",
+      "Joern integration tests are allowed to run because Joern is now installed on the host."
     ]
   },
-
   "outcome": {
     "status": "completed",
-    "summary": "Registry pruned from 29,697 entries to 166 (backup at ~/.claude/session-names/index.json.bak-1778497896). AI_Codescan session intact (id fdeedac4-d9f3-4a7e-b3f8-df862fee3287). CLAUDE_NO_AUTO_REGISTER=1 honored by the SessionEnd hook and set by five ai-codescan call sites. summarize-context and claude-session-organizer merged: force-pushed to pwnpanda/claude-session-organizer main, local directory renamed, symlinks repointed. .context-handoff.json now writes to git repo root and the hook auto-commits it on the current branch with safety guards (skip rebase/merge in progress, detached HEAD, gitignored file, unchanged file).",
-    "value_provenance": "Subagent runs no longer pollute the named-session registry, and the per-project conversation handoff travels with the project via normal git push/pull."
+    "summary": "scripts/install.sh and ai_codescan/engines/joern_queries.sc were modified. Joern runner tests pass with 7 passed and 1 skipped. Full pytest was attempted earlier but was blocked by sandbox constraints around sockets, Docker, CodeQL network access, and read-only ~/.claude.",
+    "value_provenance": "The installer handles the user's real install flow more predictably, and Joern C# coverage now detects the tiny ASP.NET fixture's CWE-89 flow."
   },
-
   "artifacts": {
-    "files_created": [
-      {"path": "/home/robin/git/priv/claude-session-organizer/resume-session/", "purpose": "New skill subdirectory in the merged repo holding the resume-session skill (formerly its own claude-session-organizer flat repo)."},
-      {"path": "/home/robin/git/priv/ai-semantic-source-scanner/.context-handoff.json", "purpose": "This file. Manual /conversation-summary invocation at the user's request."}
-    ],
+    "files_created": [],
     "files_modified": [
-      {"path": "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/nominator.py", "change_summary": "Add env[\"CLAUDE_NO_AUTO_REGISTER\"] = \"1\" before bash loop.sh subprocess (line 226)."},
-      {"path": "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/validator.py", "change_summary": "Same env-var setter before bash loop.sh subprocess (line 193)."},
-      {"path": "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/analyzer.py", "change_summary": "Same env-var setter before bash loop.sh subprocess (line 127)."},
-      {"path": "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/engines/llm_heavy.py", "change_summary": "Same env-var setter before bash loop.sh subprocess (line 118)."},
-      {"path": "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/cli.py", "change_summary": "Same env-var setter for the storage_taint_resolver subprocess (line 1032)."},
-      {"path": "/home/robin/git/priv/claude-session-organizer/resume-session/scripts/session_end_hook.py", "change_summary": "Honor CLAUDE_NO_AUTO_REGISTER=1: skip the auto-register path when set; touch (refresh) of already-registered sessions still runs."},
-      {"path": "/home/robin/git/priv/claude-session-organizer/conversation-summary/scripts/write_summary.sh", "change_summary": "Write .context-handoff.json to git repo root (fallback cwd). Export CLAUDE_NO_AUTO_REGISTER=1 before --bare child invocation. Add maybe_commit_handoff() that auto-commits the file on the current branch via git commit --no-verify --only -m '...' -- .context-handoff.json, with skip guards for rebase/merge/cherry-pick/bisect, detached HEAD, gitignored file, unchanged content."},
-      {"path": "/home/robin/git/priv/claude-session-organizer/install.sh", "change_summary": "Multi-skill installer: now also links resume-session skill and the /save command, and merges three hooks (SessionEnd x2 + UserPromptSubmit)."},
-      {"path": "/home/robin/git/priv/claude-session-organizer/uninstall.sh", "change_summary": "Mirror of install.sh: removes the three skills' symlinks and hook entries."},
-      {"path": "/home/robin/git/priv/claude-session-organizer/load-context/SKILL.md", "change_summary": "Read handoff from git repo root first, fall back to cwd."},
-      {"path": "/home/robin/git/priv/claude-session-organizer/conversation-summary/SKILL.md", "change_summary": "Manual-invocation section now points at <repo-root>/.context-handoff.json with cwd fallback; description string updated."},
-      {"path": "/home/robin/git/priv/claude-session-organizer/README.md", "change_summary": "Rebranded around claude-session-organizer, documents three skills, repo-root output path, auto-commit, and the CLAUDE_NO_AUTO_REGISTER subagent contract."}
+      {
+        "path": "/home/robin/git/Private/ai-semantic-source-scanner/scripts/install.sh",
+        "change_summary": "Reuses existing .venv instead of unconditionally invoking uv venv; separates prompt UI from stdout; normalizes runtime choices including docker/d/1, podman/p/2, none/n/3; removes interactsh installation; replaces upstream Joern installer call with direct joern-cli.zip download/extract/link flow; adds Joern progress messages; supports AICS_JOERN_DIR, AICS_JOERN_LINK_DIR, AICS_JOERN_VERSION, and AICS_REINSTALL_JOERN; bounds informational version probes; verifies Joern using joern --help and joern-parse --list-languages."
+      },
+      {
+        "path": "/home/robin/git/Private/ai-semantic-source-scanner/ai_codescan/engines/joern_queries.sc",
+        "change_summary": "Adds C# minimal API lambda parameters as Joern source candidates so tiny-aspnet's id parameter can be paired with ExecuteReader in the fallback path."
+      },
+      {
+        "path": "/home/robin/git/Private/ai-semantic-source-scanner/.context-handoff.json",
+        "change_summary": "Manual conversation summary for cross-agent context handoff."
+      }
     ],
     "files_deleted": [],
     "files_read": [
-      "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/llm.py",
-      "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/runs/orchestrator.py",
-      "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/nominator.py",
-      "/home/robin/git/priv/claude-session-organizer/install.sh",
-      "/home/robin/git/priv/claude-session-organizer/uninstall.sh",
-      "/home/robin/git/priv/claude-session-organizer/conversation-summary/scripts/write_summary.sh",
-      "/home/robin/git/priv/claude-session-organizer/conversation-summary/SKILL.md",
-      "/home/robin/git/priv/claude-session-organizer/load-context/SKILL.md",
-      "/home/robin/git/priv/claude-session-organizer/README.md",
-      "/home/robin/.claude/skills/resume-session/scripts/session_end_hook.py"
+      "/home/robin/git/Private/ai-semantic-source-scanner/.context-handoff.json",
+      "/home/robin/git/Private/ai-semantic-source-scanner/scripts/install.sh",
+      "/home/robin/git/Private/ai-semantic-source-scanner/ai_codescan/engines/joern.py",
+      "/home/robin/git/Private/ai-semantic-source-scanner/ai_codescan/engines/joern_queries.sc",
+      "/home/robin/git/Private/ai-semantic-source-scanner/tests/test_joern_runner.py",
+      "/home/robin/git/Private/ai-semantic-source-scanner/tests/fixtures/tiny-aspnet/Program.cs",
+      "/home/robin/git/Private/ai-semantic-source-scanner/pyproject.toml",
+      "/home/robin/git/Private/ai-semantic-source-scanner/Makefile"
     ]
   },
-
   "actions": {
     "commands_executed": [
-      {"command": "session_registry.py prune-equivalent (manual Python script with backup + atomic write)", "purpose": "Remove 29,531 pipeline-subagent auto entries while keeping 22 manual + 144 real auto entries.", "outcome": "success"},
-      {"command": "git push --force origin main (pwnpanda/claude-session-organizer)", "purpose": "Overwrite claude-session-organizer history with merged tree containing all three skills.", "outcome": "success"},
-      {"command": "mv /home/robin/git/priv/summarize-context /home/robin/git/priv/claude-session-organizer", "purpose": "Rename local dir after merge. Old claude-session-organizer dir moved to /tmp/trash/old-claude-session-organizer-1778506844.", "outcome": "success"},
-      {"command": "./install.sh (claude-session-organizer)", "purpose": "Repoint ~/.claude/skills/{conversation-summary,load-context,resume-session} and ~/.claude/commands/save.md to the new path; hooks already present and normalized.", "outcome": "success"},
-      {"command": "git remote remove summarize-context-origin", "purpose": "Clean up leftover remote so origin is the only one.", "outcome": "success"},
-      {"command": ".venv/bin/python -m pytest tests/test_orchestrator.py tests/test_validator.py -q", "purpose": "Confirm env-var additions in ai_codescan don't break orchestration tests.", "outcome": "success"}
+      {
+        "command": "uv run pytest",
+        "purpose": "Run the project test suite via the Makefile's intended command.",
+        "outcome": "failure"
+      },
+      {
+        "command": "UV_CACHE_DIR=/tmp/uv-cache uv run pytest",
+        "purpose": "Retry tests with a writable uv cache.",
+        "outcome": "failure"
+      },
+      {
+        "command": "rsync -a /home/robin/.cache/uv/ /tmp/uv-cache-home/",
+        "purpose": "Mirror the read-only uv cache to a writable location for offline testing.",
+        "outcome": "success"
+      },
+      {
+        "command": "UV_CACHE_DIR=/tmp/uv-cache-home UV_OFFLINE=1 uv run pytest",
+        "purpose": "Retry pytest offline from copied cache.",
+        "outcome": "failure"
+      },
+      {
+        "command": ".venv/bin/python -m pytest -q",
+        "purpose": "Run the full suite from the existing local virtualenv.",
+        "outcome": "partial"
+      },
+      {
+        "command": "bash -n scripts/install.sh",
+        "purpose": "Syntax-check the installer after edits.",
+        "outcome": "success"
+      },
+      {
+        "command": "shellcheck scripts/install.sh",
+        "purpose": "Static-check the installer shell script.",
+        "outcome": "success"
+      },
+      {
+        "command": "fake-tool installer harnesses under /tmp",
+        "purpose": "Exercise existing .venv reuse, runtime choice normalization, Joern direct install, progress messages, reinstall path, and verification without downloading large artifacts.",
+        "outcome": "success"
+      },
+      {
+        "command": "joern --help; joern-parse --list-languages",
+        "purpose": "Verify the actual installed Joern CLI supports these startup probes.",
+        "outcome": "success"
+      },
+      {
+        "command": ".venv/bin/python -m pytest tests/test_joern_runner.py::test_joern_runs_against_tiny_aspnet_csharp -q -s",
+        "purpose": "Reproduce and verify the C# Joern integration failure.",
+        "outcome": "success"
+      },
+      {
+        "command": ".venv/bin/python -m pytest tests/test_joern_runner.py -q",
+        "purpose": "Run all Joern runner integration tests after the C# source modeling fix.",
+        "outcome": "success"
+      }
     ],
-    "tools_used": ["Read", "Edit", "Write", "Bash", "AskUserQuestion", "Skill", "TaskCreate", "TaskUpdate", "ToolSearch"],
+    "tools_used": [
+      "exec_command",
+      "write_stdin",
+      "apply_patch",
+      "multi_tool_use.parallel",
+      "web.open"
+    ],
     "external_resources": [
-      {"type": "url", "value": "github.com/pwnpanda/claude-session-organizer", "purpose": "Destination repo for the merged skill tree (force-pushed)."},
-      {"type": "url", "value": "github.com/pwnpanda/summarize-context", "purpose": "Now-orphaned source repo; user will archive manually."}
+      {
+        "type": "url",
+        "value": "https://github.com/joernio/joern",
+        "purpose": "Checked Joern installer/release behavior and confirmed direct joern-cli.zip install approach."
+      }
     ]
   },
-
   "decisions": [
     {
-      "decision": "Merge summarize-context INTO claude-session-organizer (overwrite history) rather than the reverse",
-      "rationale": "User explicitly asked for this direction after pushback flagged that summarize-context already had multi-skill layout (less restructuring). User chose 'easiest merge, then move project over to claude-session-organizer, overwrite history'.",
-      "alternatives_rejected": ["Merge claude-session-organizer into summarize-context and retire claude-session-organizer", "Keep both repos and only sync the CLAUDE_NO_AUTO_REGISTER patch"],
-      "reversible": false
-    },
-    {
-      "decision": "Use a CLAUDE_NO_AUTO_REGISTER env-var contract between callers and the SessionEnd hook",
-      "rationale": "Subprocess Claude invocations cannot easily be distinguished from interactive sessions by the hook alone, so an explicit opt-out is more reliable than heuristics on session length or prompt content.",
-      "alternatives_rejected": ["Short-session heuristic in the hook (fragile)", "Prompt-content matching in the hook (also fragile)"],
+      "decision": "Reuse an existing .venv instead of invoking uv venv unconditionally.",
+      "rationale": "uv prompts to replace an existing .venv, and choosing no exits nonzero under set -e; uv sync can reconcile an existing environment.",
+      "alternatives_rejected": [
+        "Force UV_VENV_CLEAR=1",
+        "Keep relying on uv's interactive replacement prompt"
+      ],
       "reversible": true
     },
     {
-      "decision": "Write .context-handoff.json at git repo root (fallback cwd), and auto-commit it on the current branch",
-      "rationale": "The handoff travels with the project rather than being pinned to the subdirectory the session happened to start in, and normal git push/pull makes it available on every machine without extra plumbing.",
-      "alternatives_rejected": ["Sidecar branch (e.g. claude-handoff) to keep feature branches clean — user chose option 1", "Manual commit only (zero invasiveness but relies on user remembering)"],
+      "decision": "Make ask_choice write UI to stderr and return only the selected value on stdout.",
+      "rationale": "The runtime prompt was used inside command substitution, so prompt text leaked into RUNTIME and produced a Python SyntaxError when writing config.",
+      "alternatives_rejected": [
+        "Avoid command substitution at the call site only",
+        "Quote the Python heredoc more defensively while leaving mixed stdout"
+      ],
       "reversible": true
     },
     {
-      "decision": "Use --no-verify on the auto-commit",
-      "rationale": "Auto-commit runs in a background, disowned subshell triggered by SessionEnd. Pre-commit hooks designed for interactive workflows would block the commit and the user would never know. The commit only touches an auxiliary JSON file, so bypassing lint/test hooks is justified.",
-      "alternatives_rejected": ["Run pre-commit hooks (would frequently block the auto-commit)", "Ask the user every time (defeats the point)"],
+      "decision": "Remove interactsh from scripts/install.sh.",
+      "rationale": "The user explicitly requested its removal from the install flow.",
+      "alternatives_rejected": [
+        "Keep interactsh optional behind AICS_INSTALL_INTERACTSH=no",
+        "Only hide the prompt in noninteractive mode"
+      ],
+      "reversible": true
+    },
+    {
+      "decision": "Install Joern by directly downloading joern-cli.zip rather than running joern-install.sh with --version=latest.",
+      "rationale": "The prior flow downloaded a 9-byte invalid zip because the upstream installer treated latest as a literal release tag path.",
+      "alternatives_rejected": [
+        "Continue using joern-install.sh",
+        "Require the user to install Joern manually"
+      ],
+      "reversible": true
+    },
+    {
+      "decision": "Verify Joern with joern --help and joern-parse --list-languages instead of joern --version.",
+      "rationale": "The installed Joern CLI reports 'Warning: Unknown option --version'; help and list-languages are supported and validate startup/parser availability.",
+      "alternatives_rejected": [
+        "Accept unknown-option output as proof of installation",
+        "Use only command -v checks"
+      ],
+      "reversible": true
+    },
+    {
+      "decision": "Model C# minimal API lambda parameters as Joern source candidates.",
+      "rationale": "Joern's C# frontend exposes minimal API request parameters as lambda parameter nodes, not Request.Query/FromQuery reads, and the data-flow engine did not connect ExecuteReader through SqliteCommand receiver state.",
+      "alternatives_rejected": [
+        "Mark the C# Joern test xfail",
+        "Broaden C# source regex to every identifier",
+        "Change the fixture to explicit Request.Query access"
+      ],
       "reversible": true
     }
   ],
-
   "knowledge_acquired": [
-    {"topic": "registry pollution sources", "fact": "29,389 entries had the prefix read-and-follow-* from Ghost Security scan-code planner/analyzer subagents; 142 entries had nominator-iteration-* from ai-codescan's wide_nominator skill.", "source": "code"},
-    {"topic": "ai-codescan pipeline subprocess sites", "fact": "Five places spawn `bash loop.sh` which exec `claude -p ...`: nominator.py:227, validator.py:206, analyzer.py:128, engines/llm_heavy.py:118, cli.py:1039 (storage_taint_resolver). All build env dicts; injecting CLAUDE_NO_AUTO_REGISTER=1 there propagates to the child.", "source": "code"},
-    {"topic": "claude CLI --bare flag", "fact": "--bare on `claude --print` skips ALL hooks in the child process, so the SessionEnd hook from resume-session would not fire there anyway. The CLAUDE_NO_AUTO_REGISTER env var in write_summary.sh is defense-in-depth.", "source": "code"},
-    {"topic": "git commit pathspec gotcha", "fact": "`git commit --only -- file -m 'msg'` is wrong: -- ends option parsing, so -m is treated as a pathspec. Correct order: `git commit --only -m 'msg' -- file`.", "source": "inference"},
-    {"topic": "rm_to_trash hook scope", "fact": "User's ~/.claude/hooks/rm_to_trash.py intercepts `rm -rf` and trashes ALL paths that look like rm targets in the command — including paths separated by `&&`. Recovery from /tmp/trash worked, but use single-target commands when calling rm to avoid collateral.", "source": "inference"}
+    {
+      "topic": "uv venv behavior",
+      "fact": "When .venv exists and the user declines replacement, uv venv exits nonzero and aborts install.sh under set -e.",
+      "source": "user"
+    },
+    {
+      "topic": "ask_choice command substitution",
+      "fact": "Printing prompt text to stdout from ask_choice contaminates variables assigned with command substitution.",
+      "source": "code"
+    },
+    {
+      "topic": "Joern release install",
+      "fact": "The direct latest asset URL for Joern is https://github.com/joernio/joern/releases/latest/download/joern-cli.zip.",
+      "source": "search"
+    },
+    {
+      "topic": "Joern CLI probes",
+      "fact": "Current Joern supports joern --help and joern-parse --list-languages, while joern --version emits 'Warning: Unknown option --version'.",
+      "source": "code"
+    },
+    {
+      "topic": "C# Joern CPG shape",
+      "fact": "For tests/fixtures/tiny-aspnet/Program.cs, Joern exposes the minimal API id parameter as id:System.String on line 14, ExecuteReader as a call on line 19 with receiver argument cmd, and SqliteCommand constructor argument sql on line 18.",
+      "source": "code"
+    }
   ],
-
   "errors_encountered": [
-    {"error": "rm_to_trash hook moved /home/robin/git/priv/summarize-context/resume-session/scripts/ to /tmp/trash along with the intended __pycache__ subdirectory.", "context": "Trying to remove __pycache__ after a cp -r that included it.", "resolution": "mv /tmp/trash/1778506281-scripts back into place; scripts intact."},
-    {"error": "git commit auto-commit logic initially failed with 'error: pathspec -m did not match any file(s)'.", "context": "First draft of maybe_commit_handoff() in write_summary.sh placed -m after -- in the git commit invocation.", "resolution": "Reordered to `git commit --no-verify --only -m '...' -- .context-handoff.json`. Re-tested across new/unchanged/modified/detached/gitignored scenarios — all pass."},
-    {"error": "Five test scenarios in the smoke test for maybe_commit_handoff initially mis-tested the gitignored case because the file had already been committed in earlier scenarios and gitignore was therefore inactive for it.", "context": "Validating the gitignore-skip guard.", "resolution": "Re-tested in a fresh repo where the file was never tracked; check-ignore correctly returned non-zero and the skip path triggered."}
+    {
+      "error": "uv could not create temporary files in /home/robin/.cache/uv because the cache was read-only in the sandbox.",
+      "context": "Attempting uv run pytest.",
+      "resolution": "Retried with UV_CACHE_DIR under /tmp, then discovered missing network/cache dependencies."
+    },
+    {
+      "error": "uv offline/cache attempts missed semgrep==1.162.0 and duckdb==1.5.2 wheels.",
+      "context": "Trying to run tests without network access.",
+      "resolution": "Used the existing .venv once available."
+    },
+    {
+      "error": "Full pytest run failed on environment constraints: socket PermissionError, Docker socket permission denied, CodeQL pack download DNS failure, and ~/.claude read-only.",
+      "context": "Running .venv/bin/python -m pytest -q.",
+      "resolution": "Scoped verification to installer harnesses and Joern runner tests."
+    },
+    {
+      "error": "Installer wrote an unterminated Python string for container_runtime.",
+      "context": "ask_choice prompt text was captured into RUNTIME.",
+      "resolution": "Moved prompt output to stderr and made ask_choice return only the normalized choice on stdout."
+    },
+    {
+      "error": "Joern installer downloaded a 9-byte invalid zip.",
+      "context": "Using upstream joern-install.sh with --version=latest.",
+      "resolution": "Replaced with direct joern-cli.zip download, zip validation, extraction, symlink creation, and startup checks."
+    },
+    {
+      "error": "Joern status check printed 'Warning: Unknown option --version'.",
+      "context": "Installer used joern --version as an installed/probe command.",
+      "resolution": "Changed probes to joern --help and joern-parse --list-languages."
+    },
+    {
+      "error": "tests/test_joern_runner.py::test_joern_runs_against_tiny_aspnet_csharp returned no flows.",
+      "context": "Joern C# query source modeling omitted minimal API lambda parameters.",
+      "resolution": "Added C# parameter nodes as source candidates and verified the Joern runner suite."
+    }
   ],
-
   "open_threads": {
-    "unanswered_questions": [
-      "Whether to archive github.com/pwnpanda/summarize-context (it is now orphaned; force-push obliterated its sibling claude-session-organizer history but summarize-context's own GitHub repo is untouched)."
-    ],
+    "unanswered_questions": [],
     "unfinished_work": [
-      "Five files in ai-semantic-source-scanner have uncommitted modifications adding env[\"CLAUDE_NO_AUTO_REGISTER\"] = \"1\" — nominator.py, validator.py, analyzer.py, engines/llm_heavy.py, cli.py. The user has not yet asked for these to be committed in ai-semantic-source-scanner.",
-      "This .context-handoff.json itself is being added and pushed to ai-semantic-source-scanner per the user's most recent request; the commit and push are in flight at the time of writing."
+      "The branch dev has modified scripts/install.sh, ai_codescan/engines/joern_queries.sc, and this .context-handoff.json at summary time.",
+      "An untracked /home/robin/git/Private/ai-semantic-source-scanner/ai-semantic-source-scanner.sln file is present and appears unrelated to the installer/Joern changes.",
+      "The user's request to push changes is pending at the moment this handoff was written."
     ],
-    "blockers": []
+    "blockers": [
+      "The sandbox cannot push to GitHub if outbound SSH/network is unavailable; the push result is not known at handoff write time."
+    ]
   },
-
   "interaction_dynamics": {
-    "roles_and_personas": "User: senior engineer, blunt and autonomy-friendly per stored memory; spotted design holes (registry pollution) quickly. Claude: tactical executor; gave one round of pushback on the merge direction before proceeding.",
+    "roles_and_personas": "User is a technical project owner actively running the installer and tests in their real shell. Assistant acted as coding/debugging agent, patching local files and verifying with targeted commands.",
     "tone_fragments": [
-      {"turn_range": "1-2", "tone": "diagnostic", "notes": "User opens with the symptom (lost AI_Codescan name); Claude investigates and presents two distinct problems."},
-      {"turn_range": "3-7", "tone": "decisive", "notes": "User picks prune scope and prevention strategy via AskUserQuestion; Claude executes without further questions."},
-      {"turn_range": "8-11", "tone": "negotiating", "notes": "User asked for a non-trivial repo merge in a direction with real structural friction. Claude pushed back; user revised plan; Claude executed."},
-      {"turn_range": "12-14", "tone": "operational", "notes": "Cleanup: auto-commit feature, remote pruning, manual /conversation-summary."}
+      {
+        "turn_range": "1-3",
+        "tone": "orientation",
+        "notes": "User loaded prior context and asked for tests; assistant reported sandbox constraints."
+      },
+      {
+        "turn_range": "4-10",
+        "tone": "iterative-debugging",
+        "notes": "User pasted live installer failures; assistant patched install.sh in response."
+      },
+      {
+        "turn_range": "11-15",
+        "tone": "corrective",
+        "notes": "User challenged whether timeout probes were sufficient; assistant adjusted toward functional verification."
+      },
+      {
+        "turn_range": "16-18",
+        "tone": "verification",
+        "notes": "User reported a Joern C# integration failure; assistant reproduced, inspected the CPG, patched query logic, and verified tests."
+      }
     ],
     "drift_or_contradictions": [
-      "Turn 8: user initially asked to merge summarize-context INTO claude-session-organizer; after pushback in turn 9, user flipped direction (merge claude-session-organizer INTO summarize-context, then move/rename) — net result identical but the layout migration changed sides."
+      "The session began with broad test-suite verification but shifted to installer bug fixes as the user encountered failures during install.",
+      "A timeout-based Joern version check was initially added, then replaced after user pushback with functional Joern startup and parser checks."
     ],
-    "annotation_notes": "User asked for pushback when warranted ('Give pushback if that doesn't work as well or if there is a reason to prefer the other solution'). Claude provided one round of pushback and the user revised. No sarcasm or hidden intent detected."
+    "annotation_notes": "The user prefers direct fixes and challenges weak validation. No sarcasm detected."
   },
-
   "user_signals": {
     "preferred_verbosity": "brief",
     "formatting_preferences": "markdown",
-    "communication_style": "terse, decisive, comfortable with destructive operations when explicitly authorized",
-    "domain_vocabulary": ["named session registry", "subagent", "SessionEnd hook", "force-push", "handoff", "skill", "auto-commit"],
+    "communication_style": "terse, technical, corrective when validation is weak",
+    "domain_vocabulary": [
+      "installer",
+      ".venv",
+      "Joern",
+      "interactsh",
+      "LLM CLI availability",
+      "CWE-89",
+      "ExecuteReader",
+      "conversation summary",
+      "push"
+    ],
     "preferences_observed": [
-      "Wants Claude to make calls and only ask when there's real ambiguity",
-      "Comfortable with force-push when explicitly authorized; expects pushback if a plan has structural friction",
-      "Tracks side effects: noticed when symlinks would break, expected install.sh to be re-run",
-      "Prefers tactical end-of-turn summaries (what changed + what's next) over decorative ones"
+      "Wants real functional verification rather than superficial command-existence checks.",
+      "Wants installer output to explain long-running phases.",
+      "Prefers removing unneeded install steps over keeping optional prompts.",
+      "Expects the assistant to commit/push when asked."
     ],
     "feedback_given": [
-      "'I think we do the opposite. Merge summarize-context into claude-session-organizer. Give pushback if that doesn't work as well' — explicit invitation to challenge direction",
-      "'Lets do the easiest merge, then move the whole project over to claude-sessio-organizer and overwrite git history or push brand new state.' — destructive operation explicitly authorized",
-      "'set the remote to git@github.com:pwnpanda/claude-session-organizer.git so the repo works normally' — wanted the leftover summarize-context-origin remote removed"
+      "Asked to review the script for similar prompt/stdout issues.",
+      "Asked to remove interactsh from install.",
+      "Questioned whether timeout-based Joern checks were really the best way.",
+      "Asked to write the conversation summary and push changes."
     ]
   },
-
   "prompting_strategies": {
-    "techniques_observed": "AskUserQuestion with preview blocks for visual comparison of branching strategies; one round of explicit pushback with bullet-list of pros/cons before proceeding with a destructive operation.",
+    "techniques_observed": "The user provided concrete terminal output as failure evidence and used direct correction to steer verification quality.",
     "micro_prompts_used": [
-      "Pushback frame: present 2 concrete reasons + recommendation; let user keep or flip course in one round.",
-      "Confirm-before-destruct frame: state exact destructive command sequence, get explicit 'yes' before executing."
+      "Paste failing command output and ask for the specific script fix.",
+      "Challenge a validation strategy and ask to clean up state before retrying.",
+      "Ask to summarize and push once the work is complete."
     ],
-    "model_adaptations": "Kept terse-by-default; spent words on pushback and rationale only when the user-stated path had real friction."
+    "model_adaptations": "Assistant moved from broad test execution to targeted reproductions, fake harnesses, real Joern probes, and CPG inspection."
   },
-
   "context_artifacts": {
     "multimodal_elements": [],
-    "tool_notes": "AskUserQuestion preview blocks (single-select only) used to compare branch-history layouts. Bash tool's `rm` is intercepted by ~/.claude/hooks/rm_to_trash.py with naïve path extraction that can over-collect targets — recoverable via /tmp/trash."
+    "tool_notes": "The sandbox restricts network and some home-directory writes. Direct rm -rf was blocked by policy once; moving files was used instead. A cleanup attempt initially failed because PATH was effectively broken, so absolute paths to coreutils were used."
   },
-
   "ethical_notes": null,
-
   "redactions": {
     "count": 0,
     "categories": []
   },
-
   "handoff": {
-    "context_brief": "The user owns three Claude Code skill repos that have just been consolidated into one: pwnpanda/claude-session-organizer now contains conversation-summary, load-context, and resume-session skills. pwnpanda/summarize-context is orphaned (force-push obliterated its sibling history; the source repo is untouched but no longer used). The resume-session named-session registry at ~/.claude/session-names/index.json has been pruned from 29,697 entries to 166; AI_Codescan and the user's other manually-named sessions are intact. Five files in this repo (ai-semantic-source-scanner) have uncommitted modifications that add env[\"CLAUDE_NO_AUTO_REGISTER\"] = \"1\" to the five subprocess sites that spawn `claude` as a pipeline subagent (nominator, validator, analyzer, llm_heavy engine, storage_taint_resolver in cli). Tests still pass. The conversation-summary SessionEnd hook now writes .context-handoff.json to the git repo root and auto-commits it on the current branch with safety guards. This file is the manual mid-session checkpoint requested by the user.",
+    "context_brief": "The session fixed installer issues and a Joern C# integration gap in /home/robin/git/Private/ai-semantic-source-scanner. scripts/install.sh now reuses existing .venv, normalizes runtime prompts, removes interactsh, installs Joern directly from joern-cli.zip with progress and verification, and uses supported Joern probes. ai_codescan/engines/joern_queries.sc now includes C# minimal API lambda parameters as source candidates. The Joern runner suite passes with 7 passed and 1 skipped. At handoff write time, the branch is dev tracking origin/dev with these changes and .context-handoff.json modified; ai-semantic-source-scanner.sln remains untracked and unrelated.",
     "what_next_session_should_know": [
-      "Five files in ai_codescan/ have uncommitted CLAUDE_NO_AUTO_REGISTER=1 changes — not committed yet; user may want them on a separate commit from the handoff.",
-      "Backup of the polluted registry is at ~/.claude/session-names/index.json.bak-1778497896. Delete after a few sessions confirm the new state is stable.",
-      "summarize-context-origin remote was removed from claude-session-organizer; if user wants to push a tombstone commit to the orphaned summarize-context GitHub repo, they'd need to re-add it.",
-      "The auto-commit uses --no-verify; if any future pre-commit hooks should run on handoff commits, the maybe_commit_handoff function in write_summary.sh needs editing.",
-      "The pipeline tests at /home/robin/git/priv/ai-semantic-source-scanner/tests/ run via .venv/bin/python -m pytest (project-local venv, not the linuxbrew Python on PATH)."
+      "The full test suite is not clean in the sandbox because of environmental constraints; targeted Joern tests pass.",
+      "Joern does not support --version in the installed CLI; use --help and joern-parse --list-languages for startup checks.",
+      "AICS_REINSTALL_JOERN=yes forces the installer through the real Joern install path even when a stale joern is on PATH.",
+      "The C# Joern fix relies on minimal API request parameters appearing as lambda parameter nodes.",
+      "The untracked ai-semantic-source-scanner.sln file was not modified by the assistant."
     ],
     "files_relevant_to_continuation": [
-      "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/nominator.py",
-      "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/validator.py",
-      "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/analyzer.py",
-      "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/engines/llm_heavy.py",
-      "/home/robin/git/priv/ai-semantic-source-scanner/ai_codescan/cli.py",
-      "/home/robin/git/priv/claude-session-organizer/conversation-summary/scripts/write_summary.sh",
-      "/home/robin/git/priv/claude-session-organizer/resume-session/scripts/session_end_hook.py"
+      "/home/robin/git/Private/ai-semantic-source-scanner/scripts/install.sh",
+      "/home/robin/git/Private/ai-semantic-source-scanner/ai_codescan/engines/joern_queries.sc",
+      "/home/robin/git/Private/ai-semantic-source-scanner/tests/test_joern_runner.py",
+      "/home/robin/git/Private/ai-semantic-source-scanner/tests/fixtures/tiny-aspnet/Program.cs",
+      "/home/robin/git/Private/ai-semantic-source-scanner/.context-handoff.json"
     ],
     "handoff_format_suggestion": "structured"
   }

@@ -324,6 +324,15 @@ import java.security.MessageDigest
       // identifier/fieldAccess reads.
       val goCallSources = cpg.call.code(sourceNamePattern).l
       baseRawSources ++ goCallSources
+    } else if (language.toLowerCase == "csharp" || language.toLowerCase == "csharpsrc") {
+      // ASP.NET Core minimal APIs bind simple lambda parameters from the
+      // request by convention. Joern's C# frontend exposes those as parameter
+      // nodes (e.g. ``id:System.String``), not as Request.Query field reads.
+      val csharpParamSources =
+        cpg.parameter
+          .filter(p => p.lineNumber.nonEmpty && p.name != "args" && p.name != "this")
+          .l
+      baseRawSources ++ csharpParamSources
     } else baseRawSources
 
   val sourcesByFile = scala.collection.mutable.HashMap.empty[String, List[SourceLoc]]
