@@ -223,6 +223,7 @@ def run_nominator(
     env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
     env["AI_CODESCAN_TARGET_BUG_CLASSES"] = ",".join(c.name for c in bug_classes)
     env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
+    env["CLAUDE_NO_AUTO_REGISTER"] = "1"
 
     subprocess.run(  # noqa: S603 - argv-only, no shell; bash is on PATH
         ["bash", str(SKILL_DIR / "scripts" / "loop.sh")],  # noqa: S607

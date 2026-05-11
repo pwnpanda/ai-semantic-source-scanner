@@ -1029,6 +1029,7 @@ def taint_schema(  # noqa: PLR0911, PLR0913, PLR0912, PLR0915 - CLI orchestrator
         env["AICS_RUN_DIR"] = str(state.run_dir)
         env["AICS_SKILL_DIR"] = str(skill_dir)
         env["AICS_LLM_CMD"] = str(cmd_script)
+        env["CLAUDE_NO_AUTO_REGISTER"] = "1"
         # Stage repo.md + schema.taint.yml as inputs.
         inputs_dir = state.run_dir / "inputs"
         inputs_dir.mkdir(parents=True, exist_ok=True)

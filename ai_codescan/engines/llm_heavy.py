@@ -115,6 +115,7 @@ def run_llm_heavy_engine(
         env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
         env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
         env["AI_CODESCAN_TARGET_BUG_CLASSES"] = ",".join(target_bug_classes or [])
+        env["CLAUDE_NO_AUTO_REGISTER"] = "1"
         subprocess.run(  # noqa: S603 - argv-only, no shell
             ["bash", str(SKILL_DIR / "scripts" / "loop.sh")],  # noqa: S607
             env=env,

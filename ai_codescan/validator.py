@@ -190,6 +190,7 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
         env["AI_CODESCAN_RUN_DIR"] = str(state.run_dir)
         env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
         env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
+        env["CLAUDE_NO_AUTO_REGISTER"] = "1"
         # Stage validation hints per finding so the skill can read them.
         hints_dir = state.run_dir / "validation_hints"
         hints_dir.mkdir(exist_ok=True)

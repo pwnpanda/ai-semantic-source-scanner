@@ -10,3 +10,5 @@ build/
 *.egg-info/
 ai_codescan/ast/node_worker/node_modules/
 workspace/
+.serena/
+
