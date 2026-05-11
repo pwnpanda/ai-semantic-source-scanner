@@ -69,8 +69,22 @@ The PoC runs inside a hardened container with no network access. Do NOT
 make outbound requests; simulate user input as inline strings. Out-of-band
 beacons are not yet wired up (Phase 2F).
 
-## Output
+## Output protocol — sentinel-bracketed PoC on stdout
 
-- Use the Write tool exactly once.
-- The PoC path must be `<inlined poc_dir>/poc.<ext>` matching the language picked.
-- Do not edit any other files.
+Do **not** call Edit / Write or any other file-modifying tool. Print
+your PoC source between sentinels, with the extension on the opening
+line; the harness writes the file for you. Example for Python:
+
+```
+<<<AI_CODESCAN_POC:EXT=py>>>
+import sys
+# ... your PoC code ...
+<<<AI_CODESCAN_POC:END>>>
+```
+
+Use `EXT=js`, `EXT=php`, `EXT=rb`, `EXT=go`, `EXT=sh`, or `EXT=py` to
+match the language you picked above.
+
+The JSON verdict and `OK_VULN` / `BENIGN` outputs from the runner come
+from executing the PoC, not from this LLM iteration — your only job is
+to emit the PoC source inside the sentinels.

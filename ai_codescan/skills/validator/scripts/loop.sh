@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Drive the validator skill loop. See wide_nominator/scripts/loop.sh for
-# rationale: inputs are inlined into the prompt so the LLM doesn't have
-# to read environment variables.
+# Validator skill loop. Same robust-against-sandbox protocol as the
+# other skills: inputs inlined into the prompt, PoC source extracted
+# from sentinel-bracketed stdout.
 set -euo pipefail
 RUN_DIR="${AI_CODESCAN_RUN_DIR:?missing AI_CODESCAN_RUN_DIR}"
 SKILL_DIR="${AI_CODESCAN_SKILL_DIR:?missing AI_CODESCAN_SKILL_DIR}"
@@ -27,17 +27,15 @@ invoke_llm() {
 render_prompt() {
   local finding_path="$1"
   local slice_file="$2"
-  local poc_dir="$3"
-  local hints_path="$4"
-  local target_lang="$5"
+  local hints_path="$3"
+  local target_lang="$4"
   cat "$PROMPT"
   printf '\n\n---\n\n## This iteration\n\n'
-  printf 'Files you must use:\n\n'
-  printf -- '- Finding markdown (read-only): `%s`\n' "$finding_path"
+  printf 'Reference paths (for Read/Grep — do not write):\n\n'
+  printf -- '- Finding: `%s`\n' "$finding_path"
   printf -- '- Slice JSON: `%s`\n' "$slice_file"
-  printf -- '- Source snapshot root (read-only): `%s`\n' "$SOURCE_ROOT"
+  printf -- '- Source snapshot root: `%s`\n' "$SOURCE_ROOT"
   printf -- '- repo.md: `%s`\n' "$REPO_MD"
-  printf -- '- Write the PoC to: `%s/poc.<ext>` (one file only)\n' "$poc_dir"
   if [[ -n "$hints_path" && -f "$hints_path" ]]; then
     printf -- '- Per-CWE hint rubric: `%s`\n' "$hints_path"
   fi
@@ -62,9 +60,33 @@ render_prompt() {
   fi
 }
 
-# Optional per-CWE hint rubric / target-language overrides are picked up
-# from env once at startup (still set by the Python driver), but the
-# values are baked into each prompt rather than referenced by name.
+write_poc_from_stdout() {
+  local llm_out="$1"
+  local poc_dir="$2"
+  python3 - "$llm_out" "$poc_dir" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+allowed = {"py", "js", "php", "rb", "go", "sh"}
+raw = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+poc_dir = Path(sys.argv[2])
+start = re.search(r"<<<AI_CODESCAN_POC:EXT=([a-z]+)>>>", raw)
+end = re.search(r"<<<AI_CODESCAN_POC:END>>>", raw[start.end():]) if start else None
+if not start or not end:
+    print("no PoC block in LLM output", file=sys.stderr)
+    sys.exit(2)
+ext = start.group(1)
+if ext not in allowed:
+    print(f"unsupported PoC extension: {ext}", file=sys.stderr)
+    sys.exit(3)
+body = raw[start.end():start.end() + end.start()].strip("\n")
+out_path = poc_dir / f"poc.{ext}"
+out_path.write_text(body + "\n", encoding="utf-8")
+print(out_path)
+PY
+}
+
 HINTS_PATH="${AI_CODESCAN_HINTS_PATH:-}"
 TARGET_LANG="${AI_CODESCAN_TARGET_LANG:-}"
 
@@ -84,8 +106,14 @@ for finding in "$FINDINGS_DIR"/*.md; do
   poc_dir="$RUN_DIR/sandbox/${finding_id}"
   mkdir -p "$poc_dir"
 
-  if ! render_prompt "$finding" "$slice_file" "$poc_dir" "$HINTS_PATH" "$TARGET_LANG" | invoke_llm; then
-    echo "warning: $finding_id PoC author failed" >&2
+  iter_log="$RUN_DIR/.done-validate/${finding_id}.stdout"
+  if ! render_prompt "$finding" "$slice_file" "$HINTS_PATH" "$TARGET_LANG" \
+       | invoke_llm > "$iter_log"; then
+    echo "warning: $finding_id PoC author failed (llm error)" >&2
+    continue
+  fi
+  if ! write_poc_from_stdout "$iter_log" "$poc_dir" >/dev/null; then
+    echo "warning: $finding_id produced no PoC block" >&2
     continue
   fi
   touch "$done_marker"

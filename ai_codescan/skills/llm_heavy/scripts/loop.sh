@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# LLM-heavy walker driver. Inlines inputs (source-root path, entrypoint
-# inventory, output path, bug-class filter) into the prompt body so the
-# LLM doesn't have to read environment variables — modern agentic CLIs
-# sandbox shell access and block ``printenv`` / parameter expansion.
+# LLM-heavy walker driver. Same protocol as the other skills: inputs
+# inlined into the prompt, output extracted from sentinel-bracketed
+# stdout. No reliance on file-modifying-tool permissions.
 set -euo pipefail
 RUN_DIR="${AI_CODESCAN_RUN_DIR:?missing AI_CODESCAN_RUN_DIR}"
 SKILL_DIR="${AI_CODESCAN_SKILL_DIR:?missing AI_CODESCAN_SKILL_DIR}"
@@ -14,7 +13,7 @@ REPO_MD="$RUN_DIR/inputs/repo.md"
 ENTRY_MD="$RUN_DIR/inputs/entrypoints.md"
 TARGET_BUG_CLASSES="${AI_CODESCAN_TARGET_BUG_CLASSES:-}"
 
-: > "$OUT"  # truncate so the LLM appends from a clean slate
+: > "$OUT"
 
 invoke_llm() {
   if [[ -n "$LLM_CMD" ]]; then
@@ -29,11 +28,10 @@ invoke_llm() {
 render_prompt() {
   cat "$PROMPT"
   printf '\n\n---\n\n## This run\n\n'
-  printf 'Files you must use:\n\n'
-  printf -- '- Source snapshot root (read-only; use Read/Grep here): `%s`\n' "$SOURCE_ROOT"
+  printf 'Reference paths (for Read/Grep — do not write):\n\n'
+  printf -- '- Source snapshot root: `%s`\n' "$SOURCE_ROOT"
   printf -- '- Repo overview: `%s`\n' "$REPO_MD"
-  printf -- '- Entrypoints inventory (start traversal here): `%s`\n' "$ENTRY_MD"
-  printf -- '- Append your JSONL flows to: `%s`\n' "$OUT"
+  printf -- '- Entrypoints inventory (start here): `%s`\n' "$ENTRY_MD"
   if [[ -n "$TARGET_BUG_CLASSES" ]]; then
     printf -- '- Filter focus to these bug classes: `%s`\n' "$TARGET_BUG_CLASSES"
   fi
@@ -50,6 +48,32 @@ render_prompt() {
   fi
 }
 
-if ! render_prompt | invoke_llm; then
-  echo "warning: llm-heavy walker failed" >&2
+write_flows_from_stdout() {
+  local llm_out="$1"
+  python3 - "$llm_out" "$OUT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+out_path = Path(sys.argv[2])
+start = re.search(r"<<<AI_CODESCAN_FLOWS:BEGIN>>>", raw)
+end = re.search(r"<<<AI_CODESCAN_FLOWS:END>>>", raw[start.end():]) if start else None
+if not start or not end:
+    print("no flows block in LLM output", file=sys.stderr)
+    sys.exit(2)
+body = raw[start.end():start.end() + end.start()].strip("\n")
+# Keep only non-empty lines that look like JSON.
+lines = [ln for ln in body.splitlines() if ln.strip().startswith("{")]
+out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+PY
+}
+
+iter_log="$RUN_DIR/.llm_heavy.stdout"
+if ! render_prompt | invoke_llm > "$iter_log"; then
+  echo "warning: llm-heavy walker failed (llm error)" >&2
+  exit 0
+fi
+if ! write_flows_from_stdout "$iter_log"; then
+  echo "warning: llm-heavy walker produced no flows block" >&2
 fi
