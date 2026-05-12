@@ -103,15 +103,60 @@ After install, the binary is available as `uv run ai-codescan` (or activate the 
 # Clone a target (for a real scan use a real target)
 git clone --depth 1 https://github.com/expressjs/express /tmp/express
 
-# End-to-end Phase 1: prep + nominate + gate-1 with auto-accept
-uv run ai-codescan run /tmp/express --target-bug-class injection --yes
+# Full autonomous pipeline: prep → nominate → gates → analyze → validate → report
+uv run ai-codescan run /tmp/express \
+  --target-bug-class injection \
+  --llm-provider claude \
+  --yes
+```
 
-# Continue through Phase 2: deep analysis → validate → report
-uv run ai-codescan analyze
-uv run ai-codescan gate-2 --yes
-uv run ai-codescan validate
-uv run ai-codescan gate-3 --yes
-uv run ai-codescan report --report-dir ./report
+`run` defaults to `--engine hybrid`, so it runs CodeQL + Semgrep + Joern when
+Joern is on PATH, dedupes the flows, then drives the LLM stages. Reports land in
+`./report/YYYY-MM-DD--<severity>--<vuln-class>--<component>.md`.
+
+---
+
+## Unattended runs
+
+Use `ai-codescan run` with `--yes` to run the whole scanner without interactive
+prompts:
+
+```bash
+uv run ai-codescan run <target> \
+  --target-bug-class injection,xss,idor \
+  --llm-provider claude \
+  --llm-model opus \
+  --yes
+```
+
+`--yes` auto-confirms:
+
+- LLM provider/model prompts when you leave them unspecified (defaults to `claude`
+  and the provider CLI's default model).
+- `gate-1`, `gate-2`, and `gate-3`.
+- Zero-output prompts.
+- Rate-limit/auth recovery prompts.
+
+The command runs every stage in order:
+
+```text
+prep → nominate → gate-1 → analyze → gate-2 → validate → gate-3 → report
+```
+
+Progress is persisted at `<cache>/<repo-id>/run.state.json`, so re-running the
+same command resumes after the last completed stage. The default cache root is
+`~/.ai_codescan/repos/`; override it with the global `--cache-dir` flag:
+
+```bash
+uv run ai-codescan --cache-dir /tmp/scan-cache run <target> --llm-provider claude --yes
+```
+
+For partial automation or retries, slice the flow:
+
+```bash
+uv run ai-codescan run <target> --from analyze --yes
+uv run ai-codescan run <target> --to gate-1 --yes
+uv run ai-codescan run <target> --phases validate,gate-3,report --yes
 ```
 
 ### Python target example
@@ -128,8 +173,6 @@ cross-file symbol resolution.
 uv run ai-codescan prep ./tests/fixtures/tiny-flask --engine hybrid
 uv run ai-codescan run ./tests/fixtures/tiny-flask --target-bug-class injection --yes
 ```
-
-Reports land in `./report/YYYY-MM-DD--<severity>--<vuln-class>--<component>.md`.
 
 ---
 
@@ -176,7 +219,7 @@ uv run ai-codescan cache rm <repo-id>
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--engine {codeql,llm-heavy,hybrid}` | `codeql` | Pick the static analysis backbone |
+| `--engine {codeql,llm-heavy,hybrid}` | `hybrid` for `run`; `codeql` for standalone `prep` | Pick the static analysis backbone |
 | `--target-bug-class <list>` | all | Comma-separated; e.g. `injection,xss,idor` or `@injection` |
 | `--llm-provider {claude,gemini,codex}` | `claude` | LLM CLI to drive each phase |
 | `--llm-model <name>` | provider default | e.g. `opus`, `gemini-2.5-pro`, `o3` |
@@ -184,11 +227,12 @@ uv run ai-codescan cache rm <repo-id>
 | `--report-dir <path>` | `./report/` | Where final reports land |
 | `--cache-dir <path>` | `~/.ai_codescan/repos/<id>/` | Per-target snapshot + DuckDB |
 | `--commit <sha>` | `HEAD` | Pin git snapshot to a commit |
-| `--yes` | off | Skip interactive HITL gates |
-| `--cost-cap <usd>` | none | Abort phase when LLM spend exceeds this |
+| `--yes` | off | Run unattended: auto-confirm LLM prompts, HITL gates, zero-output prompts, and rate-limit/auth recovery prompts |
+| `--phases <list>` | all stages | `run` only; comma-separated subset of `prep,nominate,gate-1,analyze,gate-2,validate,gate-3,report` |
+| `--from <stage>` / `--to <stage>` | full flow | `run` only; resume or stop at a named stage |
 | `--no-sandbox` | off | `validate` runs PoC locally instead of in Docker |
 
-LLM provider/model + temperature are persisted to `runs/<run_id>/run.json` for auditability.
+LLM provider/model + temperature are persisted to `runs/<run_id>/run.json` for auditability. The `run` orchestrator also writes `<cache>/<repo-id>/run.state.json` after every stage.
 
 ---
 
@@ -217,7 +261,7 @@ ai_codescan/                         # Python package
 ├── stack_detect.py                  # Detect projects + frameworks + package manager
 ├── ast/                             # Node worker + Python wrapper
 ├── index/                           # SCIP indexer + DuckDB schema/ingestion
-├── engines/                         # codeql, semgrep, joern (stub), hybrid, llm_heavy
+├── engines/                         # codeql, semgrep, joern, hybrid, llm_heavy
 ├── ingest/sarif.py                  # Parse SARIF into flows
 ├── findings/                        # Finding model + queue
 ├── analyzer.py / nominator.py / validator.py
@@ -236,7 +280,6 @@ docs/superpowers/
 └── plans/                           # Per-sub-plan implementation plans
 
 tests/                               # 158 tests, ~2 min full suite
-TRADEOFFS.md                         # Autonomous decisions + open follow-ups
 ```
 
 ---
@@ -257,7 +300,6 @@ Quality gates: zero ruff warnings, zero ty errors, all tests green. ~158 tests, 
 
 ## Pointers
 
-- **Tradeoffs and open questions:** [TRADEOFFS.md](TRADEOFFS.md)
 - **Phase 1 design:** [`docs/superpowers/specs/2026-05-08-ai-codescan-phase1-design.md`](docs/superpowers/specs/2026-05-08-ai-codescan-phase1-design.md)
 - **Phase 2 design:** [`docs/superpowers/specs/2026-05-09-ai-codescan-phase2-design.md`](docs/superpowers/specs/2026-05-09-ai-codescan-phase2-design.md)
 - **Per-sub-plan implementation plans:** `docs/superpowers/plans/`
@@ -267,7 +309,7 @@ Quality gates: zero ruff warnings, zero ty errors, all tests green. ~158 tests, 
 
 ## Status
 
-Phases 1, 2, and 3 are complete and tagged. JavaScript / TypeScript and Python are fully implemented (every layer of the pipeline — stack detection, CodeQL, Semgrep, Joern, AST extraction, SCIP indexing, storage-taint regexes, framework-aware entrypoint detection, fixtures, end-to-end smoke tests). Java, Go, Ruby, PHP, and C# reached MVP+: Java via `javasrc2cpg` + Spring/JAX-RS/Kafka entrypoints + tiny-spring SQLi fixture; Go via Joern's `gosrc2cpg` + Gin/Echo/Chi/Fiber/stdlib `http.HandleFunc` entrypoints + tiny-gin SQLi fixture; Ruby via tree-sitter-ruby AST + Rails routes / Sinatra DSL / Sidekiq workers + tiny-sinatra SQLi fixture (Joern's `rubysrc2cpg` is wired but beta — thin CPGs on DSL-heavy code); PHP via tree-sitter-php AST + Laravel/Symfony/Slim/WordPress entrypoints + tiny-slim SQLi fixture (CodeQL doesn't support PHP — coverage relies on Semgrep + Joern's `php2cpg` when `php` is on PATH); C# via CodeQL `--build-mode=none` + Joern `csharpsrc2cpg` + tree-sitter-c-sharp AST + ASP.NET Core attribute routing / minimal-API `app.MapGet` / Azure Functions entrypoints + tiny-aspnet SQLi fixture. Bare-source detection covers snippet repos and CTF challenges with no manifest. Joern install remains opt-in. See [TRADEOFFS.md](TRADEOFFS.md) for the full list of autonomous decisions.
+Phases 1, 2, and 3 are complete and tagged. JavaScript / TypeScript and Python are fully implemented (every layer of the pipeline — stack detection, CodeQL, Semgrep, Joern, AST extraction, SCIP indexing, storage-taint regexes, framework-aware entrypoint detection, fixtures, end-to-end smoke tests). Java, Go, Ruby, PHP, and C# reached MVP+: Java via `javasrc2cpg` + Spring/JAX-RS/Kafka entrypoints + tiny-spring SQLi fixture; Go via Joern's `gosrc2cpg` + Gin/Echo/Chi/Fiber/stdlib `http.HandleFunc` entrypoints + tiny-gin SQLi fixture; Ruby via tree-sitter-ruby AST + Rails routes / Sinatra DSL / Sidekiq workers + tiny-sinatra SQLi fixture (Joern's `rubysrc2cpg` is wired but beta — thin CPGs on DSL-heavy code); PHP via tree-sitter-php AST + Laravel/Symfony/Slim/WordPress entrypoints + tiny-slim SQLi fixture (CodeQL doesn't support PHP — coverage relies on Semgrep + Joern's `php2cpg` when `php` is on PATH); C# via CodeQL `--build-mode=none` + Joern `csharpsrc2cpg` + tree-sitter-c-sharp AST + ASP.NET Core attribute routing / minimal-API `app.MapGet` / Azure Functions entrypoints + tiny-aspnet SQLi fixture. Bare-source detection covers snippet repos and CTF challenges with no manifest. Joern install remains opt-in.
 
 ## Claude Sessions
 

@@ -1,9 +1,8 @@
 """Render flows + xrefs as a Graphviz DOT graph and (optionally) an SVG/PNG.
 
-Phase 3B picks Graphviz over interactive options (React Flow, Cytoscape) because
-``dot`` is universally available, scales to thousands of nodes, and renders to
-both static images and interactive SVG without any server. Future work can add
-a React Flow front-end on top of the same DuckDB index — see TRADEOFFS.md.
+Graphviz remains the offline export path: ``dot`` is widely available, scales
+to thousands of nodes, and renders both static images and interactive SVG. The
+HTTP server in ``ai_codescan.server`` provides the separate React Flow viewer.
 """
 
 from __future__ import annotations
