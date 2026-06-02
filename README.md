@@ -22,6 +22,18 @@ prep ─→ Gate 1 ─→ analyze ─→ Gate 2 ─→ validate ─→ Gate 3 �
 
 ---
 
+## Known Limitations
+
+- **Frontend XSS flow modeling is incomplete.** A 2026-05-23 Storebrand run over recovered
+  source-map TypeScript/React source produced 0 XSS flows in `inputs/flows.jsonl`. The pipeline
+  can still surface heuristic candidates, but it does not yet reliably trace frontend XSS from
+  URL/search/hash/API/FMS text sources into React/DOM sinks.
+- **Planned:** implement dedicated XSS flow support for frontend projects, including
+  `dangerouslySetInnerHTML`, `html-react-parser`, DOMPurify boundary handling, navigation and URL
+  sinks, API/FMS text sources, source-map recovered sources, and React component prop propagation.
+
+---
+
 ## Requirements
 
 | Required | Why |
@@ -324,3 +336,4 @@ Phases 1, 2, and 3 are complete and tagged. JavaScript / TypeScript and Python a
 | `csharp-language-support` | Added C#/.NET MVP+ language support: stack_detect (.csproj / .sln / Directory.Build.props / global.json; framework detection for ASP.NET Core MVC + minimal-APIs / Blazor WASM+Server / SignalR / Worker services / Azure Functions / gRPC / MassTransit / MediatR / Hangfire / Quartz / Orleans; sln-as-wrapper rule emits one project per .csproj when both coexist; bin/obj/.vs skip), CodeQL C# (`--language=csharp`, `--build-mode=none` GA in CLI 2.18.4, csharp-security-extended.qls), Joern's `csharpsrc2cpg` (`--language CSHARPSRC`), tree-sitter-c-sharp@0.21.3 AST worker emitting class/interface/record/struct/enum/method/constructor symbols + invocation/object-creation/attribute xrefs (so `[HttpGet]`/`[Route]`/`[Function]` surface to entrypoint detection), ADO.NET (SqlCommand) + Dapper + EF Core ExecuteSqlRaw idioms in storage_taint, ASP.NET Core attribute routing (`[Route]`, `[HttpGet]`, `[ApiController]`) + minimal-API `app.MapGet/Post/...` + Azure Functions `[Function]`/`[FunctionName]` entrypoints, tiny-aspnet minimal-API CWE-89 fixture. 301 pass (+12). | 2026-05-10 |
 | `pipeline-quality-and-3-langs` | Quality lifts + three new languages. Real CodeQL integration tests for Java/Go/Ruby/C# (auto-fetch the language pack via `codeql pack download`, gate on host toolchain). Kotlin: tree-sitter-kotlin AST + Ktor `routing { get(...) {...} }` entrypoints + Spring-on-Kotlin annotations + Exposed ORM idioms in storage_taint + tiny-ktor SQLi fixture (reuses CodeQL `java-kotlin` extractor). Bash: tree-sitter-bash + bare-source ProjectKind.BASH + getopts/eval/source CLI markers + tiny-bash CWE-78 fixture (Semgrep covers; no CodeQL/Joern). YAML: ProjectKind.YAML + GitHub Actions / k8s / docker-compose / Helm detection + tree-sitter-yaml emitting yaml_key symbols + on:/run:/${{ github.event.* }} xrefs + tiny-actions CWE-78 fixture. schema.taint.yml LLM-suggested seeds: extended resolver prompt with per-language examples + bundled docs/schema.taint.yml.example + new `taint-schema --init` CLI. 324 pass (+23). | 2026-05-10 |
 | `engines-polish-pass` | Pipeline-gap polish in three independent lifts. CodeQL pack auto-fetch hardening: new `engines.codeql.ensure_query_pack(language)` with bounded timeout + retry, called automatically before `codeql database analyze` so production runs work on fresh hosts (production move from test-only `_ensure_codeql_pack`); 5 unit tests cover retry/timeout/no-codeql/unknown-language paths. SCIP Java + SCIP Go: new `_build_scip_java`/`_build_scip_go` wrappers in `index/scip.py` with graceful skip when CLI is missing; `prep._scip_language_for_project` dispatches JAVA-kind (covers Kotlin via semanticdb) and GO-kind projects. Joern Kotlin: `kotlin → KOTLIN` mapping in `engines.joern`, Kotlin-heavy file-count heuristic in cli.py routes to `kotlin2cpg`, dedicated kotlin case in joern_queries.sc with Spring-on-Kotlin + Ktor request sources. Joern integration tests for tiny-vuln/tiny-flask/tiny-spring/tiny-gin/tiny-sinatra/tiny-slim/tiny-aspnet (gated on joern + per-language toolchain). Validator multi-language PoC support: `_PROFILES` table dispatches PoC scripts by file extension to `node:22-alpine`, `openjdk:21-slim`, `golang:1.22-alpine`, `ruby:3.3-alpine`, `php:8.3-cli-alpine`, `bash:5` (or `python:3.13-slim` legacy); TypeScript via `npx tsx`; `.cs` deferred (file-based `dotnet run` needs .NET 10+); `--no-sandbox` rejects non-Python with a clear `SandboxUnavailableError`. 343 unit pass (+19) plus 7 new gated Joern integration tests. | 2026-05-10 |
+| `xss-flow-limitation-note` | Documented that frontend XSS flow modeling is currently incomplete and planned dedicated XSS-flow implementation for source-map recovered TypeScript/React projects. | 2026-05-23 |
