@@ -83,6 +83,34 @@ def test_tag_filtered_suite_uses_csharp_pack(tmp_path: Path) -> None:
     assert queries_step["from"] == "codeql/csharp-queries"
 
 
+def test_tag_filtered_suite_emits_external_cwe_tags(tmp_path: Path) -> None:
+    """Queries in the official packs are tagged ``external/cwe/cwe-NNN``.
+
+    Emitting the taxonomy spelling (``security/cwe/...``) matches no query,
+    which makes ``codeql database analyze`` exit 70 with an empty SARIF.
+    """
+    suite = tmp_path / "filter.qls"
+    _write_tag_filtered_suite(
+        suite,
+        ["security/cwe/cwe-089", "security/cwe/cwe-079"],
+        language="javascript",
+    )
+    instructions = yaml.safe_load(suite.read_text(encoding="utf-8"))
+    include_step = next(step for step in instructions if "include" in step)
+    assert include_step["include"]["tags contain"] == [
+        "external/cwe/cwe-089",
+        "external/cwe/cwe-079",
+    ]
+
+
+def test_tag_filtered_suite_passes_through_non_cwe_tags(tmp_path: Path) -> None:
+    suite = tmp_path / "filter.qls"
+    _write_tag_filtered_suite(suite, ["security", "correctness"], language="javascript")
+    instructions = yaml.safe_load(suite.read_text(encoding="utf-8"))
+    include_step = next(step for step in instructions if "include" in step)
+    assert include_step["include"]["tags contain"] == ["security", "correctness"]
+
+
 def test_tag_filtered_suite_rejects_unknown_language(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported codeql language"):
         _write_tag_filtered_suite(tmp_path / "f.qls", ["x"], language="cobol")

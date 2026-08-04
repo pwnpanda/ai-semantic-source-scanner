@@ -192,6 +192,20 @@ class CodeqlResult:
     project_id: str
 
 
+def _suite_tag(tag: str) -> str:
+    """Map a taxonomy CWE tag onto the tag CodeQL queries actually carry.
+
+    ``bug_classes.yaml`` spells CWE tags ``security/cwe/cwe-079``, but the
+    ``@tags`` block of every query in the official packs uses
+    ``external/cwe/cwe-079``. A suite filtering on the taxonomy spelling
+    matches nothing and ``codeql database analyze`` exits 70 with an empty
+    SARIF. Non-CWE tags pass through untouched.
+    """
+    if tag.startswith("security/cwe/"):
+        return f"external/cwe/{tag.removeprefix('security/cwe/')}"
+    return tag
+
+
 def _write_tag_filtered_suite(
     suite_path: Path,
     codeql_tags: list[str],
@@ -213,7 +227,7 @@ def _write_tag_filtered_suite(
     instructions: list[dict[str, object]] = [
         {"description": "ai-codescan tag-filtered security suite"},
         {"queries": ".", "from": pack},
-        {"include": {"tags contain": list(codeql_tags)}},
+        {"include": {"tags contain": [_suite_tag(t) for t in codeql_tags]}},
         {"exclude": {"deprecated": "//"}},
     ]
     suite_path.write_text(yaml.safe_dump(instructions, sort_keys=False))
