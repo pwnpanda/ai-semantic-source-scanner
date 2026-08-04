@@ -672,11 +672,11 @@ def test_bare_source_emits_one_project_per_language(tmp_path: Path) -> None:
 
 
 def test_node_and_python_coexist_at_same_root(tmp_path: Path) -> None:
-    """A directory with both package.json and pyproject.toml yields a Node project only.
+    """A directory with both package.json and pyproject.toml yields both projects.
 
-    Python detection skips a directory already claimed by Node so we don't
-    double-report when JS tooling sits next to a Python service in the same
-    folder.
+    JS tooling sitting next to a backend service in the same folder is an
+    asset-pipeline sidecar, not a reason to drop the backend — each manifest
+    needs its own analysis toolchain.
     """
     pkg = tmp_path / "mixed"
     pkg.mkdir()
@@ -686,4 +686,18 @@ def test_node_and_python_coexist_at_same_root(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     projects = detect_projects(pkg)
-    assert [p.kind for p in projects] == [ProjectKind.NODE]
+    assert {p.kind for p in projects} == {ProjectKind.NODE, ProjectKind.PYTHON}
+
+
+def test_rails_app_with_asset_pipeline_yields_both_projects(tmp_path: Path) -> None:
+    """A Rails root with a jsbundling package.json must still emit the Ruby project."""
+    pkg = tmp_path / "rails-app"
+    (pkg / "config").mkdir(parents=True)
+    (pkg / "Gemfile").write_text("source 'https://rubygems.org'\ngem 'rails'\n", encoding="utf-8")
+    (pkg / "config" / "application.rb").write_text("module App\nend\n", encoding="utf-8")
+    (pkg / "package.json").write_text(
+        '{"name":"app","dependencies":{"tailwindcss":"^4.0.0"}}',
+        encoding="utf-8",
+    )
+    projects = detect_projects(pkg)
+    assert {p.kind for p in projects} == {ProjectKind.NODE, ProjectKind.RUBY}

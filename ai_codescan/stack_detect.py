@@ -8,6 +8,11 @@ Go (modules), and HTML-only fallback.
   * Python projects: pyproject.toml / setup.py / setup.cfg / requirements.txt.
   * Java projects: pom.xml (Maven) / build.gradle / build.gradle.kts (Gradle).
   * Go projects: go.mod (single module) or go.work (multi-module workspace).
+
+One directory can host several projects. A Rails app that bundles its assets
+with webpack has both a Gemfile and a package.json at its root; both are
+emitted, so CodeQL/Joern analyse the Ruby *and* the JavaScript instead of
+silently seeing only whichever manifest was found first.
 """
 
 from __future__ import annotations
@@ -692,7 +697,7 @@ def _detect_package_manager(workspace_root: Path) -> str:
     return "unknown"
 
 
-def _detect_python_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+def _detect_python_projects(root: Path) -> list[Project]:
     """Find Python projects (one per directory containing a manifest).
 
     A directory is a Python project when it contains any of pyproject.toml,
@@ -712,8 +717,6 @@ def _detect_python_projects(root: Path, claimed_dirs: set[Path]) -> list[Project
     selected: list[Path] = []
     for cand in candidates:
         rel = cand.relative_to(root)
-        if rel in claimed_dirs:
-            continue
         if any(_is_descendant(rel, sel) for sel in selected):
             continue
         selected.append(rel)
@@ -740,7 +743,7 @@ def _detect_python_projects(root: Path, claimed_dirs: set[Path]) -> list[Project
     return projects
 
 
-def _detect_java_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+def _detect_java_projects(root: Path) -> list[Project]:
     """Find Java/JVM projects (one per directory containing pom.xml or build.gradle*).
 
     Multi-module Maven/Gradle builds nest sub-modules under the parent. We
@@ -759,8 +762,6 @@ def _detect_java_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     selected: list[Path] = []
     for cand in candidates:
         rel = cand.relative_to(root)
-        if rel in claimed_dirs:
-            continue
         if any(_is_descendant(rel, sel) for sel in selected):
             continue
         selected.append(rel)
@@ -787,7 +788,7 @@ def _detect_java_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     return projects
 
 
-def _detect_go_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+def _detect_go_projects(root: Path) -> list[Project]:
     """Find Go projects (one per directory containing go.mod or go.work).
 
     Multi-module Go workspaces (``go.work`` at the repo root with several
@@ -808,8 +809,6 @@ def _detect_go_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     selected: list[Path] = []
     for cand in candidates:
         rel = cand.relative_to(root)
-        if rel in claimed_dirs:
-            continue
         if any(_is_descendant(rel, sel) for sel in selected):
             continue
         selected.append(rel)
@@ -836,7 +835,7 @@ def _detect_go_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     return projects
 
 
-def _detect_ruby_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+def _detect_ruby_projects(root: Path) -> list[Project]:
     """Find Ruby projects: one per Gemfile / ``*.gemspec`` / ``config/application.rb``."""
     candidates: list[Path] = []
     for needle in ("Gemfile", "*.gemspec"):
@@ -856,8 +855,6 @@ def _detect_ruby_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     selected: list[Path] = []
     for cand in candidates:
         rel = cand.relative_to(root)
-        if rel in claimed_dirs:
-            continue
         if any(_is_descendant(rel, sel) for sel in selected):
             continue
         selected.append(rel)
@@ -971,7 +968,7 @@ def _detect_yaml_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     ]
 
 
-def _detect_csharp_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:  # noqa: PLR0912 - branches mirror the candidate / claimed / descendant rules
+def _detect_csharp_projects(root: Path) -> list[Project]:  # noqa: PLR0912 - branches mirror the candidate / claimed / descendant rules
     """Find C#/.NET projects: one per ``*.csproj`` (or ``*.sln`` at root).
 
     A solution-only repo (``*.sln`` plus per-project ``*.csproj`` under
@@ -1009,8 +1006,6 @@ def _detect_csharp_projects(root: Path, claimed_dirs: set[Path]) -> list[Project
     selected: list[Path] = []
     for cand in candidates:
         rel = cand.relative_to(root)
-        if rel in claimed_dirs:
-            continue
         # C# multi-module solutions ship multiple *.csproj — emit one project
         # per csproj rather than collapsing under the outer .sln, since each
         # csproj has its own framework/dependency footprint. Only skip
@@ -1046,7 +1041,7 @@ def _detect_csharp_projects(root: Path, claimed_dirs: set[Path]) -> list[Project
     return projects
 
 
-def _detect_php_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
+def _detect_php_projects(root: Path) -> list[Project]:
     """Find PHP projects: one per composer.json / wp-config.php / Drupal core marker."""
     candidates: list[Path] = []
     for needle in ("composer.json", "wp-config.php"):
@@ -1067,8 +1062,6 @@ def _detect_php_projects(root: Path, claimed_dirs: set[Path]) -> list[Project]:
     selected: list[Path] = []
     for cand in candidates:
         rel = cand.relative_to(root)
-        if rel in claimed_dirs:
-            continue
         if any(_is_descendant(rel, sel) for sel in selected):
             continue
         selected.append(rel)
@@ -1140,12 +1133,18 @@ def detect_projects(root: Path) -> list[Project]:
         )
         claimed_dirs.add(rel)
 
-    projects.extend(_detect_python_projects(root, claimed_dirs))
-    projects.extend(_detect_java_projects(root, claimed_dirs))
-    projects.extend(_detect_go_projects(root, claimed_dirs))
-    projects.extend(_detect_ruby_projects(root, claimed_dirs))
-    projects.extend(_detect_php_projects(root, claimed_dirs))
-    projects.extend(_detect_csharp_projects(root, claimed_dirs))
+    # A package.json alongside a backend manifest is usually an asset-pipeline
+    # sidecar (Rails + jsbundling, Django + vite, Spring + npm), not a reason to
+    # drop the backend. Each manifest gets its own project so every language is
+    # routed to the toolchain that can actually analyse it.
+    projects.extend(_detect_python_projects(root))
+    projects.extend(_detect_java_projects(root))
+    projects.extend(_detect_go_projects(root))
+    projects.extend(_detect_ruby_projects(root))
+    projects.extend(_detect_php_projects(root))
+    projects.extend(_detect_csharp_projects(root))
+    # YAML stays claim-aware: CI/k8s manifests beside a package.json describe the
+    # same project's plumbing, not a second codebase.
     projects.extend(_detect_yaml_projects(root, claimed_dirs))
 
     if not projects:
