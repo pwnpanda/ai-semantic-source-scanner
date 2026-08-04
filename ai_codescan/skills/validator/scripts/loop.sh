@@ -8,20 +8,37 @@ SKILL_DIR="${AI_CODESCAN_SKILL_DIR:?missing AI_CODESCAN_SKILL_DIR}"
 LLM_CMD="${AI_CODESCAN_LLM_CMD:-}"
 PROMPT="$SKILL_DIR/prompts/validator.md"
 FINDINGS_DIR="$RUN_DIR/findings"
-SOURCE_ROOT="$RUN_DIR/../source"
+SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:-$RUN_DIR/../../source}"
 REPO_MD="$RUN_DIR/inputs/repo.md"
 
 [[ -d "$FINDINGS_DIR" ]] || { echo "no $FINDINGS_DIR" >&2; exit 1; }
 mkdir -p "$RUN_DIR/sandbox" "$RUN_DIR/.done-validate"
 
 invoke_llm() {
-  if [[ -n "$LLM_CMD" ]]; then
-    "$LLM_CMD"
-  else
-    local p
-    p="$(cat -)"
-    claude -p "$p"
-  fi
+  # Rate limits surface as a non-zero exit from the provider CLI. Callers
+  # treat that as a permanent per-item failure and move on, so a throttle
+  # part-way through a long queue silently burns every remaining item.
+  # Back off and retry instead; only a persistent failure is fatal.
+  #
+  # stdin is consumed by the first attempt, so buffer the prompt to replay it.
+  local prompt_file attempt delay rc
+  prompt_file="$(mktemp)"
+  cat - > "$prompt_file"
+  delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
+  rc=1
+  for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
+    if [[ -n "$LLM_CMD" ]]; then
+      "$LLM_CMD" < "$prompt_file" && rc=0
+    else
+      claude -p "$(cat "$prompt_file")" && rc=0
+    fi
+    [[ "$rc" -eq 0 ]] && break
+    printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+  done
+  rm -f "$prompt_file"
+  return "$rc"
 }
 
 render_prompt() {
@@ -87,7 +104,7 @@ print(out_path)
 PY
 }
 
-HINTS_PATH="${AI_CODESCAN_HINTS_PATH:-}"
+HINTS_DIR="${AI_CODESCAN_HINTS_DIR:-$RUN_DIR/validation_hints}"
 TARGET_LANG="${AI_CODESCAN_TARGET_LANG:-}"
 
 # Count only findings still ``unverified`` — everything else is skipped.
@@ -118,13 +135,14 @@ for finding in "$FINDINGS_DIR"/*.md; do
 
   nom_id="${finding_id#F-}"
   slice_file="$RUN_DIR/slices/N-${nom_id}.json"
+  hints_path="$HINTS_DIR/${finding_id}.md"
   poc_dir="$RUN_DIR/sandbox/${finding_id}"
   mkdir -p "$poc_dir"
 
   printf '[validate] %d/%d %s … ' "$idx" "$total" "$finding_id" >&2
   iter_log="$RUN_DIR/.done-validate/${finding_id}.stdout"
   start_ts=$(date +%s)
-  if ! render_prompt "$finding" "$slice_file" "$HINTS_PATH" "$TARGET_LANG" \
+  if ! render_prompt "$finding" "$slice_file" "$hints_path" "$TARGET_LANG" \
        | invoke_llm > "$iter_log"; then
     echo "FAIL (llm error)" >&2
     continue

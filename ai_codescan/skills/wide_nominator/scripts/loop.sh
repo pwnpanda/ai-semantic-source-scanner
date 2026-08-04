@@ -21,6 +21,7 @@ NOMS="$RUN_DIR/nominations.md"
 PROMPT="$SKILL_DIR/prompts/nominator.md"
 REPO_MD="$RUN_DIR/inputs/repo.md"
 ENTRY_MD="$RUN_DIR/inputs/entrypoints.md"
+SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:-$RUN_DIR/../../source}"
 
 if [[ ! -f "$NOMS" ]]; then
   cat > "$NOMS" <<'EOF'
@@ -41,13 +42,30 @@ if [[ ! -f "$QUEUE" ]]; then
 fi
 
 invoke_llm() {
-  if [[ -n "$LLM_CMD" ]]; then
-    "$LLM_CMD"
-  else
-    local prompt
-    prompt="$(cat -)"
-    claude -p "$prompt"
-  fi
+  # Rate limits surface as a non-zero exit from the provider CLI. Callers
+  # treat that as a permanent per-item failure and move on, so a throttle
+  # part-way through a long queue silently burns every remaining item.
+  # Back off and retry instead; only a persistent failure is fatal.
+  #
+  # stdin is consumed by the first attempt, so buffer the prompt to replay it.
+  local prompt_file attempt delay rc
+  prompt_file="$(mktemp)"
+  cat - > "$prompt_file"
+  delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
+  rc=1
+  for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
+    if [[ -n "$LLM_CMD" ]]; then
+      "$LLM_CMD" < "$prompt_file" && rc=0
+    else
+      claude -p "$(cat "$prompt_file")" && rc=0
+    fi
+    [[ "$rc" -eq 0 ]] && break
+    printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+  done
+  rm -f "$prompt_file"
+  return "$rc"
 }
 
 render_prompt() {
@@ -59,7 +77,7 @@ render_prompt() {
   printf 'Reference paths (for Read/Grep — do not write):\n\n'
   printf -- '- Repo overview: `%s`\n' "$REPO_MD"
   printf -- '- Entrypoints: `%s`\n' "$ENTRY_MD"
-  printf -- '- Source snapshot root: `%s/inputs/source/`\n\n' "$RUN_DIR"
+  printf -- '- Source snapshot root: `%s`\n\n' "$SOURCE_ROOT"
   if [[ -f "$REPO_MD" ]]; then
     printf '## Embedded `repo.md`\n\n```markdown\n'
     cat "$REPO_MD"
@@ -103,6 +121,21 @@ hm = header_re.search(contents)
 if not hm:
     print(f"no Stream {stream} header in {noms_path}", file=sys.stderr)
     sys.exit(3)
+
+# Each iteration is a fresh LLM call that cannot see the nominations file,
+# so every block comes back numbered from the model's own guess — usually
+# N-001. Downstream stages key on the nomination id, so duplicates collapse
+# distinct candidates into one and silently drop the rest. The id is ours to
+# assign: renumber to the next free slot at ingest time.
+_ID_RE = re.compile(r"^- \[[ xX]\]\s*N-(\d+)", re.MULTILINE)
+used = [int(n) for n in _ID_RE.findall(contents)]
+next_id = max(used, default=0) + 1
+body, renumbered = _ID_RE.subn(
+    lambda _m: f"- [ ] N-{next_id:03d}", body, count=1
+)
+if not renumbered:
+    print("nomination block has no '- [ ] N-NNN' line", file=sys.stderr)
+    sys.exit(4)
 
 # Insert the body immediately after the header line + blank line.
 insert_at = contents.find("\n", hm.end()) + 1
