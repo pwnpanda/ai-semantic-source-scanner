@@ -22,6 +22,7 @@ and the hybrid engine continues without it. Install with::
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -128,6 +129,13 @@ def _run_query_script(cpg_path: Path, *, cache_dir: Path, project_id: str, langu
 
     The script reads ``language`` to pick language-appropriate source/sink
     patterns; flow shape and JSON keys are language-independent.
+
+    Phase 5: when the repo cache contains a valid Joern extension JSON
+    (``aics-joern-extension-packs.json``), the path is forwarded via the
+    ``AICS_JOERN_EXTENSIONS`` env var. The Joern script reads it at startup
+    and merges the extra sink entries into the per-language sinkClasses
+    list. Missing or malformed file → env var is just not set; Joern skips
+    the merge.
     """
     out_dir = cache_dir / "joern"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -135,6 +143,17 @@ def _run_query_script(cpg_path: Path, *, cache_dir: Path, project_id: str, langu
     if not QUERIES_SCRIPT.is_file():
         raise RuntimeError(f"missing Joern query script at {QUERIES_SCRIPT}")
     out_path.write_text("", encoding="utf-8")  # truncate stale output
+
+    env = os.environ.copy()
+    # Local-import to avoid a circular dep at module load: joern_extensions
+    # imports model_proposals which transitively imports nothing from joern,
+    # but keeping the import inside the function is defensive and free.
+    from ai_codescan.joern_extensions import validate_extension_path  # noqa: PLC0415
+
+    ext_path = cache_dir / "aics-joern-extension-packs.json"
+    resolved = validate_extension_path(ext_path)
+    if resolved is not None:
+        env["AICS_JOERN_EXTENSIONS"] = str(resolved)
 
     subprocess.run(  # noqa: S603 - argv-only, no shell
         [  # noqa: S607
@@ -151,6 +170,7 @@ def _run_query_script(cpg_path: Path, *, cache_dir: Path, project_id: str, langu
         check=True,
         capture_output=True,
         timeout=300,
+        env=env,
     )
     return out_path
 

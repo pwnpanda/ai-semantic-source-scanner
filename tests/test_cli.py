@@ -9,7 +9,9 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
+from ai_codescan import cli as cli_mod
 from ai_codescan.cli import app
+from ai_codescan.index.duckdb_schema import apply_schema
 
 runner = CliRunner()
 
@@ -42,6 +44,179 @@ def test_prep_help_shows_flags() -> None:
     out = _help_text(result.stdout)
     assert "--cache-dir" in out
     assert "--commit" in out
+
+
+def test_eval_help_shows_run_command() -> None:
+    result = runner.invoke(app, ["eval", "--help"])
+    assert result.exit_code == 0
+    out = _help_text(result.stdout)
+    assert "run" in out
+    assert "compare" in out
+
+
+def test_eval_compare_writes_outputs(tmp_path: Path) -> None:
+    ai = tmp_path / "ai.jsonl"
+    ghost = tmp_path / "ghost.jsonl"
+    out = tmp_path / "comparison"
+    ai.write_text(
+        '{"case_id":"case-1","status":"pass","matches":[],"false_positives":[]}\n',
+        encoding="utf-8",
+    )
+    ghost.write_text(
+        '{"case_id":"case-1","status":"miss","matches":[],"false_positives":[]}\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "eval",
+            "compare",
+            "--ai-results",
+            str(ai),
+            "--ghost-results",
+            str(ghost),
+            "--out",
+            str(out),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "ai-better=1" in result.stdout
+    assert (out / "comparison.jsonl").is_file()
+    assert (out / "comparison.md").is_file()
+
+
+def test_candidates_handles_empty_scores(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    repo = cache / "repo-1"
+    repo.mkdir(parents=True)
+    db = repo / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    conn.close()
+
+    result = runner.invoke(app, ["--cache-dir", str(cache), "candidates", "--repo-id", "repo-1"])
+    assert result.exit_code == 0
+    assert "no scored candidates" in result.stdout
+
+
+def test_candidates_supports_filters_and_all(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    repo = cache / "repo-1"
+    repo.mkdir(parents=True)
+    db = repo / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO candidate_scores
+          (
+            candidate_id, flow_id, stream, score, label, processing_bucket,
+            factors_json, scorer
+          )
+        VALUES
+          ('N-high', 'F1', 'A', 0.9, 'high', 'report', '[]', 'test'),
+          ('N-low', NULL, 'B', 0.3, 'low', 'explore', '[]', 'test')
+        """
+    )
+    conn.close()
+
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "candidates",
+            "--repo-id",
+            "repo-1",
+            "--all",
+            "--bucket",
+            "explore",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "N-low" in result.stdout
+    assert "N-high" not in result.stdout
+    assert "bucket" in result.stdout
+
+
+def test_miss_review_gracefully_skips_without_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    repo = cache / "repo-1"
+    repo.mkdir(parents=True)
+    (repo / "miss_candidates.jsonl").write_text(
+        '{"id":"B-miss-0001","score":0.5}\n',
+        encoding="utf-8",
+    )
+    # miss-review needs a "latest run" dir to host model_proposals/findings —
+    # see ai_codescan/miss_review.run_miss_review (Gemini 2026-05-15 wiring).
+    (repo / "runs" / "test-run").mkdir(parents=True)
+    monkeypatch.setenv("PATH", "/nonexistent")
+
+    result = runner.invoke(app, ["--cache-dir", str(cache), "miss-review", "--repo-id", "repo-1"])
+
+    assert result.exit_code == 0
+    assert "LLM unavailable" in result.stdout
+    assert (repo / "miss_review_queue.jsonl").is_file()
+
+
+def test_analyze_auto_invokes_miss_review_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 8: `analyze` runs miss-finder + miss-review at the end by
+    default. With PATH cleared the LLM is unavailable, so miss-review
+    stages the queue and skips — still printed in output."""
+    monkeypatch.setenv("PATH", "/nonexistent")
+    cache = tmp_path / "cache"
+    repo = cache / "repo-1"
+    repo.mkdir(parents=True)
+    db_path = repo / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    conn.close()
+    run_dir = repo / "runs" / "test-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "nominations.md").write_text("# Nominations\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "analyze", "--repo-id", "repo-1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[miss-review]" in result.output
+    # Miss-finder auto-ran → miss_candidates.jsonl exists
+    assert (repo / "miss_candidates.jsonl").is_file()
+
+
+def test_analyze_skip_miss_review_flag_skips_auto_invoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`analyze --skip-miss-review` keeps the legacy two-step workflow."""
+    monkeypatch.setenv("PATH", "/nonexistent")
+    cache = tmp_path / "cache"
+    repo = cache / "repo-1"
+    repo.mkdir(parents=True)
+    db_path = repo / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    conn.close()
+    run_dir = repo / "runs" / "test-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "nominations.md").write_text("# Nominations\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "analyze", "--repo-id", "repo-1", "--skip-miss-review"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[miss-review]" not in result.output
+    assert not (repo / "miss_candidates.jsonl").is_file()
 
 
 def test_cache_list_handles_missing_root(tmp_path: Path) -> None:
@@ -398,6 +573,11 @@ def test_analyze_help_advertises_llm_flags() -> None:
     out = _help_text(result.stdout)
     assert "--llm-provider" in out
     assert "--llm-model" in out
+    assert "--max-candidates" in out
+    assert "--max-llm-candidates" in out
+    assert "--max-bundle-bytes" in out
+    assert "--min-score" in out
+    assert "--deterministic-only" in out
 
 
 def test_gate_2_help_advertises_yes() -> None:
@@ -596,3 +776,80 @@ def test_taint_schema_init_preserves_existing(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "already exists" in result.stdout
     assert custom.read_text() == "custom: true\n"
+
+
+def test_scan_skip_hitl_runs_stages_in_order(tmp_path: Path, monkeypatch) -> None:
+    """`scan --skip-hitl` chains the pipeline subcommands in order, with the
+    gate stages auto-accepting via --yes (fully unattended)."""
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(cmd, **_kw):
+        calls.append(list(cmd))
+        return _Result()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(tmp_path), "scan", str(tmp_path / "src"), "--skip-hitl"],
+    )
+    assert result.exit_code == 0
+    # The subcommand of each staged call, in order.
+    stages = [c[c.index("--cache-dir") + 2] for c in calls]
+    assert stages == [
+        "prep",
+        "nominate",
+        "gate-1",
+        "analyze",
+        "gate-2",
+        "taint-schema",  # Phase 17: storage_taint fixpoint -> stored XSS
+        "validate",
+        "gate-3",
+        "report",
+    ]
+    # Gates auto-accept under --skip-hitl.
+    assert calls[2][-2:] == ["gate-1", "--yes"]
+    assert calls[4][-2:] == ["gate-2", "--yes"]
+    assert calls[7][-2:] == ["gate-3", "--yes"]
+    # The report stage emits HTML.
+    assert "--html" in calls[8]
+
+
+def test_scan_aborts_when_a_fatal_stage_fails(tmp_path: Path, monkeypatch) -> None:
+    """A non-zero exit from a fatal stage (prep) stops the pipeline."""
+    calls: list[str] = []
+
+    class _Fail:
+        returncode = 1
+
+    def _fake_run(cmd, **_kw):
+        calls.append(cmd[cmd.index("--cache-dir") + 2])
+        return _Fail()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+    result = runner.invoke(app, ["--cache-dir", str(tmp_path), "scan", ".", "--skip-hitl"])
+    assert result.exit_code == 1
+    # prep failed -> pipeline stops, nominate never runs.
+    assert calls == ["prep"]
+
+
+def test_scan_validate_failure_is_non_fatal(tmp_path: Path, monkeypatch) -> None:
+    """A host without Docker fails `validate`, but the scan still completes
+    through to the report stage."""
+    stages: list[str] = []
+
+    def _fake_run(cmd, **_kw):
+        stage = cmd[cmd.index("--cache-dir") + 2]
+        stages.append(stage)
+
+        class _R:
+            returncode = 1 if stage == "validate" else 0
+
+        return _R()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
+    result = runner.invoke(app, ["--cache-dir", str(tmp_path), "scan", ".", "--skip-hitl"])
+    assert result.exit_code == 0
+    assert "report" in stages  # reached the end despite validate failing

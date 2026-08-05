@@ -164,3 +164,6 @@ def test_joern_runs_against_tiny_aspnet_csharp(tmp_path: Path, fixtures_dir: Pat
     assert any(f.get("cwe") == "CWE-89" and f.get("sink_name") == "ExecuteReader" for f in flows), (
         f"expected CWE-89 flow with sink_name=ExecuteReader in {flows!r}"
     )
+    assert not any(f.get("cwe") == "CWE-22" and f.get("sink_name") == "Open" for f in flows), (
+        f"unexpected C# co-location fallback false positive in {flows!r}"
+    )

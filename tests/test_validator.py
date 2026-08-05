@@ -82,6 +82,47 @@ def test_run_validator_writes_log_when_no_pocs(
     assert f.status == "unverified"
 
 
+def test_run_validator_passes_per_finding_hints_dir_and_source_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "source").mkdir(parents=True)
+    state = load_or_create(repo_dir, engine="codeql", temperature=0.0, target_bug_classes=[])
+    findings_dir = state.run_dir / "findings"
+    findings_dir.mkdir()
+    (findings_dir / "F-001.md").write_text(
+        render_finding(
+            Finding(
+                finding_id="F-001",
+                nomination_id="N-001",
+                flow_id="F1",
+                cwe="CWE-89",
+                status="unverified",
+                title="t",
+                body="b",
+            )
+        ),
+        encoding="utf-8",
+    )
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured_env.update({str(k): str(v) for k, v in env.items()})
+        return subprocess.CompletedProcess(args=[], returncode=0)
+
+    monkeypatch.setattr("ai_codescan.validator.is_available", lambda _provider: True)
+    monkeypatch.setattr("ai_codescan.validator.subprocess.run", fake_run)
+
+    run_validator(state, repo_dir=repo_dir)
+
+    hints_path = state.run_dir / "validation_hints" / "F-001.md"
+    assert captured_env["AI_CODESCAN_HINTS_DIR"] == str(state.run_dir / "validation_hints")
+    assert captured_env["AI_CODESCAN_SOURCE_ROOT"] == str(repo_dir / "source")
+    assert hints_path.is_file()
+
+
 def test_parse_verdict_extracts_json_block() -> None:
 
     stdout = (

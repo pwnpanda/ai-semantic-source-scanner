@@ -1,11 +1,13 @@
 """Tests for ai_codescan.snapshot."""
 
+import shutil
+import stat
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from ai_codescan.snapshot import SnapshotResult, take_snapshot
+from ai_codescan.snapshot import SnapshotResult, force_remove, take_snapshot
 
 
 def _init_git_repo(repo: Path) -> str:
@@ -127,3 +129,26 @@ def test_snapshot_cp_idempotent_when_manifest_matches(tmp_path: Path) -> None:
 
     assert first.skipped is False
     assert second.skipped is True
+
+
+def test_force_remove_clears_a_read_only_snapshot_tree(tmp_path: Path) -> None:
+    """``cache rm`` must delete a snapshot, which is deliberately read-only.
+
+    The previous hook always called ``unlink``, which raises
+    ``IsADirectoryError`` on a directory, and never granted write on the
+    *parent* — so removal failed outright on any real snapshot.
+    """
+    root = tmp_path / "cached-repo"
+    nested = root / "source" / "storage" / "deep"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("data", encoding="utf-8")
+    (root / "source" / "top.txt").write_text("data", encoding="utf-8")
+
+    # Mirror take_snapshot: strip write bits from every entry, deepest first.
+    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        path.chmod(path.stat().st_mode & ~stat.S_IWUSR)
+    root.chmod(root.stat().st_mode & ~stat.S_IWUSR)
+
+    shutil.rmtree(root, onexc=force_remove)
+
+    assert not root.exists()

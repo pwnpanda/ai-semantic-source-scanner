@@ -417,6 +417,23 @@ def _classify_callee(callee: str, file: str) -> EntrypointKind | None:  # noqa: 
     return _classify_callee_js(callee)
 
 
+def _compact_arg_text(value: Any, *, max_chars: int = 120) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+def _entrypoint_signature(callee: str, record: dict[str, Any], kind: EntrypointKind) -> str:
+    if kind != "http_route":
+        return callee
+    first_arg = _compact_arg_text(record.get("firstArgText"))
+    return f"{callee} {first_arg}" if first_arg else callee
+
+
 # --- File-path conventions --------------------------------------------------
 
 # Next.js Pages Router: ``pages/api/*.{js,ts,tsx}`` are HTTP handlers.
@@ -500,7 +517,7 @@ def detect_entrypoints(
             Entrypoint(
                 symbol_id=x.get("callerSyntheticId"),
                 kind=kind,
-                signature=callee,
+                signature=_entrypoint_signature(callee, x, kind),
                 file=file,
                 line=line,
             )

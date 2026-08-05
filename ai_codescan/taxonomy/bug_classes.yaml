@@ -139,6 +139,12 @@ mass-assignment:
   codeql_tags: [security/cwe/cwe-915]
   group: authz
 
+sensitive-logging:
+  aliases: [sensitive-log, secret-logging]
+  cwes: [CWE-532]
+  codeql_tags: [security/cwe/cwe-532]
+  group: info-disclosure
+
 open-redirect:
   cwes: [CWE-601]
   codeql_tags: [security/cwe/cwe-601]

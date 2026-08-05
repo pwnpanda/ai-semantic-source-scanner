@@ -1,0 +1,717 @@
+default_engine: hybrid
+cases:
+  - id: aspnet-minimal-sqli
+    target: aspnet-minimal-sqli
+    language: csharp
+    engine: hybrid
+    expected_findings:
+      - id: ASPNET-MINIMAL-SQLI-001
+        cwe: CWE-89
+        file: Program.cs
+        source_line: 15
+        sink_line: 19
+        source_contains: id
+        sink_contains: ExecuteReader
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: aspnet-parameterized-sqli
+    target: aspnet-parameterized-sqli
+    language: csharp
+    engine: hybrid
+    expected_findings: []
+    allowed_false_positives: []
+  - id: aspnet-path-contained
+    target: aspnet-path-contained
+    language: csharp
+    engine: hybrid
+    expected_findings: []
+    # CWE-22 fs.read is intentionally emitted by Joern under Invariant 2
+    # (mitigations DEMOTE, never suppress). The path-canonical-root-containment
+    # mitigation downgrades the candidate score, but the flow stays visible so
+    # reviewers can validate the containment is actually safe.
+    allowed_false_positives:
+      - cwe: CWE-22
+        file: Program.cs
+  - id: express-authz-missing
+    target: express-authz-missing
+    language: javascript
+    engine: hybrid-miss
+    expected_findings:
+      - id: EXPRESS-AUTHZ-BOLA-001
+        cwe: CWE-639
+        file: server.js
+        source_line: 13
+        sink_line: 13
+        source_contains: app.delete
+        sink_contains: resource identifier
+        line_tolerance: 0
+      - id: EXPRESS-AUTHZ-BFLA-001
+        cwe: CWE-862
+        file: server.js
+        source_line: 13
+        sink_line: 13
+        source_contains: app.delete
+        sink_contains: privileged
+        line_tolerance: 0
+      - id: EXPRESS-AUTHN-MISSING-001
+        cwe: CWE-287
+        file: server.js
+        source_line: 13
+        sink_line: 13
+        source_contains: app.delete
+        sink_contains: state-changing
+        line_tolerance: 0
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-authz-guarded
+    target: express-authz-guarded
+    language: javascript
+    engine: hybrid-miss
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-cmdi
+    target: express-cmdi
+    language: javascript
+    engine: hybrid
+    expected_findings:
+      - id: EXPRESS-CMDI-001
+        cwe: CWE-78
+        file: server.js
+        source_line: 8
+        sink_line: 9
+        source_contains: req.query.cmd
+        sink_contains: exec
+        line_tolerance: 1
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-cmdi-safe
+    target: express-cmdi-safe
+    language: javascript
+    engine: hybrid
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-xss
+    target: express-xss
+    language: javascript
+    engine: hybrid
+    expected_findings:
+      - id: EXPRESS-XSS-001
+        cwe: CWE-79
+        file: server.js
+        source_line: 7
+        sink_line: 8
+        source_contains: req.query.name
+        sink_contains: send
+        line_tolerance: 1
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-xss-safe
+    target: express-xss-safe
+    language: javascript
+    engine: hybrid
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-ssrf
+    target: express-ssrf
+    language: javascript
+    engine: hybrid
+    expected_findings:
+      - id: EXPRESS-SSRF-001
+        cwe: CWE-918
+        file: server.js
+        source_line: 7
+        sink_line: 8
+        source_contains: req.query.url
+        sink_contains: fetch
+        line_tolerance: 1
+    # CWE-352 CSRF middleware is intentionally missing on this SSRF-focused
+    # fixture (precedent: §10).
+    # CWE-79 is allowed because the existing engine emitted a co-location
+    # XSS finding via `res.send(response body)`. After §8 (co-location
+    # tagged + downscored) and §1 (no size gate), the co-location candidate
+    # is visible but should score low; allowing it here keeps eval focused
+    # on SSRF without re-litigating the broader XSS sink question.
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+      - cwe: CWE-79
+        file: server.js
+  - id: express-ssrf-safe
+    target: express-ssrf-safe
+    language: javascript
+    engine: hybrid
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-ssrf-axios
+    target: express-ssrf-axios
+    language: javascript
+    engine: hybrid
+    # Positive eval target for §7 broadened SSRF sink pattern: axios.get
+    # with attacker-controlled URL.
+    expected_findings:
+      - id: EXPRESS-SSRF-AXIOS-001
+        cwe: CWE-918
+        file: server.js
+        source_line: 9
+        sink_line: 10
+        source_contains: req.query
+        sink_contains: get
+        line_tolerance: 1
+    # CWE-79 allow follows the express-ssrf precedent: Joern traces the
+    # response body to res.send and emits a dataflow CWE-79 candidate.
+    # This fixture is SSRF-focused; the XSS-shape candidate is acceptable
+    # and stays visible under Invariant 1.
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+      - cwe: CWE-79
+        file: server.js
+  - id: express-ssrf-allowlist
+    target: express-ssrf-allowlist
+    language: javascript
+    engine: hybrid
+    # Negative eval target for §7: SSRF sink fires but ssrf.host-allowlist
+    # mitigation should demote candidate score. Flow is visible (Invariant 2).
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+      - cwe: CWE-918
+        file: server.js
+      - cwe: CWE-79
+        file: server.js
+  - id: express-mass-assignment
+    target: express-mass-assignment
+    language: javascript
+    engine: hybrid
+    expected_findings:
+      - id: EXPRESS-MASS-ASSIGNMENT-001
+        cwe: CWE-915
+        file: server.js
+        source_line: 9
+        sink_line: 10
+        source_contains: req.body
+        sink_contains: update
+        line_tolerance: 1
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-mass-assignment-safe
+    target: express-mass-assignment-safe
+    language: javascript
+    engine: hybrid
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-sensitive-logging
+    target: express-sensitive-logging
+    language: javascript
+    engine: hybrid
+    expected_findings:
+      - id: EXPRESS-SENSITIVE-LOGGING-001
+        cwe: CWE-532
+        file: server.js
+        source_line: 7
+        sink_line: 8
+        source_contains: req.headers.authorization
+        sink_contains: error
+        line_tolerance: 1
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-sensitive-logging-safe
+    target: express-sensitive-logging-safe
+    language: javascript
+    engine: hybrid
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-sensitive-logging-redacted
+    target: express-sensitive-logging-redacted
+    language: javascript
+    engine: hybrid
+    # Negative eval target for §7: logging sinks fire but log.redaction
+    # mitigation should demote candidate score. Flow is visible (Invariant 2).
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+      - cwe: CWE-532
+        file: server.js
+  - id: python-flask-sqli
+    target: python-flask-sqli
+    language: python
+    engine: hybrid
+    expected_findings:
+      - id: PYTHON-FLASK-SQLI-001
+        cwe: CWE-89
+        file: server.py
+        source_line: 8
+        sink_line: 14
+        # Joern Python frontend emits the field-access level ("request.args"),
+        # not the property path. Same shape as the JS axios target.
+        source_contains: request.args
+        sink_contains: execute
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: python-flask-sqli-safe
+    target: python-flask-sqli-safe
+    language: python
+    engine: hybrid
+    # Parameterized `cursor.execute(query, (user_id,))` is the canonical safe
+    # Python form. Joern still sees the dataflow, but the `sqli.python-
+    # parameterized-execute` mitigation in scoring demotes the candidate.
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-89
+        file: server.py
+  - id: python-flask-ssrf
+    target: python-flask-ssrf
+    language: python
+    engine: hybrid
+    expected_findings:
+      - id: PYTHON-FLASK-SSRF-001
+        cwe: CWE-918
+        file: server.py
+        source_line: 8
+        sink_line: 10
+        source_contains: request.args
+        sink_contains: get
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: python-flask-ssrf-allowlist
+    target: python-flask-ssrf-allowlist
+    language: python
+    engine: hybrid
+    # Negative eval target for the Python SSRF sink expansion (Phase 2,
+    # Invariant 5). `requests.get` sink fires; `ssrf.host-allowlist`
+    # mitigation in scoring demotes the candidate. Flow stays visible
+    # (Invariant 2).
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-918
+        file: server.py
+  - id: python-flask-ssrf-aliased
+    target: python-flask-ssrf-aliased
+    language: python
+    engine: hybrid
+    # Phase 3 positive eval target for the type-aware SSRF receiver
+    # AST walk: http_client = httpx.Client(); http_client.get(url) must
+    # be flagged as CWE-918 even though `http_client` is not a literal
+    # module name in `pythonSsrfReceiver`. The pre-walk in
+    # `joern_queries.sc` collects `http_client` from the constructor
+    # assignment and accepts it as a valid SSRF receiver.
+    expected_findings:
+      - id: PYTHON-FLASK-SSRF-ALIASED-001
+        cwe: CWE-918
+        file: server.py
+        source_line: 22
+        sink_line: 22
+        source_contains: request.args
+        sink_contains: get
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: python-flask-ssrf-custom-client
+    target: python-flask-ssrf-custom-client
+    language: python
+    engine: hybrid
+    # Phase 5 end-to-end proof: `apiv2_fetch` is registered as a CWE-918
+    # sink via the joern_extensions manifest field below (Phase 5.1; was
+    # a sidecar JSON shipped in the target dir before the cleanup). The
+    # eval harness writes the entries into the repo cache before Joern
+    # runs, so Joern picks up the extra sink at scan time and fires the
+    # SSRF flow. Without it, this target would miss.
+    expected_findings:
+      - id: PYTHON-FLASK-SSRF-CUSTOM-CLIENT-001
+        cwe: CWE-918
+        file: server.py
+        source_line: 23
+        sink_line: 25
+        source_contains: request.args
+        sink_contains: apiv2_fetch
+        line_tolerance: 2
+    allowed_false_positives:
+      - cwe: CWE-918
+        file: server.py
+        sink_contains: urlopen
+    joern_extensions:
+      - language: python
+        cwe: CWE-918
+        sink_class: ssrf
+        pattern: "(?i)^(apiv2_fetch)$"
+        proposal_id: eval-fixture-apiv2-fetch
+        rationale: "Custom HTTP-client wrapper; demonstrates Phase 5 Joern model patching via manifest field (Phase 5.1)."
+  - id: python-flask-ssrf-transitive
+    target: python-flask-ssrf-transitive
+    language: python
+    engine: hybrid
+    # Phase 4 positive eval target: transitive aliasing
+    #   client = httpx.Client()
+    #   api    = client
+    #   api.get(url)
+    # The typeFullName scan + fixed-point alias resolution in
+    # `joern_queries.sc` must collect both `client` and `api` so the
+    # SSRF sink fires.
+    expected_findings:
+      - id: PYTHON-FLASK-SSRF-TRANSITIVE-001
+        cwe: CWE-918
+        file: server.py
+        source_line: 23
+        sink_line: 23
+        source_contains: request.args
+        sink_contains: get
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: python-flask-xss
+    target: python-flask-xss
+    language: python
+    engine: hybrid
+    # render_template_string(user_input) is BOTH reflected XSS (the rendered
+    # output is unescaped) AND server-side template injection (the template
+    # body itself is attacker-controlled — Jinja2 RCE on a stock Flask app).
+    # Phase 18 added the CWE-1336 sink so both flows fire; the manifest now
+    # pins both.
+    expected_findings:
+      - id: PYTHON-FLASK-XSS-001
+        cwe: CWE-79
+        file: server.py
+        source_line: 7
+        sink_line: 10
+        source_contains: request.args
+        sink_contains: render_template_string
+        line_tolerance: 1
+      - id: PYTHON-FLASK-SSTI-001
+        cwe: CWE-1336
+        file: server.py
+        source_line: 7
+        sink_line: 10
+        source_contains: request.args
+        sink_contains: render_template_string
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: python-flask-authz-missing
+    target: python-flask-authz-missing
+    language: python
+    engine: hybrid-miss
+    # Flask handler with @app.route("/resource/<id>", methods=["DELETE"]) is a
+    # privileged state-changing operation on a resource — miss-finder fires
+    # BOLA (resource id without authz), BFLA (privileged route without authz),
+    # and missing-authn (state-changing without authn). All three are
+    # legitimate concerns; the prior manifest expected only BOLA + authn,
+    # missing the BFLA expected entry.
+    expected_findings:
+      - id: PYTHON-FLASK-AUTHZ-BOLA-001
+        cwe: CWE-639
+        file: server.py
+        source_line: 11
+        sink_line: 11
+        source_contains: "app.route"
+        sink_contains: resource identifier
+        line_tolerance: 0
+      - id: PYTHON-FLASK-AUTHZ-BFLA-001
+        cwe: CWE-862
+        file: server.py
+        source_line: 11
+        sink_line: 11
+        source_contains: "app.route"
+        sink_contains: privileged
+        line_tolerance: 0
+      - id: PYTHON-FLASK-AUTHN-MISSING-001
+        cwe: CWE-287
+        file: server.py
+        source_line: 11
+        sink_line: 11
+        source_contains: "app.route"
+        sink_contains: state-changing
+        line_tolerance: 0
+    allowed_false_positives: []
+  - id: java-spring-sqli
+    target: java-spring-sqli
+    language: java
+    engine: hybrid
+    expected_findings:
+      - id: JAVA-SPRING-SQLI-001
+        cwe: CWE-89
+        file: UserController.java
+        source_line: 18
+        sink_line: 20
+        source_contains: id
+        sink_contains: queryForObject
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: java-spring-ssrf
+    target: java-spring-ssrf
+    language: java
+    engine: hybrid
+    expected_findings:
+      - id: JAVA-SPRING-SSRF-001
+        cwe: CWE-918
+        file: ProxyController.java
+        source_line: 14
+        sink_line: 16
+        source_contains: url
+        sink_contains: getForObject
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: java-spring-xss
+    target: java-spring-xss
+    language: java
+    engine: hybrid
+    expected_findings:
+      - id: JAVA-SPRING-XSS-001
+        cwe: CWE-79
+        file: EchoController.java
+        source_line: 15
+        sink_line: 20
+        source_contains: message
+        sink_contains: println
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: java-spring-authz-missing
+    target: java-spring-authz-missing
+    language: java
+    engine: hybrid-miss
+    expected_findings:
+      - id: JAVA-SPRING-AUTHZ-BOLA-001
+        cwe: CWE-639
+        file: AdminController.java
+        source_line: 15
+        sink_line: 15
+        source_contains: DeleteMapping
+        sink_contains: resource identifier
+        line_tolerance: 1
+      - id: JAVA-SPRING-AUTHZ-BFLA-001
+        cwe: CWE-862
+        file: AdminController.java
+        source_line: 15
+        sink_line: 15
+        source_contains: DeleteMapping
+        sink_contains: privileged
+        line_tolerance: 1
+      - id: JAVA-SPRING-AUTHN-MISSING-001
+        cwe: CWE-287
+        file: AdminController.java
+        source_line: 15
+        sink_line: 15
+        source_contains: DeleteMapping
+        sink_contains: state-changing
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: go-net-ssrf
+    target: go-net-ssrf
+    language: go
+    engine: hybrid
+    # Built-in Go SSRF sinks deliberately omit bare `Get` (over-matches
+    # map.Get etc.). This target's `http.Get` is added via the Phase 5
+    # joern_extensions mechanism — proves Joern model patching works for
+    # Go as well as Python.
+    expected_findings:
+      - id: GO-NET-SSRF-001
+        cwe: CWE-918
+        file: main.go
+        source_line: 15
+        sink_line: 16
+        source_contains: r.URL.Query
+        sink_contains: Get
+        line_tolerance: 2
+    allowed_false_positives: []
+    joern_extensions:
+      - language: go
+        cwe: CWE-918
+        sink_class: ssrf
+        pattern: "(?i)\\bGet$"
+        receiver_regex: "(?i)\\bhttp\\.Get\\b"
+        proposal_id: eval-fixture-go-http-get
+        rationale: "Go net/http.Get is the canonical SSRF sink; bare `Get` is over-broad without the http. receiver filter."
+  - id: php-mysqli-sqli
+    target: php-mysqli-sqli
+    language: php
+    engine: hybrid
+    # Phase 12: PHP coverage via Joern's php2cpg frontend. php2cpg shells
+    # out to PHP-Parser, so the eval host needs `php` on PATH; when it's
+    # missing the Joern build fails and the case skips. Sink: mysqli::query.
+    expected_findings:
+      - id: PHP-MYSQLI-SQLI-001
+        cwe: CWE-89
+        file: index.php
+        source_line: 8
+        sink_line: 10
+        source_contains: $_GET
+        sink_contains: query
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: ruby-sinatra-sqli
+    target: ruby-sinatra-sqli
+    language: ruby
+    engine: hybrid
+    # Phase 12: Ruby coverage via Joern's rubysrc2cpg frontend (beta — see
+    # `_JOERN_LANGUAGE_FLAG` comment in engines/joern.py). Source: params.
+    # Sink: db.execute with string-interpolated SQL.
+    expected_findings:
+      - id: RUBY-SINATRA-SQLI-001
+        cwe: CWE-89
+        file: app.rb
+        source_line: 11
+        sink_line: 12
+        source_contains: params
+        sink_contains: execute
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: java-spring-sqli-custom-jdbc
+    target: java-spring-sqli-custom-jdbc
+    language: java
+    engine: hybrid
+    # Phase 11: target with a custom JdbcTemplate wrapper. The wrapper's
+    # `runSelect` method is the LLM-proposed CodeQL extension shape (no
+    # stock CodeQL model). Joern still catches it via the stock `queryForObject`
+    # pattern at the delegate call inside the wrapper, so this case is also
+    # a coverage positive. Used as documentation for the CodeQL extension
+    # flow; full end-to-end CodeQL verification needs `codeql` on PATH and
+    # is gated on the user's local toolchain.
+    #
+    # Phase 14: cross-file flow — source in UserController.java, sink in
+    # CustomJdbcWrapper.java. Uses the source_file / sink_file matcher fields
+    # so this scores as a full match instead of a partial.
+    expected_findings:
+      - id: JAVA-SPRING-SQLI-CUSTOM-JDBC-001
+        cwe: CWE-89
+        file: CustomJdbcWrapper.java
+        source_file: UserController.java
+        source_line: 17
+        sink_file: CustomJdbcWrapper.java
+        sink_line: 18
+        source_contains: id
+        sink_contains: queryForObject
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: kotlin-spring-sqli
+    target: kotlin-spring-sqli
+    language: kotlin
+    engine: hybrid
+    # Phase 12: Kotlin coverage via Joern's kotlin2cpg frontend. Reuses
+    # Spring's JdbcTemplate; same sink shape as java-spring-sqli but the
+    # Kotlin frontend builds a separate CPG.
+    expected_findings:
+      - id: KOTLIN-SPRING-SQLI-001
+        cwe: CWE-89
+        file: UserController.kt
+        source_line: 12
+        sink_line: 14
+        source_contains: id
+        sink_contains: queryForObject
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: dom-xss-innerhtml
+    target: dom-xss-innerhtml
+    language: javascript
+    engine: hybrid
+    # Phase 16 positive: location.hash flows into el.innerHTML — caught by
+    # the JS DOM property-assignment scan in joern_queries.sc.
+    expected_findings:
+      - id: DOM-XSS-INNERHTML-001
+        cwe: CWE-79
+        file: index.js
+        source_line: 7
+        sink_line: 9
+        source_contains: location.hash
+        sink_contains: innerHTML
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: dom-xss-textcontent-safe
+    target: dom-xss-textcontent-safe
+    language: javascript
+    engine: hybrid
+    # Phase 16 NEGATIVE (Recall-First Invariant 5): same source as the
+    # positive, rendered via textContent — must not flag.
+    expected_findings: []
+    allowed_false_positives: []
+  - id: dom-xss-eval
+    target: dom-xss-eval
+    language: javascript
+    engine: hybrid
+    # Phase 16 positive: location.search flows into eval() — caught by the
+    # JS CWE-94 code.exec sink pattern (?i)^eval$.
+    expected_findings:
+      - id: DOM-XSS-EVAL-001
+        cwe: CWE-94
+        file: index.js
+        source_line: 8
+        sink_line: 9
+        source_contains: location.search
+        sink_contains: eval
+        line_tolerance: 2
+    allowed_false_positives: []
+  - id: express-open-redirect
+    target: express-open-redirect
+    language: javascript
+    engine: hybrid
+    # Phase 18 positive: req.query.next -> res.redirect with no allowlist.
+    expected_findings:
+      - id: EXPRESS-OPEN-REDIRECT-001
+        cwe: CWE-601
+        file: server.js
+        source_line: 9
+        sink_line: 10
+        source_contains: req.query
+        sink_contains: redirect
+        line_tolerance: 2
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-open-redirect-safe
+    target: express-open-redirect-safe
+    language: javascript
+    engine: hybrid
+    # Phase 18 NEGATIVE (Recall-First Invariant 5): same source shape but
+    # gated by an allowlist. The CWE-601 candidate is allowed (visible —
+    # Invariant 2: mitigations demote not drop); reviewers verify.
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+      - cwe: CWE-601
+        file: server.js
+  - id: cspt-fetch-path
+    target: cspt-fetch-path
+    language: javascript
+    engine: hybrid
+    # Phase 19 positive — location.search lands in the PATH section of a
+    # fetch URL (before any `?`/`#`/`&`). The CSPT scan emits CWE-22 with
+    # sink_class=cspt; an additional CWE-918 SSRF flow may also fire on
+    # the same call (recall-first — both perspectives stay visible).
+    expected_findings:
+      - id: CSPT-FETCH-PATH-001
+        cwe: CWE-22
+        file: index.js
+        source_line: 8
+        sink_line: 9
+        source_contains: location.search
+        sink_contains: fetch
+        line_tolerance: 2
+    allowed_false_positives:
+      - cwe: CWE-918
+        file: index.js
+  - id: cspt-fetch-querystring-safe
+    target: cspt-fetch-querystring-safe
+    language: javascript
+    engine: hybrid
+    # Phase 19 NEGATIVE — user input lands AFTER `?` in the URL literal,
+    # so CSPT must not flag. An SSRF-shape flow may still appear and is
+    # allowed (Invariant 2: visibility preserved).
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-918
+        file: index.js

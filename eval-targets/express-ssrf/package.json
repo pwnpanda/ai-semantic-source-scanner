@@ -1,0 +1,7 @@
+{
+  "name": "express-ssrf",
+  "private": true,
+  "dependencies": {
+    "express": "4.18.2"
+  }
+}

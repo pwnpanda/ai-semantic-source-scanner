@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 
 import duckdb
 
 from ai_codescan.ast.runner import AstJob, run_jobs
+from ai_codescan.codeql_extensions import render_codeql_yaml_extensions
 from ai_codescan.config import compute_repo_id
 from ai_codescan.engines.codeql import build_database, run_queries
 from ai_codescan.entrypoints.detectors import Entrypoint, detect_entrypoints
@@ -315,6 +317,29 @@ def _codeql_language_for_project(project: Project) -> str | None:  # noqa: PLR09
     return None
 
 
+def _render_codeql_extension_packs(repo_dir: Path) -> list[Path]:
+    """Render the per-language CodeQL extension YAMLs from the JSON sidecar.
+
+    Phase 11: the model-proposal flow appends sinks to
+    ``<repo_dir>/aics-codeql-extension-packs.json`` (promoted) +
+    ``...staged.json`` (staged, NOT loaded at scan time). At scan time we
+    emit per-language YAML files into ``<repo_dir>/codeql/model-packs/<lang>/``
+    and return the language dirs so ``run_queries`` can pass them as
+    ``--model-packs``. Missing or empty sidecar → empty list.
+    """
+    promoted = repo_dir / "aics-codeql-extension-packs.json"
+    if not promoted.is_file():
+        return []
+    out_dir = repo_dir / "codeql" / "model-packs"
+    written = render_codeql_yaml_extensions(promoted, out_dir=out_dir)
+    if not written:
+        return []
+    # Each YAML lives at ``<out_dir>/<language>/extension.yml``; the language
+    # dir is what `--model-packs` expects.
+    lang_dirs = sorted({path.parent for path in written})
+    return list(lang_dirs)
+
+
 def _run_codeql_for_projects(
     snapshot_root: Path,
     projects: list[Project],
@@ -326,6 +351,7 @@ def _run_codeql_for_projects(
     if bug_classes:
         for c in bug_classes:
             tags.extend(c.codeql_tags)
+    extension_packs = _render_codeql_extension_packs(repo_dir) or None
     for project in projects:
         language = _codeql_language_for_project(project)
         if language is None:
@@ -338,12 +364,23 @@ def _run_codeql_for_projects(
                 project_id=project_id,
                 language=language,
             )
+            # Filter extension packs to those matching this project's language.
+            # ``run_queries`` will pass each as ``--model-packs <dir>``; passing
+            # a Java pack to a Python scan would either no-op or fail
+            # depending on CodeQL CLI version, so we pre-filter.
+            project_packs: list[Path] | None
+            if extension_packs:
+                project_packs = [p for p in extension_packs if p.name == language]
+                project_packs = project_packs or None
+            else:
+                project_packs = None
             result = run_queries(
                 db_path,
                 cache_dir=repo_dir,
                 project_id=project_id,
                 codeql_tags=tags,
                 language=language,
+                extension_packs=project_packs,
             )
             ingest_sarif(
                 conn,
@@ -352,7 +389,13 @@ def _run_codeql_for_projects(
                 snapshot_root=snapshot_root,
                 engine="codeql",
             )
-        except (RuntimeError, OSError) as exc:
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            # `database create --language=go` raises CalledProcessError when
+            # the Go toolchain isn't on PATH (CodeQL needs `go` to build
+            # the Go database). That's not a scanner error — recall-first
+            # means CodeQL absence falls back to Joern + Semgrep, not the
+            # whole case erroring out. Same applies to any other language
+            # whose extractor needs an external build tool.
             log.warning("codeql failed for %s: %s", project.name, exc)
 
 

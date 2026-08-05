@@ -13,8 +13,10 @@ from typing import Any
 
 import duckdb
 
+from ai_codescan.evidence import build_evidence_bundle, write_evidence_bundle
 from ai_codescan.llm import LLMConfig, build_argv, is_available
 from ai_codescan.runs.state import RunState, save
+from ai_codescan.scoring import attach_scores, persist_candidate_scores, score_candidates
 from ai_codescan.taxonomy.loader import BugClass, resolve_classes
 
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "wide_nominator"
@@ -37,13 +39,26 @@ def build_queue(
     flow_rows = conn.execute(
         """
         SELECT f.fid, f.tid, f.sid, f.cwe, f.engine, s.evidence_loc,
-               t.class, t.lib, t.parameterization
+               t.class, t.lib, t.parameterization,
+               COALESCE(m.flow_type, 'dataflow')
         FROM flows f
         JOIN taint_sources s ON s.tid = f.tid
         JOIN taint_sinks   t ON t.sid = f.sid
+        LEFT JOIN flow_metadata m ON m.fid = f.fid
         """
     ).fetchall()
-    for fid, tid, sid, cwe, engine, evidence_loc, sink_class, lib, parameterization in flow_rows:
+    for (
+        fid,
+        tid,
+        sid,
+        cwe,
+        engine,
+        evidence_loc,
+        sink_class,
+        lib,
+        parameterization,
+        flow_type,
+    ) in flow_rows:
         if cwes is not None and cwe not in cwes:
             continue
         queue.append(
@@ -59,6 +74,7 @@ def build_queue(
                 "sink_class": sink_class,
                 "lib": lib,
                 "parameterization": parameterization,
+                "flow_type": flow_type,
             }
         )
 
@@ -138,6 +154,7 @@ def _stage_inputs(
     state: RunState,
     repo_dir: Path,
     queue: list[dict[str, Any]],
+    conn: duckdb.DuckDBPyConnection,
 ) -> None:
     inputs = state.run_dir / "inputs"
     inputs.mkdir(exist_ok=True)
@@ -152,9 +169,17 @@ def _stage_inputs(
                 f.write(json.dumps(q) + "\n")
 
     queue_path = state.run_dir / "queue.jsonl"
+    bundles_dir = state.run_dir / "bundles"
     with queue_path.open("w", encoding="utf-8") as f:
         for q in queue:
-            f.write(json.dumps(q) + "\n")
+            bundle = build_evidence_bundle(conn, q)
+            bundle_json, bundle_md = write_evidence_bundle(bundle, bundles_dir=bundles_dir)
+            enriched = {
+                **q,
+                "bundle_json": str(bundle_json),
+                "bundle_md": str(bundle_md),
+            }
+            f.write(json.dumps(enriched) + "\n")
 
 
 def _empty_nominations_md() -> str:
@@ -199,13 +224,18 @@ def run_nominator(
     llm: LLMConfig | None = None,
 ) -> Path:
     """Stage inputs, drive the skill loop, return path to nominations.md."""
-    conn = duckdb.connect(str(db_path), read_only=True)
-    queue = build_queue(
-        conn,
-        target_bug_classes=[c.name for c in bug_classes],
-    )
-
-    _stage_inputs(state, repo_dir, queue)
+    conn = duckdb.connect(str(db_path))
+    try:
+        queue = build_queue(
+            conn,
+            target_bug_classes=[c.name for c in bug_classes],
+        )
+        scores = score_candidates(conn, queue)
+        persist_candidate_scores(conn, scores)
+        queue = attach_scores(queue, scores)
+        _stage_inputs(state, repo_dir, queue, conn)
+    finally:
+        conn.close()
     state.phase = "nominate"
     save(state)
 
@@ -223,6 +253,7 @@ def run_nominator(
     env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
     env["AI_CODESCAN_TARGET_BUG_CLASSES"] = ",".join(c.name for c in bug_classes)
     env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
+    env["AI_CODESCAN_SOURCE_ROOT"] = str(repo_dir / "source")
     env["CLAUDE_NO_AUTO_REGISTER"] = "1"
 
     subprocess.run(  # noqa: S603 - argv-only, no shell; bash is on PATH

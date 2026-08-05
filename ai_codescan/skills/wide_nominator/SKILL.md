@@ -1,6 +1,6 @@
 ---
 name: wide-nominator
-description: AI-driven SAST wide-pass nominator. Reads ai-codescan prep artefacts (repo.md, entrypoints.md, sidecar JSONL, DuckDB stats) and emits nominations.md with three streams (CodeQL-traced, AI-discovered, model-extension proposals), each carrying a max-2-line plain-English Summary and a y/n: HITL marker.
+description: "AI-driven SAST wide-pass nominator. Reads ai-codescan prep artefacts (repo.md, entrypoints.md, sidecar JSONL, DuckDB stats) and emits nominations.md with three streams (CodeQL-traced, AI-discovered, model-extension proposals), each carrying a max-2-line plain-English Summary and a y/n: HITL marker."
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 license: apache-2.0
 ---

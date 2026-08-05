@@ -20,9 +20,15 @@ def test_apply_schema_creates_phase1_tables(tmp_path: Path) -> None:
         "taint_sources",
         "taint_sinks",
         "flows",
+        "candidate_scores",
+        "review_verdicts",
         "notes",
         "entrypoints",
     } <= tables
+    score_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info('candidate_scores')").fetchall()
+    }
+    assert "processing_bucket" in score_columns
 
 
 def test_apply_schema_is_idempotent(tmp_path: Path) -> None:

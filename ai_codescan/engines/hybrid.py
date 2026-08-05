@@ -94,6 +94,7 @@ def dedupe_flows(conn: duckdb.DuckDBPyConnection) -> int:
         )
         for loser in group[1:]:
             conn.execute("DELETE FROM flows WHERE fid = ?", [loser[0]])
+            conn.execute("DELETE FROM flow_metadata WHERE fid = ?", [loser[0]])
             removed += 1
     return removed
 
@@ -165,6 +166,7 @@ def _ingest_joern_jsonl(  # noqa: PLR0913 - keyword-only fan-in is the cleanest 
         cwe = str(f.get("cwe") or "")
         sink_class = str(f.get("sink_class") or "unknown")
         sink_name = str(f.get("sink_name") or "")
+        flow_type = str(f.get("flow_type") or "dataflow")
         # Resolve relative paths against the project's own root so flows from
         # nested projects collapse with overlapping flows from the parent
         # project. ``str(Path(...).resolve())`` collapses any ``..`` /
@@ -173,6 +175,12 @@ def _ingest_joern_jsonl(  # noqa: PLR0913 - keyword-only fan-in is the cleanest 
             source_file = str((base / source_file).resolve())
         if not sink_file.startswith("/"):
             sink_file = str((base / sink_file).resolve())
+
+        # Recall-First Invariant 2: mitigation patterns (e.g. canonicalisation +
+        # root containment for CWE-22) DEMOTE candidates via score factors during
+        # scoring. They MUST NOT suppress the flow at ingest. See
+        # `ai_codescan/mitigations.detect_path_mitigations` and the
+        # `mitigation_signal` factor in `ai_codescan/scoring.score_candidate`.
 
         # ``project_id`` deliberately omitted from the stable-id keys so
         # cross-project duplicates collapse on identical (file, line)
@@ -205,6 +213,12 @@ def _ingest_joern_jsonl(  # noqa: PLR0913 - keyword-only fan-in is the cleanest 
         conn.execute(
             "INSERT OR REPLACE INTO flows VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [fid, tid, sid, cwe, "joern", steps_json, str(jsonl_path), "inferred"],
+        )
+        # flow_type lives in a sidecar table so the existing 8-column INSERT
+        # surface stays compatible (Recall-First Invariant 6 sidecar).
+        conn.execute(
+            "INSERT OR REPLACE INTO flow_metadata VALUES (?, ?)",
+            [fid, flow_type],
         )
         inserted += 1
     return inserted

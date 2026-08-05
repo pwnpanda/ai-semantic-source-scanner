@@ -8,7 +8,7 @@ import pytest
 
 from ai_codescan.engines import joern as joern_eng
 from ai_codescan.engines import semgrep as semgrep_eng
-from ai_codescan.engines.hybrid import dedupe_flows, run_hybrid
+from ai_codescan.engines.hybrid import _ingest_joern_jsonl, dedupe_flows, run_hybrid
 from ai_codescan.index.duckdb_schema import apply_schema
 
 
@@ -142,6 +142,130 @@ def test_dedupe_no_op_when_keys_unique(tmp_path: Path) -> None:
         [json.dumps([["/x", 3], ["/y", 4]])],
     )
     assert dedupe_flows(conn) == 0
+
+
+def test_ingest_joern_records_flow_type_co_location_for_fallback(tmp_path: Path) -> None:
+    """Recall-First Invariant 6: Joern fallback emissions carry flow_type=co-location
+    so the scorer can demote them without dropping the candidate."""
+    jsonl = tmp_path / "flows.jsonl"
+    jsonl.write_text(
+        json.dumps(
+            {
+                "fid": "joern-colo",
+                "source_file": "/abs/server.js",
+                "source_line": 3,
+                "sink_file": "/abs/server.js",
+                "sink_line": 5,
+                "source_name": "req.query.html",
+                "sink_name": "send",
+                "cwe": "CWE-79",
+                "sink_class": "html.write",
+                "parameterization": "unknown",
+                "flow_type": "co-location",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+
+    inserted = _ingest_joern_jsonl(
+        conn,
+        jsonl_path=jsonl,
+        project_id="x",
+        snapshot_root=tmp_path,
+    )
+
+    assert inserted == 1
+    row = conn.execute("SELECT flow_type FROM flow_metadata").fetchone()
+    assert row == ("co-location",)
+
+
+def test_ingest_joern_defaults_flow_type_to_dataflow(tmp_path: Path) -> None:
+    """Records without flow_type default to 'dataflow' (the recall-first default)."""
+    jsonl = tmp_path / "flows.jsonl"
+    jsonl.write_text(
+        json.dumps(
+            {
+                "fid": "joern-df",
+                "source_file": "/abs/x.js",
+                "source_line": 1,
+                "sink_file": "/abs/y.js",
+                "sink_line": 2,
+                "source_name": "req.body",
+                "sink_name": "query",
+                "cwe": "CWE-89",
+                "sink_class": "sql.exec",
+                "parameterization": "unknown",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    _ingest_joern_jsonl(conn, jsonl_path=jsonl, project_id="x", snapshot_root=tmp_path)
+    row = conn.execute("SELECT flow_type FROM flow_metadata").fetchone()
+    assert row == ("dataflow",)
+
+
+def test_ingest_joern_keeps_path_containment_flow_visible(tmp_path: Path) -> None:
+    """Recall-First Invariant 2: high-confidence path containment mitigation
+    must NOT suppress a CWE-22 flow at ingest. It should surface later as a
+    `mitigation_signal` score factor during candidate scoring, but the flow
+    record itself stays in the table for review."""
+    source = tmp_path / "Program.cs"
+    source.write_text(
+        "\n".join(
+            [
+                'var root = Path.GetFullPath("public");',
+                "var rootWithSeparator = root + Path.DirectorySeparatorChar;",
+                'app.MapGet("/files/{name}", (string name) =>',
+                "{",
+                "    var requested = Path.GetFullPath(Path.Combine(root, name));",
+                "    if (!requested.StartsWith(rootWithSeparator, StringComparison.Ordinal))",
+                "    {",
+                "        return Results.BadRequest();",
+                "    }",
+                "    return Results.Text(File.ReadAllText(requested));",
+                "});",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    jsonl = tmp_path / "flows.jsonl"
+    jsonl.write_text(
+        json.dumps(
+            {
+                "fid": "joern-path",
+                "source_file": source.as_posix(),
+                "source_line": 3,
+                "sink_file": source.as_posix(),
+                "sink_line": 10,
+                "source_name": "string name",
+                "sink_name": "ReadAllText",
+                "cwe": "CWE-22",
+                "sink_class": "fs.read",
+                "parameterization": "unknown",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+
+    inserted = _ingest_joern_jsonl(
+        conn,
+        jsonl_path=jsonl,
+        project_id="path-contained",
+        snapshot_root=tmp_path,
+    )
+
+    assert inserted == 1, "flow must remain visible — mitigation belongs in scoring, not ingest"
+    row = conn.execute("SELECT cwe, engine FROM flows").fetchone()
+    assert row == ("CWE-22", "joern")
 
 
 # ---------------------------------------------------------------------------

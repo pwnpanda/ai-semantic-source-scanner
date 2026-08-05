@@ -60,6 +60,56 @@ CREATE TABLE IF NOT EXISTS flows (
   confidence VARCHAR
 );
 
+-- Sidecar table recording how each flow was produced. Currently only
+-- distinguishes data-flow-engine flows from Joern's co-location fallback so
+-- the scorer can demote co-location candidates (Recall-First Invariant 6).
+-- A missing row means flow_type = 'dataflow' (the default).
+CREATE TABLE IF NOT EXISTS flow_metadata (
+  fid VARCHAR PRIMARY KEY,
+  flow_type VARCHAR DEFAULT 'dataflow'
+);
+
+CREATE TABLE IF NOT EXISTS candidate_scores (
+  candidate_id VARCHAR PRIMARY KEY,
+  flow_id VARCHAR,
+  stream VARCHAR,
+  score DOUBLE,
+  label VARCHAR,
+  processing_bucket VARCHAR,
+  factors_json VARCHAR,
+  scorer VARCHAR,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Phase 3 model-extension feedback loop: tracks whether a proposal is still
+-- pending, has been applied (rule rendered), or has been rejected. Survives
+-- runs so the user sees a stable status across reanalyses.
+CREATE TABLE IF NOT EXISTS proposal_decisions (
+  proposal_id VARCHAR PRIMARY KEY,
+  decision VARCHAR,         -- pending | applied | rejected
+  engine VARCHAR,
+  applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  eval_positive VARCHAR,
+  eval_negative VARCHAR,
+  applied_path VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS review_verdicts (
+  nomination_id VARCHAR PRIMARY KEY,
+  finding_id VARCHAR,
+  flow_id VARCHAR,
+  candidate_id VARCHAR,
+  verdict VARCHAR,
+  status VARCHAR,
+  confidence VARCHAR,
+  cwe VARCHAR,
+  title VARCHAR,
+  evidence_json VARCHAR,
+  reviewer VARCHAR,
+  source_path VARCHAR,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS notes (
   symbol_id VARCHAR,
   layer VARCHAR,

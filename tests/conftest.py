@@ -17,7 +17,17 @@ os.environ["COLUMNS"] = "200"
 os.environ["LINES"] = "50"
 os.environ.setdefault("TERM", "xterm-256color")
 _FORCED_SIZE = os.terminal_size((200, 50))
-shutil.get_terminal_size = lambda fallback=(200, 50): _FORCED_SIZE  # type: ignore[assignment]
+
+
+def _forced_terminal_size(fallback: tuple[int, int] = (200, 50)) -> os.terminal_size:
+    """Stand-in for ``shutil.get_terminal_size`` with the real signature."""
+    return _FORCED_SIZE
+
+
+# Patched via setattr: rebinding the attribute directly reads as an implicit
+# redefinition of the stdlib function, which is exactly what a type checker
+# should flag everywhere except a deliberate test-time patch like this one.
+setattr(shutil, "get_terminal_size", _forced_terminal_size)  # noqa: B010
 
 import re  # noqa: E402 - intentional ordering
 from collections.abc import Iterator  # noqa: E402

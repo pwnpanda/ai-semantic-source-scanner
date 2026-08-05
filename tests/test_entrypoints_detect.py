@@ -18,6 +18,22 @@ def test_express_route_detected() -> None:
     assert "http_route" in kinds
 
 
+def test_express_route_signature_keeps_path_argument() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/abs/server.js",
+            "line": 5,
+            "calleeText": "app.delete",
+            "firstArgText": '"/admin/users/:id"',
+        }
+    ]
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+
+    assert eps[0].signature == 'app.delete "/admin/users/:id"'
+
+
 def test_fastify_route_detected() -> None:
     xrefs = [
         {

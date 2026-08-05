@@ -1,6 +1,6 @@
 ---
 name: deep-analyzer
-description: Per-finding deep analyser. Reads one slice at a time, walks evidence with symbol-on-demand tools, emits findings/<id>.md with status=unverified.
+description: Per-finding deep analyser. Reads one evidence bundle at a time, walks evidence with symbol-on-demand tools, emits findings/<id>.md with structured review frontmatter.
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 license: apache-2.0
 ---
@@ -9,7 +9,7 @@ license: apache-2.0
 
 For each item claimed from `findings_queue.md`:
 
-1. Read the slice from `$AI_CODESCAN_SLICE_FILE` (JSON: source loc, sink class, ±5-line excerpts at each step).
+1. Read the evidence bundle inlined by the harness (JSON: candidate metadata, source/sink, score factors, entrypoints, and code excerpts).
 2. Optionally walk the codebase further with Read / Grep / Glob over `$AI_CODESCAN_SOURCE_ROOT`.
 3. Write `$AI_CODESCAN_FINDING_PATH` with frontmatter:
 
@@ -20,6 +20,8 @@ nomination_id: N-NNN
 flow_id: F-X
 cwe: CWE-Y
 status: unverified
+analysis_verdict: true-positive
+confidence: medium
 title: "<one-line title>"
 ---
 

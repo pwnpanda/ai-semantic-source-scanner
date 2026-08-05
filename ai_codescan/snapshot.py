@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 import stat
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -64,16 +65,30 @@ def _existing_snapshot_matches(
     return head_marker.read_text(encoding="utf-8").strip() == expected_commit
 
 
-def _force_remove(_func, path, _exc) -> None:
-    """``shutil.rmtree`` ``onexc`` hook to clear read-only bits before retry."""
-    Path(path).chmod(stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
-    Path(path).unlink(missing_ok=True)
+def force_remove(_func, path, _exc) -> None:
+    """``shutil.rmtree`` ``onexc`` hook to clear read-only bits before retry.
+
+    Snapshots are taken read-only, so removing one trips two things the naive
+    hook got wrong: deleting an entry needs write+execute on its *parent*, not
+    just on the entry itself, and a directory has to go via ``rmdir`` —
+    ``unlink`` raises ``IsADirectoryError``. Getting either wrong made
+    ``cache rm`` fail outright on any snapshot tree.
+    """
+    target = Path(path)
+    for node in (target.parent, target):
+        with suppress(OSError):
+            node.chmod(node.stat().st_mode | stat.S_IRWXU)
+    if target.is_dir() and not target.is_symlink():
+        with suppress(FileNotFoundError):
+            target.rmdir()
+        return
+    target.unlink(missing_ok=True)
 
 
 def _cp_snapshot(target: Path, cache_dir: Path) -> Path:
     snapshot_dir = cache_dir / "source"
     if snapshot_dir.exists():
-        shutil.rmtree(snapshot_dir, onexc=_force_remove)
+        shutil.rmtree(snapshot_dir, onexc=force_remove)
     shutil.copytree(target, snapshot_dir, symlinks=False, ignore_dangling_symlinks=True)
     return snapshot_dir
 
@@ -105,7 +120,7 @@ def _git_worktree_snapshot(target: Path, cache_dir: Path, commit: str) -> Path:
             check=False,
         )
         if snapshot_dir.exists():
-            shutil.rmtree(snapshot_dir, onexc=_force_remove)
+            shutil.rmtree(snapshot_dir, onexc=force_remove)
     # Prune any stale worktree registrations in the source repo. Users who
     # manually delete the cache (or whose previous run was killed) leave
     # entries in `<target>/.git/worktrees/<name>/` that block `worktree add`

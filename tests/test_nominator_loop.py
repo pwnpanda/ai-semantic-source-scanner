@@ -11,9 +11,7 @@ from pathlib import Path
 
 import pytest
 
-SKILL_DIR = (
-    Path(__file__).resolve().parents[1] / "ai_codescan" / "skills" / "wide_nominator"
-)
+SKILL_DIR = Path(__file__).resolve().parents[1] / "ai_codescan" / "skills" / "wide_nominator"
 LOOP_SH = SKILL_DIR / "scripts" / "loop.sh"
 
 _ID_LINE = re.compile(r"^- \[[ xX]\]\s*(N-\d+)\s*\|", re.MULTILINE)

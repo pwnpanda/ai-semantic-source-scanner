@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 ai-codescan = "ai_codescan.cli:app"
+secscan = "ai_codescan.cli:secscan_main"
 
 [tool.uv.build-backend]
 module-name = "ai_codescan"
@@ -51,6 +52,12 @@ ignore = ["S101"]
 # `ty` does not have a single `strict` toggle; instead, the Makefile passes
 # `--error-on-warning` to escalate every warn-level diagnostic to an error.
 # `environment.root` replaces the deprecated `src.root` (ty 0.0.34+).
+[tool.ty.src]
+# Deliberately vulnerable sample apps analysed *by* the scanner, not shipped
+# code. They import web frameworks that are not project dependencies, so
+# type-checking them yields only unresolved-import noise.
+exclude = ["eval-targets", "tests/fixtures"]
+
 [tool.ty.environment]
 root = ["ai_codescan", "tests"]
 

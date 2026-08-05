@@ -55,6 +55,7 @@ export async function* run(job) {
 
     for (const call of sf.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       const expr = call.getExpression();
+      const firstArg = call.getArguments()[0] ?? null;
       yield {
         type: "xref",
         kind: "call",
@@ -62,6 +63,7 @@ export async function* run(job) {
         line: call.getStartLineNumber(),
         callerSyntheticId: null,
         calleeText: expr.getText(),
+        firstArgText: firstArg ? firstArg.getText() : null,
       };
     }
 

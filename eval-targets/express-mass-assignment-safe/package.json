@@ -1,0 +1,7 @@
+{
+  "name": "express-mass-assignment-safe",
+  "private": true,
+  "dependencies": {
+    "express": "4.18.2"
+  }
+}

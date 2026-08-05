@@ -619,6 +619,8 @@ def run_full_fixpoint(
       2. ``detect_storage_reads`` — find SELECT reads of known locations.
       3. ``derive_storage_taint`` — mark reached locations dirty.
       4. ``synthesize_round2_flows`` — emit storage→read synthetic flows.
+      5. ``synthesize_stored_xss_flows`` — emit storage→read→render flows
+         (Phase 17, stored XSS).
 
     Optional pre-pass (round 0): when ``schema_path`` points at a
     ``schema.taint.yml`` containing an ``llm_suggested:`` block, those
@@ -629,8 +631,15 @@ def run_full_fixpoint(
     Iterates until no new synthetic flows or storage writes are produced, or
     ``max_rounds`` is reached. Returns a dict with per-round counters.
     """
+    # Function-scope import: `stored_xss` is a sibling module that depends
+    # on the schema (`storage_taint`, `storage_reads`, `flows`, `symbols`)
+    # which this module owns. Keeping the import here avoids a hard cycle
+    # if `stored_xss` ever needs to import from this module.
+    from ai_codescan.stored_xss import synthesize_stored_xss_flows  # noqa: PLC0415
+
     rounds: list[dict[str, int]] = []
     total_new_flows = 0
+    total_stored_xss = 0
     total_locations = 0
     total_reads = 0
     total_derived = 0
@@ -651,12 +660,14 @@ def run_full_fixpoint(
         reads_added = detect_storage_reads(conn, snapshot_root=snapshot_root)
         derived_added = derive_storage_taint(conn)
         flows_added = synthesize_round2_flows(conn)
+        stored_xss_added = synthesize_stored_xss_flows(conn)
 
         post_writes = conn.execute("SELECT COUNT(*) FROM storage_writes").fetchone()
         post_writes_n = post_writes[0] if post_writes else 0
         new_writes = post_writes_n - prior_writes_n
 
         total_new_flows += flows_added
+        total_stored_xss += stored_xss_added
         total_locations = max(total_locations, round1.storage_locations)
         total_reads += reads_added
         total_derived += derived_added
@@ -668,17 +679,25 @@ def run_full_fixpoint(
                 "derived": derived_added,
                 "new_flows": flows_added,
                 "new_writes": new_writes,
+                "stored_xss": stored_xss_added,
             }
         )
 
         # Convergence: nothing new at any layer of this iteration.
-        if flows_added == 0 and new_writes == 0 and reads_added == 0 and derived_added == 0:
+        if (
+            flows_added == 0
+            and stored_xss_added == 0
+            and new_writes == 0
+            and reads_added == 0
+            and derived_added == 0
+        ):
             break
 
     return {
         "rounds_run": len(rounds),
         "rounds": rounds,
         "new_flows": total_new_flows,
+        "stored_xss_flows": total_stored_xss,
         "storage_locations": total_locations,
         "storage_reads": total_reads,
         "storage_taint_derived": total_derived,

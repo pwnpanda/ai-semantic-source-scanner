@@ -190,6 +190,7 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
         env["AI_CODESCAN_RUN_DIR"] = str(state.run_dir)
         env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
         env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
+        env["AI_CODESCAN_SOURCE_ROOT"] = str(repo_dir / "source")
         env["CLAUDE_NO_AUTO_REGISTER"] = "1"
         # Stage validation hints per finding so the skill can read them.
         hints_dir = state.run_dir / "validation_hints"
@@ -204,6 +205,7 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
                     + "\n",
                     encoding="utf-8",
                 )
+        env["AI_CODESCAN_HINTS_DIR"] = str(hints_dir)
         subprocess.run(  # noqa: S603 - argv-only, no shell
             ["bash", str(SKILL_DIR / "scripts" / "loop.sh")],  # noqa: S607
             env=env,

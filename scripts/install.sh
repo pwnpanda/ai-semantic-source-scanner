@@ -199,6 +199,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Auto-install scip-python via npm if missing
+# scip-python ships as a Node package despite indexing Python; required for
+# rich xrefs on Python eval targets (Phase 9). Without it, Python prep falls
+# back to Joern/Semgrep only — recall is preserved but precision degrades.
+# ---------------------------------------------------------------------------
+if command -v scip-python >/dev/null 2>&1; then
+  say "scip-python: $(first_line_with_timeout 5 scip-python --version)"
+else
+  say "Installing scip-python (npm global)"
+  npm install -g @sourcegraph/scip-python
+fi
+
+# ---------------------------------------------------------------------------
 # Auto-install Graphviz (`dot`) if missing
 # ---------------------------------------------------------------------------
 if command -v dot >/dev/null 2>&1; then
@@ -290,7 +303,14 @@ status_check "codex"   codex   "https://github.com/openai/codex (npm i -g @opena
 echo
 JOERN_DEST="${AICS_JOERN_DIR:-$HOME/.local/share/joern}"
 JOERN_LINK_DIR="${AICS_JOERN_LINK_DIR:-$HOME/.local/bin}"
-JOERN_VERSION="${AICS_JOERN_VERSION:-}"
+# Pinned Joern version. We rely on stable CPG navigation APIs in
+# ai_codescan/engines/joern_queries.sc (cpg.identifier.typeFullName,
+# <operator>.assignment shape, call.argument(n).code). Bumping the pin
+# requires running scripts/test-joern-upgrade.sh first to confirm the eval
+# suite still passes. Override the pin per-machine via AICS_JOERN_VERSION
+# (set to empty string for the upstream "latest" tag).
+JOERN_PINNED_VERSION="v4.0.536"
+JOERN_VERSION="${AICS_JOERN_VERSION-$JOERN_PINNED_VERSION}"
 if command -v joern >/dev/null 2>&1 && [[ "${AICS_REINSTALL_JOERN:-}" != "yes" ]]; then
   say "Joern already installed: $(first_line_with_timeout 8 joern --help)"
 elif [[ "${AICS_INSTALL_JOERN:-}" == "no" ]]; then

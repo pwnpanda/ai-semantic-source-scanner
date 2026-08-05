@@ -4,9 +4,12 @@ import json
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from ai_codescan.index.duckdb_schema import apply_schema
-from ai_codescan.nominator import build_queue
+from ai_codescan.nominator import build_queue, run_nominator
+from ai_codescan.runs.state import load_or_create
+from ai_codescan.taxonomy.loader import resolve_classes
 
 
 def _seed_flow(conn: duckdb.DuckDBPyConnection) -> None:
@@ -59,3 +62,68 @@ def test_build_queue_serialises_as_jsonl(tmp_path: Path) -> None:
     out.write_text("\n".join(json.dumps(q) for q in queue))
     parsed = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
     assert parsed == queue
+
+
+def test_run_nominator_stages_scores_and_bundles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / "repo.md").write_text("# Repo\n", encoding="utf-8")
+    (repo_dir / "entrypoints.md").write_text("# Entrypoints\n", encoding="utf-8")
+    source = repo_dir / "source"
+    source.mkdir()
+    source_file = source / "x.ts"
+    source_file.write_text("const id = req.body.id\nawait db.query(id)\n", encoding="utf-8")
+
+    db = repo_dir / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    conn.execute("INSERT INTO files VALUES (?, 'sha', 'ts', 'p', 100)", [source_file.as_posix()])
+    conn.execute(
+        "INSERT INTO symbols VALUES ('S1', 'sym1', 'function', ?, 1, 2, NULL, 'handler')",
+        [source_file.as_posix()],
+    )
+    conn.execute(
+        "INSERT INTO taint_sources VALUES ('T1', 'S1', 'http.body', 'id', ?)",
+        [f"{source_file}:1"],
+    )
+    conn.execute(
+        "INSERT INTO taint_sinks VALUES ('K1', 'S1', 'sql.exec', 'query', 'unknown', '[]')"
+    )
+    conn.execute(
+        "INSERT INTO flows VALUES ('F1', 'T1', 'K1', 'CWE-89', 'codeql', ?, '/sarif', 'definite')",
+        [json.dumps([[source_file.as_posix(), 1], [source_file.as_posix(), 2]])],
+    )
+    conn.execute(
+        "INSERT INTO entrypoints VALUES ('S1', 'http_route', 'app.post', ?, 1)",
+        [source_file.as_posix()],
+    )
+    conn.close()
+
+    state = load_or_create(repo_dir, engine="codeql", temperature=0.0, target_bug_classes=["sqli"])
+    monkeypatch.setenv("PATH", "/nonexistent")
+
+    nominations = run_nominator(
+        state,
+        repo_dir=repo_dir,
+        bug_classes=resolve_classes(["sqli"]),
+        db_path=db,
+    )
+
+    assert nominations.is_file()
+    queued = [
+        json.loads(line)
+        for line in (state.run_dir / "queue.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert queued[0]["score_label"] in {"medium", "high"}
+    assert Path(queued[0]["bundle_json"]).is_file()
+    conn = duckdb.connect(str(db), read_only=True)
+    try:
+        row = conn.execute(
+            "SELECT label FROM candidate_scores WHERE candidate_id = 'A-F1'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None

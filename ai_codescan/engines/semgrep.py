@@ -41,6 +41,11 @@ def run_semgrep(
     rules under ``semgrep_rules/`` are appended so security gaps in the
     community pack (e.g. CWE-208 timing-attack on ``process.env``) get
     matched too.
+
+    Phase 3: when the cache_dir contains ``aics-enabled-packs.json``
+    (written by `ai_codescan.proposal_triage.enable_pack_for_repo`),
+    every pack id listed is passed as an additional ``--config=`` arg so
+    the next scan picks up auto-routed packs without manual config.
     """
     if not is_available():
         raise SemgrepUnavailableError(
@@ -59,6 +64,12 @@ def run_semgrep(
     ]
     if _BUNDLED_RULES_DIR.is_dir() and any(_BUNDLED_RULES_DIR.glob("*.yaml")):
         cmd.append(f"--config={_BUNDLED_RULES_DIR}")
+    # Local-import to avoid a circular dependency at module load time —
+    # proposal_triage is a higher-level module that itself imports model_proposals.
+    from ai_codescan.proposal_triage import enabled_packs  # noqa: PLC0415
+
+    for pack in enabled_packs(cache_dir):
+        cmd.append(f"--config={pack}")
     cmd.append(str(project_root))
     subprocess.run(  # noqa: S603 - argv-only, no shell
         cmd,  # noqa: S607

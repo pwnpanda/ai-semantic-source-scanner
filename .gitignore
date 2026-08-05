@@ -11,4 +11,7 @@ build/
 ai_codescan/ast/node_worker/node_modules/
 workspace/
 .serena/
+# Scan output for real targets — contains verbatim client source excerpts.
+# Kept locally for convenience; never committed.
+scan-results/
 

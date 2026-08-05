@@ -2,7 +2,7 @@
 
 This document records the elevation arc since the original Phase 1–3
 build: language coverage broadened from JS/TS-only to twelve targets,
-quality gates lifted from ad-hoc local checks to CI + pre-commit + types
+quality gates lifted from ad-hoc local checks to pre-commit hooks + types
 + property tests. The goal of this doc is durability — anyone returning
 to the project should be able to read this once and understand the
 shape of the test suite, what's gated on which tooling, and what's
@@ -19,11 +19,11 @@ outstanding.
 | Unit tests | ~199 | 343 (integration excluded) |
 | Integration tests | 2 (CodeQL JS) | 14 (4 CodeQL + 7 Joern + 3 SCIP) |
 | Total tests collected | ~201 | ~383 |
-| Line coverage | unmeasured | 76.3 % (floor pinned at 75 % in CI) |
-| Lint | ruff (project-only) | ruff + pre-commit hook + CI gate |
+| Line coverage | unmeasured | 76.3 % (floor checked locally via `pytest --cov`) |
+| Lint | ruff (project-only) | ruff + pre-commit hook |
 | Types | ty (default rules) | ty with 9 strictness lifts (`error`-level) |
-| CI | none | GitHub Actions: ruff + ty + pytest + coverage floor |
-| Pre-commit | none | prek with ruff + ty (CI parity) |
+| CI | none | none — developed and tested locally; `prek` hooks are the gate |
+| Pre-commit | none | prek with ruff + ty |
 | Property-based tests | none | hypothesis on storage_taint parsers (caught one real bug) |
 | Storage-taint LLM resolver | JS-only prompt | per-language prompt examples + `taint-schema --init` from bundled example |
 
@@ -93,9 +93,9 @@ tests/
 
 ### Integration test gating
 
-All integration tests are marked `@pytest.mark.integration` and skipped
-in CI (`pytest -m "not integration"`). They run locally when the host
-has the matching toolchain:
+All integration tests are marked `@pytest.mark.integration`. Run the
+fast subset with `pytest -m "not integration"`; the integration tests
+run when the host has the matching toolchain:
 
 | File | Tests | Required tooling |
 |---|---|---|
@@ -128,9 +128,10 @@ handled, only `ParseError` was. Fixed in `storage_taint.py` to catch both.
 
 ### Coverage floor
 
-`pytest --cov-fail-under=75` is enforced both locally and in CI. Current
-coverage is 76.3 %. Gaps are concentrated in real-CLI / LLM integration
-paths that are appropriately covered by the gated integration tests:
+`pytest --cov-fail-under=75` is run locally before merging significant
+work. Current coverage is 76.3 %. Gaps are concentrated in real-CLI / LLM
+integration paths that are appropriately covered by the gated integration
+tests:
 
 - `engines/joern.py` — 42 % (most lines exercised by the gated Joern
   integration tests)
@@ -171,23 +172,19 @@ invalid-parameter-default = "error"
 These nine ty escalations turn signal that's typically warn-level into
 hard fails. `ty check ai_codescan/` is currently clean.
 
-### CI workflow
+### No CI — local-first
 
-`.github/workflows/test.yml` runs on every push and PR to `main`:
-
-1. `ruff check ai_codescan/ tests/`
-2. `ruff format --check ai_codescan/ tests/`
-3. `ty check ai_codescan/`
-4. `pytest tests/ -m "not integration" --cov-fail-under=75`
-
-Concurrency is per-ref with PR cancellation. Actions are pinned to full
-SHAs with version-tag comments per the global standards.
+There is no GitHub Actions CI. The project is developed, tested, and run
+locally, so a PR-gated pipeline added no value and was removed. The
+`prek` pre-commit hooks are the automated quality gate; the full test
+suite and the eval suite are run locally before merging significant work.
 
 ### Pre-commit hooks
 
-`.pre-commit-config.yaml` runs the same `ruff check` / `ruff format` /
-`ty check` trio locally on every commit via [prek](https://github.com/j178/prek)
-(or the original `pre-commit`). Generated protobuf code is excluded.
+`.pre-commit-config.yaml` runs `ruff check` / `ruff format` / `ty check`
+locally on every commit via [prek](https://github.com/j178/prek) (or the
+original `pre-commit`). Generated protobuf code is excluded. These hooks
+are the project's quality gate.
 
 ### Validator multi-language sandbox
 
