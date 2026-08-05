@@ -16,13 +16,30 @@ TARGET_BUG_CLASSES="${AI_CODESCAN_TARGET_BUG_CLASSES:-}"
 : > "$OUT"
 
 invoke_llm() {
-  if [[ -n "$LLM_CMD" ]]; then
-    "$LLM_CMD"
-  else
-    local p
-    p="$(cat -)"
-    claude -p "$p"
-  fi
+  # Rate limits surface as a non-zero exit from the provider CLI. Callers
+  # treat that as a permanent per-item failure and move on, so a throttle
+  # part-way through a long queue silently burns every remaining item.
+  # Back off and retry instead; only a persistent failure is fatal.
+  #
+  # stdin is consumed by the first attempt, so buffer the prompt to replay it.
+  local prompt_file attempt delay rc
+  prompt_file="$(mktemp)"
+  cat - > "$prompt_file"
+  delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
+  rc=1
+  for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
+    if [[ -n "$LLM_CMD" ]]; then
+      "$LLM_CMD" < "$prompt_file" && rc=0
+    else
+      claude -p "$(cat "$prompt_file")" && rc=0
+    fi
+    [[ "$rc" -eq 0 ]] && break
+    printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+  done
+  rm -f "$prompt_file"
+  return "$rc"
 }
 
 render_prompt() {

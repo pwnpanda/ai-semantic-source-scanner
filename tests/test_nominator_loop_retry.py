@@ -93,3 +93,23 @@ def test_persistent_llm_failure_gives_up_without_killing_the_loop(tmp_path: Path
     assert "FAIL (llm error)" in result.stderr
     ids = _ID_LINE.findall((run_dir / "nominations.md").read_text(encoding="utf-8"))
     assert ids == []
+
+
+ALL_LOOPS = sorted(
+    (Path(__file__).resolve().parents[1] / "ai_codescan" / "skills").glob("*/scripts/loop.sh")
+)
+
+
+def test_every_skill_loop_retries_a_throttled_llm() -> None:
+    """Each skill drives its own loop; a retry in only some of them is a gap.
+
+    The first pass patched three of six, so a throttle during miss-review still
+    burned that queue. Assert the property across every loop instead.
+    """
+    assert ALL_LOOPS, "no skill loops found"
+    missing = [
+        p.parent.parent.name
+        for p in ALL_LOOPS
+        if "_LLM_RETRIES" not in p.read_text(encoding="utf-8")
+    ]
+    assert not missing, f"skill loops with no LLM retry: {missing}"
