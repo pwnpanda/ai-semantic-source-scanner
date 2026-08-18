@@ -27,6 +27,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ai_codescan.artifact_id import normalize_artifact_id
+
 QUERIES_SCRIPT = Path(__file__).resolve().parent / "joern_queries.sc"
 
 _JOERN_LANGUAGE_FLAG: dict[str, str] = {
@@ -97,6 +99,7 @@ def _build_cpg(
     """
     if language not in _JOERN_LANGUAGE_FLAG:
         raise ValueError(f"unsupported joern language: {language!r}")
+    project_id = normalize_artifact_id(project_id)
     out_dir = cache_dir / "joern"
     out_dir.mkdir(parents=True, exist_ok=True)
     cpg_path = out_dir / f"{project_id}.cpg.bin"
@@ -137,6 +140,7 @@ def _run_query_script(cpg_path: Path, *, cache_dir: Path, project_id: str, langu
     list. Missing or malformed file → env var is just not set; Joern skips
     the merge.
     """
+    project_id = normalize_artifact_id(project_id)
     out_dir = cache_dir / "joern"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{project_id}.flows.jsonl"
@@ -195,6 +199,7 @@ def run_joern(
             "`bash scripts/install.sh` (answer yes to the Joern prompt) or "
             "https://docs.joern.io/installation"
         )
+    project_id = normalize_artifact_id(project_id)
     cpg_path = _build_cpg(
         project_root, cache_dir=cache_dir, project_id=project_id, language=language
     )

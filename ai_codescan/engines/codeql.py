@@ -11,6 +11,8 @@ from pathlib import Path
 
 import yaml
 
+from ai_codescan.artifact_id import normalize_artifact_id
+
 log = logging.getLogger(__name__)
 
 _PACK_DOWNLOAD_TIMEOUT_SEC = 600
@@ -150,6 +152,7 @@ def build_database(
     _ensure_codeql_on_path()
     if language not in _CODEQL_LANGUAGE_FLAG:
         raise ValueError(f"unsupported codeql language: {language!r}")
+    project_id = normalize_artifact_id(project_id)
     db_path = cache_dir / "codeql" / f"{project_id}.db"
     if db_path.exists():
         shutil.rmtree(db_path)
@@ -251,6 +254,7 @@ def run_queries(  # noqa: PLR0913 - keyword-only knobs are clearer than packing 
     _ensure_codeql_on_path()
     if language not in _QUERY_SUITES:
         raise ValueError(f"unsupported codeql language: {language!r}")
+    project_id = normalize_artifact_id(project_id)
     # Prime the language pack before analyze. ``codeql database analyze``
     # resolves the suite's ``from:`` reference against the local pack cache
     # — a missing pack surfaces as exit-code 2 with no helpful stderr, so

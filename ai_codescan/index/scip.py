@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_codescan.artifact_id import normalize_artifact_id
 from ai_codescan.manifest import IGNORED_SOURCE_DIRS
 from ai_codescan.third_party import scip_pb2
 
@@ -71,19 +72,10 @@ def _build_scip_python(project_root: Path, *, scip_path: Path, project_id: str) 
             "scip-python is not on PATH; install via npm i -g @sourcegraph/scip-python"
         )
     # scip-python's ScipSymbol.normalizeNameOrVersion crashes when the
-    # project name contains a `.` (it tries `.indexOf` on an undefined
-    # version field after splitting on the first dot). Our project_id is
-    # built as `<name>-<base_path_with_underscores>`, and for a top-level
-    # project the base path is `.`, producing `source-.`. Sanitize before
-    # passing — the project name is only used as a SCIP symbol identifier,
-    # not as a real filesystem path.
-    # scip-python's ScipSymbol.normalizeNameOrVersion crashes when the
     # project name contains a `.` (it splits on the first dot and tries
-    # `.indexOf` on the undefined version half). Sanitize the name and pass
-    # an explicit `--project-version` so the splitter never sees `undefined`.
-    # The values are SCIP symbol identifiers — they don't have to match a
-    # real package version.
-    safe_project_name = project_id.replace(".", "_")
+    # `.indexOf` on the undefined version half). The public entrypoint has
+    # already normalized project_id to a strict slug; an explicit version
+    # prevents the same parser bug for every supported scip-python release.
     # scip-python writes index.scip via open(O_WRONLY|O_TRUNC). If a stale
     # read-only index.scip exists from a prior run (snapshot files are
     # often chmod 0444), the open() fails with EACCES. Pre-unlink so the
@@ -98,7 +90,7 @@ def _build_scip_python(project_root: Path, *, scip_path: Path, project_id: str) 
             "scip-python",
             "index",
             "--project-name",
-            safe_project_name,
+            project_id,
             "--project-version",
             "0.0.0",
             ".",
@@ -228,6 +220,7 @@ def build_scip_index(
     language: str = "javascript",
 ) -> IndexResult:
     """Run the appropriate SCIP indexer for ``language`` and return the .scip path."""
+    project_id = normalize_artifact_id(project_id)
     out_dir = cache_dir / "scip"
     out_dir.mkdir(parents=True, exist_ok=True)
     scip_path = out_dir / f"{project_id}.scip"

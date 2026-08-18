@@ -19,6 +19,7 @@ import typer
 import yaml
 
 from ai_codescan.analyzer import ReviewLimits, run_analyzer
+from ai_codescan.artifact_id import project_artifact_id
 from ai_codescan.cache_state import (
     build_scan_fingerprint,
     scan_db_stage,
@@ -167,7 +168,7 @@ def _hybrid_project_roots(snapshot_root: Path) -> list[tuple[Path, str, str]]:
             language = "csharp"
         if language is None:
             continue
-        project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
+        project_id = project_artifact_id(project.name, project.base_path)
         roots.append((snapshot_root / project.base_path, project_id, language))
     return roots
 

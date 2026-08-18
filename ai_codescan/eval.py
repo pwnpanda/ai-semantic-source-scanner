@@ -12,6 +12,7 @@ from typing import Any, Literal, TypeGuard, get_args
 import duckdb
 import yaml
 
+from ai_codescan.artifact_id import project_artifact_id
 from ai_codescan.config import compute_repo_id
 from ai_codescan.engines import joern
 from ai_codescan.engines.hybrid import run_hybrid
@@ -338,7 +339,7 @@ def _hybrid_project_roots(snapshot_root: Path) -> list[tuple[Path, str, str]]:
             language = "csharp"
         else:
             continue
-        project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
+        project_id = project_artifact_id(project.name, project.base_path)
         roots.append((snapshot_root / project.base_path, project_id, language))
     return roots
 

@@ -13,6 +13,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from ai_codescan.artifact_id import normalize_artifact_id
+
 _BUNDLED_RULES_DIR = Path(__file__).parent / "semgrep_rules"
 """Directory of project-specific rules shipped with ai-codescan. Always
 passed to semgrep alongside ``--config=auto`` so we extend (not replace)
@@ -87,6 +89,7 @@ def run_semgrep(
         raise SemgrepUnavailableError(
             "semgrep is not on PATH; pip install semgrep or skip --engine hybrid."
         )
+    project_id = normalize_artifact_id(project_id)
     sarif_dir = cache_dir / "semgrep"
     sarif_dir.mkdir(parents=True, exist_ok=True)
     sarif_path = sarif_dir / f"{project_id}.sarif"

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import duckdb
 
+from ai_codescan.artifact_id import normalize_artifact_id
 from ai_codescan.cache_state import scan_stage_for_inputs, set_scan_stage
 from ai_codescan.engines import joern as joern_eng
 from ai_codescan.engines import semgrep as semgrep_eng
@@ -152,7 +153,8 @@ def _run_project_engines(
     joern_flows = 0
     failures: list[str] = []
     used_mutable_semgrep = False
-    for project_root, project_id, language in project_roots:
+    for project_root, raw_project_id, language in project_roots:
+        project_id = normalize_artifact_id(raw_project_id)
         if semgrep_eng.is_available():
             used_mutable_semgrep = True
             try:

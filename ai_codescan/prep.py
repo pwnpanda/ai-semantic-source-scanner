@@ -13,6 +13,7 @@ from pathlib import Path
 
 import duckdb
 
+from ai_codescan.artifact_id import project_artifact_id
 from ai_codescan.ast.runner import AstJob, run_jobs
 from ai_codescan.cache_state import build_scan_fingerprint, scan_stage_is_current, set_scan_stage
 from ai_codescan.codeql_extensions import render_codeql_yaml_extensions
@@ -316,7 +317,7 @@ def _build_scip_lookup(
             result = build_scip_index(
                 snapshot_root / project.base_path,
                 cache_dir=cache_dir,
-                project_id=f"{project.name}-{project.base_path.as_posix().replace('/', '_')}",
+                project_id=project_artifact_id(project.name, project.base_path),
                 language=scip_language,
             )
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
@@ -404,7 +405,7 @@ def _run_codeql_for_projects(  # noqa: PLR0913 - five positional data inputs; po
                 raise RuntimeError("codeql engine requested but codeql is not on PATH")
             log.warning("codeql unavailable for %s; hybrid fallback remains active", project.name)
             continue
-        project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
+        project_id = project_artifact_id(project.name, project.base_path)
         try:
             db_path = build_database(
                 snapshot_root / project.base_path,
