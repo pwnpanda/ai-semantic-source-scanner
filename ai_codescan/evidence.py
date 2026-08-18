@@ -103,6 +103,16 @@ def _redact_config_line(line: str) -> str:
     return f"{key}: <redacted>"
 
 
+def _redact_excerpt_line(line: str, line_number: int, redacted_lines: frozenset[int]) -> str:
+    if line_number in redacted_lines:
+        if _CONFIG_SECRET_KEY_RE.search(line):
+            return _redact_config_line(line)
+        return "<redacted>"
+    if redacted_lines and _CONFIG_SECRET_KEY_RE.search(line):
+        return _redact_config_line(line)
+    return line
+
+
 def _read_excerpt(
     file: Path,
     line: int,
@@ -117,9 +127,7 @@ def _read_excerpt(
     if file.is_file():
         lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
         kept = [
-            _redact_config_line(value)
-            if number in redacted_lines or (redacted_lines and _CONFIG_SECRET_KEY_RE.search(value))
-            else value
+            _redact_excerpt_line(value, number, redacted_lines)
             for number, value in enumerate(lines[start - 1 : end], start=start)
         ]
         excerpt = "\n".join(kept)

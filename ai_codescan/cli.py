@@ -1752,6 +1752,9 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
     Re-running the same target resumes after the last completed stage
     (state lives at ``<cache>/<repo_id>/run.state.json``). Use ``--phases``
     or ``--from``/``--to`` to slice the pipeline; ``--yes`` runs unattended.
+
+    Scan trusted source only: the prep stage may execute target build tooling
+    through SCIP and CodeQL outside a sandbox.
     """
     cache_root: Path = ctx.obj["cache_root"]
 
@@ -2176,6 +2179,9 @@ def scan(  # noqa: PLR0913 - Typer command surface is intentionally explicit
     gate auto-accepts). The validator (PoC + Docker sandbox) runs but is
     non-fatal — a host without Docker still completes the scan, just with
     no findings flipped to verified.
+
+    Scan trusted source only: the prep stage may execute target build tooling
+    through SCIP and CodeQL outside a sandbox.
     """
     cache_root: Path = ctx.obj["cache_root"]
     llm_args = ["--llm-provider", llm_provider]

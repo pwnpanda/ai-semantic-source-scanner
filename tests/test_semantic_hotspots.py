@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 from ai_codescan.cli import app
 from ai_codescan.config import compute_repo_id
 from ai_codescan.eval import load_eval_cases, run_ai_codescan_case
+from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.miss_finder import (
     _stable_candidate_id,
     build_miss_candidates,
@@ -941,3 +942,86 @@ profile:
     assert "secrets/yaml-user-info-literal" not in _vectors(encrypted)
     assert "secrets/yaml-user-info-literal" in _vectors(insecure_default)
     assert "secrets/yaml-user-info-literal" in _vectors(camel_case)
+
+
+@pytest.mark.parametrize("indicator", ["|", ">-", "|2+", ">+2"])
+def test_yaml_block_scalar_credential_marks_the_full_value_range(
+    tmp_path: Path,
+    indicator: str,
+) -> None:
+    hotspots = _scan_source(
+        tmp_path,
+        f"""kafka:
+  schema-registry:
+    user-info: {indicator}
+      audit-user:audit-secret
+      continued-secret
+    client-id: safe
+""",
+        filename="block.yml",
+    )
+
+    matches = [
+        hotspot for hotspot in hotspots if hotspot.vector == "secrets/yaml-user-info-literal"
+    ]
+    assert len(matches) == 1
+    assert matches[0].redacted_lines == (3, 4, 5)
+
+
+def test_yaml_block_scalar_placeholder_is_not_a_literal_credential(tmp_path: Path) -> None:
+    hotspots = _scan_source(
+        tmp_path,
+        """kafka:
+  schema-registry:
+    user-info: |
+      ${SCHEMA_REGISTRY_AUTH}
+""",
+        filename="placeholder-block.yml",
+    )
+
+    assert "secrets/yaml-user-info-literal" not in _vectors(hotspots)
+
+
+def test_yaml_block_scalar_credentials_are_absent_from_all_bundles(tmp_path: Path) -> None:
+    source = tmp_path / "application.yml"
+    source.write_text(
+        """kafka:
+  schema-registry:
+    "user-info": |-
+      first-user:first-secret
+secondary:
+  schemaRegistry:
+    basicAuthUserInfo: >2+
+      second-user:second-secret
+""",
+        encoding="utf-8",
+    )
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    conn.execute(
+        "INSERT INTO files VALUES (?, 'sha256', 'yaml', 'project', ?)",
+        [source.as_posix(), source.stat().st_size],
+    )
+    bundles_dir = tmp_path / "bundles"
+
+    try:
+        candidates = write_miss_candidates(
+            conn,
+            out_path=tmp_path / "candidates.jsonl",
+            bundles_dir=bundles_dir,
+        )
+    finally:
+        conn.close()
+
+    secret_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate["vector"] == "secrets/yaml-user-info-literal"
+    ]
+    rendered = "\n".join(path.read_text(encoding="utf-8") for path in bundles_dir.iterdir())
+    assert len(secret_candidates) == 2
+    assert "first-user" not in rendered
+    assert "first-secret" not in rendered
+    assert "second-user" not in rendered
+    assert "second-secret" not in rendered
+    assert "<redacted>" in rendered

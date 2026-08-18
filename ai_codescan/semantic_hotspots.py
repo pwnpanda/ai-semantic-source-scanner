@@ -246,9 +246,10 @@ _HEADER_ENCODING_RE = re.compile(
 )
 _RAW_FILENAME_VALUE_RE = re.compile(rf"(?is)^\s*(?:[A-Za-z_]\w*\.)*{_FILENAME_PATTERN}\s*$")
 _USER_INFO_RE = re.compile(
-    r"^(?P<indent>\s*)(?P<key>(?:user[-_.]?info|basic[-_.]?auth[-_.]?user[-_.]?info|"
+    r"^(?P<indent>\s*)(?P<quote>[\"']?)(?P<key>(?:user[-_.]?info|"
+    r"basic[-_.]?auth[-_.]?user[-_.]?info|"
     r"[A-Za-z0-9_.-]*schema[-_.]?registry[A-Za-z0-9_.-]*"
-    r"basic[-_.]?auth[-_.]?user[-_.]?info))\s*:\s*"
+    r"basic[-_.]?auth[-_.]?user[-_.]?info))(?P=quote)\s*:\s*"
     r"(?P<value>.*?)\s*$",
     re.I,
 )
@@ -257,7 +258,11 @@ _PLACEHOLDER_RE = re.compile(
     r"!vault\b.*|ENC\s*\([^)]*\)|env\s*\([^)]*\)|<[^>]+>|redacted\b.*|"
     r"changeme|example|dummy|none|null)$"
 )
-_YAML_CONTAINER_RE = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z0-9_.-]+)\s*:\s*(?:#.*)?$")
+_YAML_CONTAINER_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<quote>[\"']?)(?P<key>[A-Za-z0-9_.-]+)"
+    r"(?P=quote)\s*:\s*(?:#.*)?$"
+)
+_YAML_BLOCK_SCALAR_RE = re.compile(r"^[|>](?:[1-9][+-]?|[+-][1-9]?)?$")
 _MIN_PEER_MUTATIONS = 2
 _MIN_QUOTED_SCALAR_LENGTH = 2
 
@@ -1112,6 +1117,38 @@ def _yaml_scalar_value(raw_value: str) -> str:
     return value
 
 
+def _yaml_block_scalar_value(
+    lines: list[str],
+    *,
+    key_index: int,
+    key_indent: int,
+) -> tuple[str, tuple[int, ...]]:
+    redacted_lines = [key_index + 1]
+    body: list[str] = []
+    for body_index in range(key_index + 1, len(lines)):
+        body_line = lines[body_index]
+        if body_line.strip():
+            body_indent = len(body_line) - len(body_line.lstrip(" "))
+            if body_indent <= key_indent:
+                break
+            body.append(body_line.strip())
+        redacted_lines.append(body_index + 1)
+    return "\n".join(body).strip(), tuple(redacted_lines)
+
+
+def _yaml_user_info_value(
+    lines: list[str],
+    *,
+    line_index: int,
+    indent: int,
+    raw_value: str,
+) -> tuple[str, tuple[int, ...]]:
+    value = _yaml_scalar_value(raw_value)
+    if _YAML_BLOCK_SCALAR_RE.fullmatch(value) is None:
+        return value, (line_index + 1,)
+    return _yaml_block_scalar_value(lines, key_index=line_index, key_indent=indent)
+
+
 def _literal_user_info_hotspots(
     path: Path,
     lines: list[str],
@@ -1126,7 +1163,12 @@ def _literal_user_info_hotspots(
             parents.pop()
         match = _USER_INFO_RE.match(line_text)
         if match is not None and _is_schema_registry_user_info(match, parents):
-            value = _yaml_scalar_value(match.group("value"))
+            value, redacted_lines = _yaml_user_info_value(
+                lines,
+                line_index=line_index,
+                indent=indent,
+                raw_value=match.group("value"),
+            )
             if value and not _PLACEHOLDER_RE.search(value):
                 line_no = line_index + 1
                 found.append(
@@ -1144,7 +1186,7 @@ def _literal_user_info_hotspots(
                         evidence="user-info: <redacted literal>",
                         signal_strength="deterministic",
                         requires_llm_validation=False,
-                        redacted_lines=(line_no,),
+                        redacted_lines=redacted_lines,
                     )
                 )
         container = _YAML_CONTAINER_RE.match(line_text)

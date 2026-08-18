@@ -513,6 +513,14 @@ def test_run_help_advertises_llm_flags() -> None:
     out = _help_text(result.stdout)
     assert "--llm-provider" in out
     assert "--llm-model" in out
+    assert "trusted source" in out
+
+
+def test_scan_help_warns_about_target_build_execution() -> None:
+    result = runner.invoke(app, ["scan", "--help"])
+
+    assert result.exit_code == 0
+    assert "trusted source" in _help_text(result.stdout)
 
 
 def test_nominate_rejects_unknown_provider(
