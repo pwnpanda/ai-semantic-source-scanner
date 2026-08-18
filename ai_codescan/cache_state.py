@@ -229,7 +229,10 @@ def scan_db_stage_is_current(
     """Read :func:`scan_stage_is_current` from a closed, existing database."""
     if not db_path.is_file() or (db_path.parent / ".prep-incomplete").is_file():
         return False
-    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        conn = duckdb.connect(str(db_path), read_only=True)
+    except duckdb.Error:
+        return False
     try:
         return scan_stage_is_current(
             conn,
@@ -237,6 +240,8 @@ def scan_db_stage_is_current(
             engine=engine,
             required_stage=required_stage,
         )
+    except duckdb.Error:
+        return False
     finally:
         conn.close()
 

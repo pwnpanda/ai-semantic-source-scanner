@@ -459,3 +459,22 @@ def test_scanner_fingerprint_inputs_include_llm_markdown_prompts(tmp_path: Path)
     prompt.write_text("first prompt\n", encoding="utf-8")
 
     assert list(_scanner_files(tmp_path)) == [prompt]
+
+
+@pytest.mark.parametrize("initialized", (False, True))
+def test_scan_db_stage_is_current_rejects_invalid_databases(
+    tmp_path: Path,
+    initialized: bool,
+) -> None:
+    db_path = tmp_path / "index.duckdb"
+    if initialized:
+        duckdb.connect(str(db_path)).close()
+    else:
+        db_path.write_bytes(b"not a DuckDB database")
+
+    assert not scan_db_stage_is_current(
+        db_path,
+        fingerprint="requested-inputs",
+        engine="hybrid",
+        required_stage="complete",
+    )
