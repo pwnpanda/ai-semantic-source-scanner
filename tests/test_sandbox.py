@@ -150,7 +150,16 @@ def test_run_in_sandbox_uses_available_credential_helper_fallback(
     docker_config = tmp_path / "docker"
     docker_config.mkdir()
     (docker_config / "config.json").write_text(
-        json.dumps({"auths": {}, "credsStore": "desktop"}),
+        json.dumps(
+            {
+                "auths": {},
+                "credsStore": "desktop",
+                "credHelpers": {
+                    "available.example": "pass",
+                    "missing.example": "desktop",
+                },
+            }
+        ),
         encoding="utf-8",
     )
     observed_config: dict[str, object] = {}
@@ -184,6 +193,7 @@ def test_run_in_sandbox_uses_available_credential_helper_fallback(
     assert result.exit_code == 0
     assert result.signal_seen is True
     assert observed_config["credsStore"] == "pass"
+    assert observed_config["credHelpers"] == {"available.example": "pass"}
     assert temporary_config_dir is not None
     assert not temporary_config_dir.exists()
 
@@ -230,6 +240,48 @@ def test_run_in_sandbox_falls_back_to_file_based_docker_auth(
 
     assert sandbox_result.exit_code == 0
     assert "credsStore" not in observed_config
+    assert "credHelpers" not in observed_config
+    assert "auths" in observed_config
+
+
+def test_run_in_sandbox_removes_missing_registry_credential_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker_config = tmp_path / "docker"
+    docker_config.mkdir()
+    (docker_config / "config.json").write_text(
+        json.dumps(
+            {
+                "auths": {"registry.example": {"auth": "encoded"}},
+                "credHelpers": {"registry.example": "desktop"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed_config: dict[str, object] = {}
+
+    def fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = cast("dict[str, str]", kwargs.get("env"))
+        config_path = Path(env["DOCKER_CONFIG"]) / "config.json"
+        observed_config.update(json.loads(config_path.read_text(encoding="utf-8")))
+        return subprocess.CompletedProcess([], 0, stdout="BENIGN", stderr="")
+
+    monkeypatch.setenv("DOCKER_CONFIG", str(docker_config))
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None,
+    )
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_in_sandbox(
+        ["python3", "poc.py"],
+        image="python:3.13-slim",
+        work_dir=tmp_path,
+        runtime="docker",
+    )
+
+    assert result.exit_code == 0
     assert "credHelpers" not in observed_config
     assert "auths" in observed_config
 

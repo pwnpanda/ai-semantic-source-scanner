@@ -152,17 +152,31 @@ def _fallback_helper() -> str | None:
 
 
 def _fallback_docker_config(config: dict[str, object]) -> dict[str, object] | None:
-    configured_helper = config.get("credsStore")
-    if not isinstance(configured_helper, str) or _helper_available(configured_helper):
-        return None
     updated = config.copy()
-    fallback_helper = _fallback_helper()
-    if fallback_helper:
-        updated["credsStore"] = fallback_helper
-    else:
-        updated.pop("credsStore", None)
-        updated.pop("credHelpers", None)
-    return updated
+    changed = False
+    configured_helper = config.get("credsStore")
+    if isinstance(configured_helper, str) and not _helper_available(configured_helper):
+        fallback_helper = _fallback_helper()
+        if fallback_helper:
+            updated["credsStore"] = fallback_helper
+        else:
+            updated.pop("credsStore", None)
+        changed = True
+
+    configured_registry_helpers = config.get("credHelpers")
+    if isinstance(configured_registry_helpers, dict):
+        available_registry_helpers = {
+            str(registry): helper
+            for registry, helper in configured_registry_helpers.items()
+            if isinstance(helper, str) and _helper_available(helper)
+        }
+        if len(available_registry_helpers) != len(configured_registry_helpers):
+            changed = True
+            if available_registry_helpers:
+                updated["credHelpers"] = available_registry_helpers
+            else:
+                updated.pop("credHelpers", None)
+    return updated if changed else None
 
 
 @contextmanager
