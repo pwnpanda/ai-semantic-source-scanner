@@ -10,6 +10,8 @@ from typing import Any
 
 import duckdb
 
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
+
 _DEFAULT_CONTEXT_LINES = 5
 _MIN_FLOW_STEP_FIELDS = 2
 _TRUNCATE_KEEP_EXCERPTS = 2
@@ -114,9 +116,10 @@ def _redact_excerpt_line(line: str, line_number: int, redacted_lines: frozenset[
 
 
 def _read_excerpt(
-    file: Path,
+    file: str,
     line: int,
     *,
+    source_root: Path,
     context_lines: int,
     redacted_lines: frozenset[int] = frozenset(),
 ) -> EvidenceExcerpt:
@@ -124,8 +127,14 @@ def _read_excerpt(
     end = line + context_lines
     excerpt = ""
     actual_end = start - 1
-    if file.is_file():
-        lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
+    display_file = Path(file).as_posix()
+    try:
+        resolved = resolve_contained_file(source_root, file)
+    except SourcePathError:
+        resolved = None
+    if resolved is not None:
+        display_file = resolved.as_posix()
+        lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
         kept = [
             _redact_excerpt_line(value, number, redacted_lines)
             for number, value in enumerate(lines[start - 1 : end], start=start)
@@ -133,7 +142,7 @@ def _read_excerpt(
         excerpt = "\n".join(kept)
         actual_end = start + max(0, len(kept) - 1)
     return EvidenceExcerpt(
-        file=file.as_posix(),
+        file=display_file,
         line=line,
         context_start=start,
         context_end=actual_end,
@@ -338,6 +347,7 @@ def build_evidence_bundle(
     conn: duckdb.DuckDBPyConnection,
     candidate: dict[str, Any],
     *,
+    source_root: Path,
     context_lines: int = _DEFAULT_CONTEXT_LINES,
 ) -> EvidenceBundle:
     """Build an evidence bundle for a queue candidate.
@@ -376,8 +386,9 @@ def build_evidence_bundle(
             redacted_lines |= candidate_redactions
         excerpts.append(
             _read_excerpt(
-                Path(file),
+                file,
                 line,
+                source_root=source_root,
                 context_lines=effective_context_lines,
                 redacted_lines=redacted_lines,
             )

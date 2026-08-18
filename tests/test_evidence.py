@@ -85,6 +85,7 @@ def test_build_evidence_bundle_for_flow_candidate(tmp_path: Path) -> None:
                 }
             ],
         },
+        source_root=tmp_path,
         context_lines=1,
     )
 
@@ -112,6 +113,7 @@ def test_write_evidence_bundle_outputs_json_and_markdown(tmp_path: Path) -> None
             "line": 1,
             "source_loc": source.as_posix(),
         },
+        source_root=tmp_path,
     )
 
     json_path, md_path = write_evidence_bundle(bundle, bundles_dir=tmp_path / "bundles")
@@ -146,6 +148,7 @@ def test_secret_candidate_redacts_literal_from_every_evidence_format(tmp_path: P
             "evidence": "user-info: <redacted literal>",
             "requires_llm_validation": False,
         },
+        source_root=tmp_path,
     )
 
     serialized = json.dumps(bundle.to_jsonable()) + render_bundle_markdown(bundle)
@@ -155,3 +158,55 @@ def test_secret_candidate_redacts_literal_from_every_evidence_format(tmp_path: P
     assert "user-info: <redacted>" in serialized
     assert '"backup-token": <redacted>' in serialized
     assert bundle.source_loc == f"{source.as_posix()}:3"
+
+
+def test_evidence_bundle_does_not_read_poisoned_path_outside_snapshot(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    outside = tmp_path / "outside.kt"
+    outside.write_text("outside evidence sentinel\n", encoding="utf-8")
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+
+    bundle = build_evidence_bundle(
+        conn,
+        {
+            "id": "poisoned",
+            "stream": "B",
+            "file": outside.as_posix(),
+            "line": 1,
+        },
+        source_root=source_root,
+    )
+
+    assert bundle.excerpts[0].code_excerpt == ""
+    assert "outside evidence sentinel" not in render_bundle_markdown(bundle)
+
+
+def test_evidence_bundle_resolves_relative_db_paths_from_snapshot(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source = source_root / "src" / "Handler.kt"
+    source.parent.mkdir(parents=True)
+    source.write_text("val controlled = request.input\nexecute(controlled)\n", encoding="utf-8")
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    conn.execute(
+        "INSERT INTO taint_sources VALUES ('T1', NULL, 'http', 'input', 'src/Handler.kt:1')"
+    )
+    conn.execute(
+        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'execute', 'unknown', '[]')"
+    )
+    conn.execute(
+        "INSERT INTO flows VALUES ('F1', 'T1', 'K1', 'CWE-89', 'test', ?, NULL, 'inferred')",
+        [json.dumps([["src/Handler.kt", 1], ["src/Handler.kt", 2]])],
+    )
+
+    bundle = build_evidence_bundle(
+        conn,
+        {"id": "relative", "stream": "A", "fid": "F1"},
+        source_root=source_root,
+    )
+
+    assert len(bundle.excerpts) == 2
+    assert all(excerpt.file == source.as_posix() for excerpt in bundle.excerpts)
+    assert "request.input" in bundle.excerpts[0].code_excerpt

@@ -15,7 +15,7 @@ from ai_codescan.runs.state import load_or_create
 from ai_codescan.slice import extract_slice
 
 
-def _flow_row(*, fid: str = "L-001", file: str = "/abs/x.ts") -> dict[str, object]:
+def _flow_row(*, file: str, fid: str = "L-001") -> dict[str, object]:
     return {
         "fid": fid,
         "cwe": "CWE-89",
@@ -29,29 +29,41 @@ def test_ingest_llm_heavy_flows_inserts_rows(tmp_path: Path) -> None:
     db = tmp_path / "x.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    x_source = source_root / "x.ts"
+    y_source = source_root / "y.ts"
+    source_text = "\n".join(f"line {line}" for line in range(1, 50)) + "\n"
+    x_source.write_text(source_text, encoding="utf-8")
+    y_source.write_text(source_text, encoding="utf-8")
 
     flows = tmp_path / "flows.jsonl"
     flows.write_text(
         "\n".join(
             [
-                __import__("json").dumps(_flow_row()),
-                __import__("json").dumps(_flow_row(fid="L-002", file="/abs/y.ts")),
+                __import__("json").dumps(_flow_row(file="x.ts")),
+                __import__("json").dumps(_flow_row(fid="L-002", file=y_source.as_posix())),
             ]
         ),
         encoding="utf-8",
     )
 
-    n = ingest_llm_heavy_flows(conn, flows_path=flows)
+    n = ingest_llm_heavy_flows(conn, flows_path=flows, source_root=source_root)
     assert n == 2
     rows = conn.execute("SELECT engine, cwe FROM flows ORDER BY fid").fetchall()
     assert rows == [("llm-heavy", "CWE-89"), ("llm-heavy", "CWE-89")]
     steps_row = conn.execute("SELECT steps_json FROM flows WHERE fid = 'L-001'").fetchone()
     assert steps_row is not None
     assert json.loads(steps_row[0]) == [
-        ["/abs/x.ts", 13, 13],
-        ["/abs/x.ts", 42, 42],
+        [x_source.as_posix(), 13, 13],
+        [x_source.as_posix(), 42, 42],
     ]
-    bundle = extract_slice(conn, flow_id="L-001", context_lines=1)
+    bundle = extract_slice(
+        conn,
+        flow_id="L-001",
+        source_root=source_root,
+        context_lines=1,
+    )
     assert bundle is not None
     assert [step.line for step in bundle.steps] == [13, 42]
 
@@ -63,14 +75,95 @@ def test_ingest_rejects_invalid_lines(tmp_path: Path) -> None:
     flows = tmp_path / "flows.jsonl"
     flows.write_text("not-json\n\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="invalid JSON"):
-        ingest_llm_heavy_flows(conn, flows_path=flows)
+        ingest_llm_heavy_flows(conn, flows_path=flows, source_root=tmp_path)
 
 
 def test_ingest_missing_file_returns_zero(tmp_path: Path) -> None:
     db = tmp_path / "z.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)
-    assert ingest_llm_heavy_flows(conn, flows_path=tmp_path / "missing.jsonl") == 0
+    assert (
+        ingest_llm_heavy_flows(
+            conn,
+            flows_path=tmp_path / "missing.jsonl",
+            source_root=tmp_path,
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize("bad_path", ("/etc/passwd", "../outside.ts", "linked.ts"))
+def test_ingest_rejects_source_paths_outside_snapshot(
+    tmp_path: Path,
+    bad_path: str,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    valid = source_root / "valid.ts"
+    valid.write_text("source();\nsink();\n", encoding="utf-8")
+    outside = tmp_path / "outside.ts"
+    outside.write_text("outside sentinel\n", encoding="utf-8")
+    (source_root / "linked.ts").symlink_to(outside)
+    row = _flow_row(file=bad_path)
+    row["sink"] = {"file": valid.as_posix(), "line": 2, "class": "sql.exec"}
+    row["steps"] = [
+        {"file": bad_path, "line": 13},
+        {"file": valid.as_posix(), "line": 2},
+    ]
+    flows = tmp_path / "flows.jsonl"
+    flows.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    conn = duckdb.connect(str(tmp_path / "contained.duckdb"))
+    apply_schema(conn)
+
+    with pytest.raises(RuntimeError, match=r"invalid source\.file.*escapes snapshot"):
+        ingest_llm_heavy_flows(conn, flows_path=flows, source_root=source_root)
+
+    assert conn.execute("SELECT COUNT(*) FROM flows").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM taint_sources").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM taint_sinks").fetchone() == (0,)
+
+
+def test_ingest_validates_all_paths_before_inserting_any_flow(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    valid = source_root / "valid.ts"
+    valid.write_text("\n" * 50, encoding="utf-8")
+    flows = tmp_path / "flows.jsonl"
+    flows.write_text(
+        json.dumps(_flow_row(file=valid.as_posix()))
+        + "\n"
+        + json.dumps(_flow_row(file="/etc/passwd", fid="poisoned"))
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = duckdb.connect(str(tmp_path / "transactional.duckdb"))
+    apply_schema(conn)
+
+    with pytest.raises(RuntimeError, match="escapes snapshot"):
+        ingest_llm_heavy_flows(conn, flows_path=flows, source_root=source_root)
+
+    assert conn.execute("SELECT COUNT(*) FROM flows").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM taint_sources").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM taint_sinks").fetchone() == (0,)
+
+
+def test_ingest_requires_steps_to_match_source_and_sink(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source = source_root / "flow.ts"
+    source.write_text("source();\nsink();\n", encoding="utf-8")
+    row = _flow_row(file=source.as_posix())
+    row["steps"] = [
+        {"file": source.as_posix(), "line": 12},
+        {"file": source.as_posix(), "line": 42},
+    ]
+    flows = tmp_path / "flows.jsonl"
+    flows.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    conn = duckdb.connect(str(tmp_path / "mismatch.duckdb"))
+    apply_schema(conn)
+
+    with pytest.raises(RuntimeError, match="first step must match source"):
+        ingest_llm_heavy_flows(conn, flows_path=flows, source_root=source_root)
 
 
 def test_run_llm_heavy_uses_requested_codex_provider_and_model(
@@ -140,6 +233,8 @@ def test_run_llm_heavy_invalid_output_stays_incomplete_then_retries(
     repo_dir = tmp_path / "repo"
     source_root = repo_dir / "source"
     source_root.mkdir(parents=True)
+    source_file = source_root / "x.ts"
+    source_file.write_text("\n" * 50, encoding="utf-8")
     db_path = repo_dir / "index.duckdb"
     conn = duckdb.connect(str(db_path))
     apply_schema(conn)
@@ -159,7 +254,11 @@ def test_run_llm_heavy_invalid_output_stays_incomplete_then_retries(
         nonlocal attempts
         attempts += 1
         flows = Path(kwargs["env"]["AI_CODESCAN_RUN_DIR"]) / "llm_heavy_flows.jsonl"
-        content = "{truncated\n" if attempts == 1 else json.dumps(_flow_row()) + "\n"
+        content = (
+            "{truncated\n"
+            if attempts == 1
+            else json.dumps(_flow_row(file=source_file.as_posix())) + "\n"
+        )
         flows.write_text(content, encoding="utf-8")
 
     monkeypatch.setattr(llm_heavy_mod, "is_available", lambda _provider: True)

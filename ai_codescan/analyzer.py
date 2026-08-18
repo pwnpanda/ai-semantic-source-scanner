@@ -128,6 +128,7 @@ def _stage_slices(
     conn: duckdb.DuckDBPyConnection,
     items: list[QueueItem],
     *,
+    source_root: Path,
     max_bundle_bytes: int | None = None,
 ) -> dict[str, int]:
     """Write compatibility slices and generalized evidence bundles for queue items.
@@ -153,13 +154,13 @@ def _stage_slices(
         if parsed := _loc_parts(it.loc):
             candidate["file"] = parsed[0]
             candidate["line"] = parsed[1]
-        evidence = build_evidence_bundle(conn, candidate)
+        evidence = build_evidence_bundle(conn, candidate, source_root=source_root)
         if max_bundle_bytes is not None:
             evidence = truncate_bundle_to(evidence, max_bytes=max_bundle_bytes)
         json_bundle_path, _md_bundle_path = write_evidence_bundle(evidence, bundles_dir=bundles_dir)
         bundle_sizes[it.nomination_id] = json_bundle_path.stat().st_size
         if flow_id:
-            bundle = extract_slice(conn, flow_id=flow_id)
+            bundle = extract_slice(conn, flow_id=flow_id, source_root=source_root)
             if bundle:
                 (slices_dir / f"{it.nomination_id}.json").write_text(
                     json.dumps(
@@ -206,6 +207,7 @@ def run_analyzer(
             state,
             conn,
             review_items,
+            source_root=repo_dir / "source",
             max_bundle_bytes=limits.max_bundle_bytes,
         )
         queue_path.write_text(render_queue(review_items), encoding="utf-8")

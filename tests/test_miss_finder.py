@@ -38,8 +38,8 @@ def test_build_miss_candidates_id_is_content_addressed_and_stable(tmp_path: Path
         [source],
     )
 
-    first = build_miss_candidates(conn)
-    second = build_miss_candidates(conn)
+    first = build_miss_candidates(conn, source_root=tmp_path)
+    second = build_miss_candidates(conn, source_root=tmp_path)
 
     assert [c["id"] for c in first] == [c["id"] for c in second], (
         "candidate IDs must be deterministic across runs"
@@ -69,7 +69,7 @@ def test_build_miss_candidates_id_differs_per_line(tmp_path: Path) -> None:
         [source],
     )
 
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=tmp_path)
     by_line = {c["line"]: c["id"] for c in candidates if c["vector"] == "authz/bola"}
     assert len(by_line) == 2
     assert by_line[10] != by_line[20]
@@ -80,33 +80,36 @@ def test_semantic_candidates_with_same_stable_identity_are_deduplicated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = _connect(tmp_path)
-    shared = {
-        "concern": "generic concern",
-        "vector": "workflow/validation-bypass",
-        "cwe": "CWE-693",
-        "line": 12,
-        "name": "execute",
-        "evidence": "if (options.skipValidation)",
-    }
+
+    def hotspot(file: str, heuristic: str) -> SemanticHotspot:
+        return SemanticHotspot(
+            concern="generic concern",
+            vector="workflow/validation-bypass",
+            cwe="CWE-693",
+            file=file,
+            line=12,
+            name="execute",
+            heuristic=heuristic,
+            evidence="if (options.skipValidation)",
+        )
+
     hotspots = [
-        SemanticHotspot(
-            file="/cache/one/sample-deadbeef/source/src/Handler.kt",
-            heuristic="first wording",
-            **shared,
+        hotspot(
+            "/cache/one/sample-deadbeef/source/src/Handler.kt",
+            "first wording",
         ),
-        SemanticHotspot(
-            file="/different/cache/sample-deadbeef/source/src/Handler.kt",
-            heuristic="reworded heuristic",
-            **shared,
+        hotspot(
+            "/different/cache/sample-deadbeef/source/src/Handler.kt",
+            "reworded heuristic",
         ),
     ]
     monkeypatch.setattr(
         miss_finder_module,
         "discover_semantic_hotspots",
-        lambda _conn: hotspots,
+        lambda _conn, **_kwargs: hotspots,
     )
 
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=tmp_path)
 
     assert len(candidates) == 1
     assert len({candidate["id"] for candidate in candidates}) == 1
@@ -124,7 +127,7 @@ def test_non_cache_source_directories_do_not_collide(tmp_path: Path) -> None:
 
     candidates = [
         candidate
-        for candidate in build_miss_candidates(conn)
+        for candidate in build_miss_candidates(conn, source_root=tmp_path)
         if candidate["vector"] == "authz/bola"
     ]
 
@@ -140,7 +143,7 @@ def test_build_miss_candidates_from_entrypoint_risk_signals(tmp_path: Path) -> N
         [source],
     )
 
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=tmp_path)
 
     vectors = {candidate["vector"] for candidate in candidates}
     assert {"authz/bola", "authz/bfla", "authn/missing-authn"} <= vectors
@@ -164,7 +167,7 @@ def test_build_miss_candidates_suppressed_by_nearby_authz_signal(tmp_path: Path)
         [source],
     )
 
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=tmp_path)
 
     assert candidates == []
 
@@ -190,7 +193,7 @@ def test_build_miss_candidates_marks_near_existing_flow_without_touching_previou
         ["joern", json.dumps([[source, 50]])],
     )
 
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=tmp_path)
 
     assert len(candidates) == 1
     assert "near existing flow" not in candidates[0]["evidence"]
@@ -216,7 +219,7 @@ def test_build_miss_candidates_keeps_same_cwe_overlap_with_annotation(
         ["codeql", json.dumps([[source, 10]])],
     )
 
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=tmp_path)
     bola = next((c for c in candidates if c["vector"] == "authz/bola"), None)
 
     assert bola is not None, "miss-finder must keep same-CWE candidate (Invariant 3)"
@@ -232,7 +235,7 @@ def test_bola_fixture_positive_route_is_flagged(tmp_path: Path) -> None:
         [source],
     )
 
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=tmp_path)
 
     assert any(candidate["vector"] == "authz/bola" for candidate in candidates)
 
@@ -253,7 +256,7 @@ def test_bola_fixture_clean_route_is_not_flagged(tmp_path: Path) -> None:
         [source],
     )
 
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=tmp_path)
 
     assert not any(candidate["vector"] == "authz/bola" for candidate in candidates)
 
@@ -267,7 +270,7 @@ def test_write_miss_candidates_persists_scores_and_jsonl(tmp_path: Path) -> None
     )
     out = tmp_path / "miss_candidates.jsonl"
 
-    candidates = write_miss_candidates(conn, out_path=out)
+    candidates = write_miss_candidates(conn, out_path=out, source_root=tmp_path)
 
     assert out.is_file()
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
@@ -299,6 +302,7 @@ def test_write_miss_candidates_writes_exploratory_bundles(tmp_path: Path) -> Non
     candidates = write_miss_candidates(
         conn,
         out_path=tmp_path / "miss_candidates.jsonl",
+        source_root=tmp_path,
         bundles_dir=bundles_dir,
     )
 
@@ -331,6 +335,7 @@ def test_write_miss_candidates_redacts_all_credentials_in_shared_context(tmp_pat
     candidates = write_miss_candidates(
         conn,
         out_path=tmp_path / "miss_candidates.jsonl",
+        source_root=tmp_path,
         bundles_dir=bundles_dir,
     )
 
@@ -355,6 +360,7 @@ def test_write_miss_candidates_bounds_bundles_to_review_queue(tmp_path: Path) ->
     candidates = write_miss_candidates(
         conn,
         out_path=tmp_path / "miss_candidates.jsonl",
+        source_root=tmp_path,
         bundles_dir=bundles_dir,
         max_bundles=1,
     )
@@ -376,7 +382,7 @@ def test_write_miss_candidates_removes_stale_bundle_for_unstaged_current_id(
         "INSERT INTO entrypoints VALUES (NULL, 'http_route', 'app.get /orders/{order_id}', ?, 1)",
         [source.as_posix()],
     )
-    candidate_id = str(build_miss_candidates(conn)[0]["id"])
+    candidate_id = str(build_miss_candidates(conn, source_root=tmp_path)[0]["id"])
     bundles_dir = tmp_path / "miss_bundles"
     bundles_dir.mkdir()
     stale_json = bundles_dir / f"{candidate_id}.json"
@@ -387,6 +393,7 @@ def test_write_miss_candidates_removes_stale_bundle_for_unstaged_current_id(
     candidates = write_miss_candidates(
         conn,
         out_path=tmp_path / "miss_candidates.jsonl",
+        source_root=tmp_path,
         bundles_dir=bundles_dir,
         max_bundles=0,
     )
@@ -404,7 +411,7 @@ def test_write_miss_candidates_purges_stale_review_feedback_and_scores(tmp_path:
         "INSERT INTO entrypoints VALUES (NULL, 'http_route', 'app.get /orders/{order_id}', ?, 1)",
         [source.as_posix()],
     )
-    candidate_id = str(build_miss_candidates(conn)[0]["id"])
+    candidate_id = str(build_miss_candidates(conn, source_root=tmp_path)[0]["id"])
     finding_id = "F-miss-stale"
     conn.execute(
         """
@@ -467,7 +474,11 @@ def test_write_miss_candidates_purges_stale_review_feedback_and_scores(tmp_path:
     done_dir.mkdir()
     (done_dir / candidate_id).write_text("old-fingerprint", encoding="utf-8")
 
-    candidates = write_miss_candidates(conn, out_path=tmp_path / "miss_candidates.jsonl")
+    candidates = write_miss_candidates(
+        conn,
+        out_path=tmp_path / "miss_candidates.jsonl",
+        source_root=tmp_path,
+    )
 
     review_count = conn.execute(
         "SELECT COUNT(*) FROM review_verdicts WHERE reviewer = 'miss_reviewer'"
@@ -523,7 +534,11 @@ def test_write_miss_candidates_purges_stale_review_feedback_and_scores(tmp_path:
         [candidate_id, candidate_id, candidate_id],
     )
 
-    write_miss_candidates(conn, out_path=tmp_path / "miss_candidates.jsonl")
+    write_miss_candidates(
+        conn,
+        out_path=tmp_path / "miss_candidates.jsonl",
+        source_root=tmp_path,
+    )
 
     preserved_count = conn.execute(
         "SELECT COUNT(*) FROM review_verdicts WHERE reviewer = 'miss_reviewer'"

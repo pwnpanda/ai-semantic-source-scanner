@@ -58,7 +58,7 @@ def _candidates_for(target: Path, cache_root: Path) -> list[dict[str, object]]:
     )
     conn = duckdb.connect(str(db_path))
     try:
-        return build_miss_candidates(conn)
+        return build_miss_candidates(conn, source_root=db_path.parent / "source")
     finally:
         conn.close()
 
@@ -122,7 +122,11 @@ def test_semantic_hotspots_are_ranked_before_contextual_route_smells(tmp_path: P
     out_path = tmp_path / "candidates.jsonl"
     conn = duckdb.connect(str(db_path))
     try:
-        written = write_miss_candidates(conn, out_path=out_path)
+        written = write_miss_candidates(
+            conn,
+            out_path=out_path,
+            source_root=db_path.parent / "source",
+        )
     finally:
         conn.close()
 
@@ -158,6 +162,7 @@ def test_yaml_credential_is_redacted_from_evidence_bundles(tmp_path: Path) -> No
         write_miss_candidates(
             conn,
             out_path=tmp_path / "candidates.jsonl",
+            source_root=db_path.parent / "source",
             bundles_dir=bundles_dir,
         )
     finally:
@@ -1105,6 +1110,7 @@ secondary:
         candidates = write_miss_candidates(
             conn,
             out_path=tmp_path / "candidates.jsonl",
+            source_root=tmp_path,
             bundles_dir=bundles_dir,
         )
     finally:

@@ -17,6 +17,8 @@ from typing import Literal
 
 import duckdb
 
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
+
 SignalStrength = Literal["contextual", "strong", "deterministic"]
 
 _SUPPORTED_SUFFIXES = {".java", ".kt", ".kts", ".yaml", ".yml"}
@@ -1280,8 +1282,14 @@ def scan_source_file(
     *,
     language: str,
     symbols: list[tuple[str, int, int]],
+    source_root: Path | None = None,
 ) -> list[SemanticHotspot]:
     """Return semantic hotspots for one indexed JVM/configuration source file."""
+    if source_root is not None:
+        try:
+            path = resolve_contained_file(source_root, path)
+        except SourcePathError:
+            return []
     if path.suffix.lower() not in _SUPPORTED_SUFFIXES or not path.is_file():
         return []
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -1302,7 +1310,11 @@ def scan_source_file(
     return found
 
 
-def discover_semantic_hotspots(conn: duckdb.DuckDBPyConnection) -> list[SemanticHotspot]:
+def discover_semantic_hotspots(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    source_root: Path,
+) -> list[SemanticHotspot]:
     """Scan source paths already recorded in the project index."""
     symbols_by_file: dict[str, list[tuple[str, int, int]]] = defaultdict(list)
     symbol_rows = conn.execute(
@@ -1325,6 +1337,7 @@ def discover_semantic_hotspots(conn: duckdb.DuckDBPyConnection) -> list[Semantic
                 path,
                 language=str(language or ""),
                 symbols=symbols_by_file.get(path.as_posix(), []),
+                source_root=source_root,
             )
         )
 

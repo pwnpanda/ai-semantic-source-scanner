@@ -13,6 +13,8 @@ from typing import Any
 
 import duckdb
 
+from ai_codescan.source_paths import resolve_contained_file
+
 
 def _records_for_file(conn: duckdb.DuckDBPyConnection, file: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
@@ -95,14 +97,12 @@ def sidecar_path_for(snapshot_root: Path, sidecars_root: Path, file_abs: str) ->
     """Return the path where a file's sidecar JSONL should live.
 
     The sidecar mirrors the snapshot tree's relative layout under
-    ``sidecars_root``. If ``file_abs`` is outside the snapshot, fall back to
-    a flat layout keyed by the leaf name.
+    ``sidecars_root``. Scanner-supplied paths outside the snapshot, including
+    traversal and symlink escapes, are rejected.
     """
-    fp = Path(file_abs)
-    try:
-        rel = fp.relative_to(snapshot_root)
-    except ValueError:
-        rel = Path(fp.name)
+    root = snapshot_root.resolve(strict=True)
+    fp = resolve_contained_file(root, file_abs)
+    rel = fp.relative_to(root)
     return sidecars_root / rel.with_suffix(rel.suffix + ".enrich.jsonl")
 
 

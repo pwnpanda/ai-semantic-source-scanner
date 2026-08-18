@@ -3,9 +3,11 @@
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from ai_codescan.index.duckdb_ingest import ingest
 from ai_codescan.index.duckdb_schema import apply_schema
+from ai_codescan.source_paths import SourcePathError
 
 
 def test_apply_schema_creates_phase1_tables(tmp_path: Path) -> None:
@@ -58,12 +60,16 @@ def test_ingest_files_and_symbols(tmp_path: Path) -> None:
     db = tmp_path / "ing.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source = source_root / "x.ts"
+    source.write_text("\n" * 10, encoding="utf-8")
 
-    file_records = [{"file": "/abs/x.ts", "lang": "ts", "lineCount": 10}]
+    file_records = [{"file": source.as_posix(), "lang": "ts", "lineCount": 10}]
     symbol_records = [
         {
             "type": "symbol",
-            "file": "/abs/x.ts",
+            "file": source.as_posix(),
             "kind": "function",
             "name": "greet",
             "range": [1, 3],
@@ -74,7 +80,7 @@ def test_ingest_files_and_symbols(tmp_path: Path) -> None:
         {
             "type": "xref",
             "kind": "call",
-            "file": "/abs/x.ts",
+            "file": source.as_posix(),
             "line": 5,
             "callerSyntheticId": None,
             "calleeText": "greet",
@@ -87,31 +93,35 @@ def test_ingest_files_and_symbols(tmp_path: Path) -> None:
         xrefs=xref_records,
         scip_lookup={},
         project_id="p",
-        snapshot_root=Path("/abs"),
+        snapshot_root=source_root,
     )
     rows = conn.execute("SELECT id, kind, display_name FROM symbols").fetchall()
     assert ("synthetic:abc123", "function", "greet") in rows
     xref_rows = conn.execute("SELECT kind, file, line FROM xrefs").fetchall()
-    assert ("call", "/abs/x.ts", 5) in xref_rows
+    assert ("call", source.as_posix(), 5) in xref_rows
 
 
 def test_ingest_prefers_scip_symbol_over_synthetic(tmp_path: Path) -> None:
     db = tmp_path / "ing2.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source = source_root / "x.ts"
+    source.write_text("\n" * 10, encoding="utf-8")
 
-    file_records = [{"file": "/abs/x.ts", "lang": "ts", "lineCount": 10}]
+    file_records = [{"file": source.as_posix(), "lang": "ts", "lineCount": 10}]
     symbol_records = [
         {
             "type": "symbol",
-            "file": "/abs/x.ts",
+            "file": source.as_posix(),
             "kind": "function",
             "name": "greet",
             "range": [1, 3],
             "syntheticId": "synthetic:abc123",
         }
     ]
-    scip_lookup = {("/abs/x.ts", 1, 3): "scip:npm/@p/0.0.1/x.ts/greet#"}
+    scip_lookup = {(source.as_posix(), 1, 3): "scip:npm/@p/0.0.1/x.ts/greet#"}
     ingest(
         conn,
         files=file_records,
@@ -119,7 +129,40 @@ def test_ingest_prefers_scip_symbol_over_synthetic(tmp_path: Path) -> None:
         xrefs=[],
         scip_lookup=scip_lookup,
         project_id="p",
-        snapshot_root=Path("/abs"),
+        snapshot_root=source_root,
     )
     rows = conn.execute("SELECT id, sym FROM symbols").fetchall()
     assert ("scip:npm/@p/0.0.1/x.ts/greet#", "scip:npm/@p/0.0.1/x.ts/greet#") in rows
+
+
+def test_ingest_validates_all_ast_paths_before_inserting(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    valid = source_root / "valid.ts"
+    valid.write_text("export const valid = true;\n", encoding="utf-8")
+    outside = tmp_path / "outside.ts"
+    outside.write_text("outside AST sentinel\n", encoding="utf-8")
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+
+    with pytest.raises(SourcePathError, match="escapes snapshot"):
+        ingest(
+            conn,
+            files=[{"file": valid.as_posix(), "lang": "ts", "lineCount": 1}],
+            symbols=[
+                {
+                    "type": "symbol",
+                    "file": outside.as_posix(),
+                    "kind": "function",
+                    "name": "poisoned",
+                    "range": [1, 1],
+                    "syntheticId": "synthetic:poisoned",
+                }
+            ],
+            xrefs=[],
+            scip_lookup={},
+            project_id="p",
+            snapshot_root=source_root,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM files").fetchone() == (0,)

@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.sidecars import emit_sidecars, sidecar_path_for
+from ai_codescan.source_paths import SourcePathError
 
 
 def _seed(conn: duckdb.DuckDBPyConnection, file: str) -> None:
@@ -75,12 +77,16 @@ def test_emit_is_idempotent(tmp_path: Path) -> None:
 def test_sidecar_path_for_inside_snapshot(tmp_path: Path) -> None:
     snap = tmp_path / "source"
     sidecars = tmp_path / "sidecars"
+    source = snap / "lib" / "x.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("// source\n", encoding="utf-8")
     p = sidecar_path_for(snap, sidecars, str(snap / "lib" / "x.ts"))
     assert p == sidecars / "lib" / "x.ts.enrich.jsonl"
 
 
-def test_sidecar_path_for_outside_snapshot_falls_back_to_leaf(tmp_path: Path) -> None:
+def test_sidecar_path_for_outside_snapshot_is_rejected(tmp_path: Path) -> None:
     snap = tmp_path / "source"
     sidecars = tmp_path / "sidecars"
-    p = sidecar_path_for(snap, sidecars, "/elsewhere/y.js")
-    assert p == sidecars / "y.js.enrich.jsonl"
+    snap.mkdir()
+    with pytest.raises(SourcePathError, match="escapes snapshot"):
+        sidecar_path_for(snap, sidecars, "/etc/passwd")

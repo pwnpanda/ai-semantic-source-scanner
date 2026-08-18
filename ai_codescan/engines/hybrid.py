@@ -24,6 +24,7 @@ from ai_codescan.engines import joern as joern_eng
 from ai_codescan.engines import semgrep as semgrep_eng
 from ai_codescan.ingest.sarif import ingest_sarif
 from ai_codescan.repo_lock import repo_scan_lock
+from ai_codescan.source_paths import resolve_contained_file
 
 log = logging.getLogger(__name__)
 
@@ -201,6 +202,30 @@ def _stable_id(prefix: str, *parts: str) -> str:
     return f"{prefix}:{hashlib.sha1(blob.encode('utf-8'), usedforsecurity=False).hexdigest()[:16]}"
 
 
+def _normalize_joern_paths(
+    flow: dict,
+    *,
+    snapshot_root: Path,
+    base: Path,
+) -> dict:
+    """Return a Joern flow whose endpoint paths are canonical and contained."""
+    source_file = resolve_contained_file(
+        snapshot_root,
+        str(flow.get("source_file") or ""),
+        relative_to=base,
+    )
+    sink_file = resolve_contained_file(
+        snapshot_root,
+        str(flow.get("sink_file") or ""),
+        relative_to=base,
+    )
+    return {
+        **flow,
+        "source_file": source_file.as_posix(),
+        "sink_file": sink_file.as_posix(),
+    }
+
+
 def _ingest_joern_jsonl(  # noqa: PLR0913 - keyword-only fan-in is the cleanest expression here
     conn: duckdb.DuckDBPyConnection,
     *,
@@ -226,8 +251,15 @@ def _ingest_joern_jsonl(  # noqa: PLR0913 - keyword-only fan-in is the cleanest 
     path against ``snapshot_root`` (resolving ``project_root`` first) makes
     the absolute path stable regardless of which project's run produced it.
     """
-    flows = joern_eng.parse_flows(jsonl_path)
     base = project_root if project_root is not None else snapshot_root
+    flows = [
+        _normalize_joern_paths(
+            flow,
+            snapshot_root=snapshot_root,
+            base=base,
+        )
+        for flow in joern_eng.parse_flows(jsonl_path)
+    ]
     inserted = 0
     for f in flows:
         source_file = str(f.get("source_file") or "")
@@ -240,15 +272,6 @@ def _ingest_joern_jsonl(  # noqa: PLR0913 - keyword-only fan-in is the cleanest 
         sink_class = str(f.get("sink_class") or "unknown")
         sink_name = str(f.get("sink_name") or "")
         flow_type = str(f.get("flow_type") or "dataflow")
-        # Resolve relative paths against the project's own root so flows from
-        # nested projects collapse with overlapping flows from the parent
-        # project. ``str(Path(...).resolve())`` collapses any ``..`` /
-        # symlinks too.
-        if not source_file.startswith("/"):
-            source_file = str((base / source_file).resolve())
-        if not sink_file.startswith("/"):
-            sink_file = str((base / sink_file).resolve())
-
         # Recall-First Invariant 2: mitigation patterns (e.g. canonicalisation +
         # root containment for CWE-22) DEMOTE candidates via score factors during
         # scoring. They MUST NOT suppress the flow at ingest. See

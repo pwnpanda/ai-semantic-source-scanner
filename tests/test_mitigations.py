@@ -120,6 +120,7 @@ def test_mitigations_for_candidate_reads_flow_context(tmp_path: Path) -> None:
             "sink_class": "sql.exec",
             "parameterization": "unknown",
         },
+        source_root=tmp_path,
     )
 
     assert {signal["kind"] for signal in signals} >= {"sqli.bound-parameter"}

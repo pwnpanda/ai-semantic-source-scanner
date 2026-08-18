@@ -190,7 +190,11 @@ def _stage_inputs(
     bundles_dir = state.run_dir / "bundles"
     with queue_path.open("w", encoding="utf-8") as f:
         for q in queue:
-            bundle = build_evidence_bundle(conn, q)
+            bundle = build_evidence_bundle(
+                conn,
+                q,
+                source_root=repo_dir / "source",
+            )
             bundle_json, bundle_md = write_evidence_bundle(bundle, bundles_dir=bundles_dir)
             enriched = {
                 **q,
@@ -248,7 +252,7 @@ def run_nominator(
             conn,
             target_bug_classes=[c.name for c in bug_classes],
         )
-        scores = score_candidates(conn, queue)
+        scores = score_candidates(conn, queue, source_root=repo_dir / "source")
         persist_candidate_scores(conn, scores)
         queue = attach_scores(queue, scores)
         _stage_inputs(state, repo_dir, queue, conn)

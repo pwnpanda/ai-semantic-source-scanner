@@ -355,6 +355,20 @@ def test_find_unresolved_skips_static_keys(tmp_path: Path) -> None:
     assert found == []
 
 
+def test_find_unresolved_rejects_xref_path_outside_snapshot(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    outside = tmp_path / "outside.ts"
+    outside.write_text("cache.set(`user:${id}`, body);\n", encoding="utf-8")
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    _seed_xref(conn, outside.as_posix(), 1)
+
+    found = find_unresolved_dynamic_calls(conn, snapshot_root=source_root)
+
+    assert found == []
+
+
 def test_merge_proposals_keeps_high_confidence_only(tmp_path: Path) -> None:
     schema_path = tmp_path / "schema.taint.yml"
     schema_path.write_text("tables: {}\n", encoding="utf-8")

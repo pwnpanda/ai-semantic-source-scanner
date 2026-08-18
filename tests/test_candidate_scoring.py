@@ -37,7 +37,7 @@ def test_phase_20_21_sink_classes_contribute_expected_score(
         "sink_class": sink_class,
     }
 
-    score = score_candidates(conn, [candidate])[0]
+    score = score_candidates(conn, [candidate], source_root=tmp_path)[0]
 
     factor = next(item for item in score.factors if item.name == "dangerous_sink")
     assert factor.value == expected_weight
@@ -60,7 +60,7 @@ def test_source_aware_semantic_strength_contributes_expected_score(
         "signal_strength": signal_strength,
     }
 
-    score = score_candidates(conn, [candidate])[0]
+    score = score_candidates(conn, [candidate], source_root=tmp_path)[0]
 
     factor = next(item for item in score.factors if item.name == "semantic_signal")
     assert factor.value == expected_weight
@@ -82,7 +82,7 @@ def test_score_candidates_ranks_static_sql_flow_high(tmp_path: Path) -> None:
         "parameterization": "unknown",
     }
 
-    score = score_candidates(conn, [candidate])[0]
+    score = score_candidates(conn, [candidate], source_root=tmp_path)[0]
 
     assert score.label == "high"
     assert score.processing_bucket == "report"
@@ -109,7 +109,7 @@ def test_score_candidates_does_not_hide_fixture_candidates(tmp_path: Path) -> No
         "parameterization": "unknown",
     }
 
-    score = score_candidates(conn, [candidate])[0]
+    score = score_candidates(conn, [candidate], source_root=tmp_path)[0]
 
     assert score.label in {"low", "medium"}
     assert score.score > 0.0
@@ -148,7 +148,7 @@ def test_score_candidates_annotates_mitigation_signals(tmp_path: Path) -> None:
         "parameterization": "unknown",
     }
 
-    score = score_candidates(conn, [candidate])[0]
+    score = score_candidates(conn, [candidate], source_root=tmp_path)[0]
     enriched = attach_scores([candidate], [score])[0]
 
     assert any(factor.name == "mitigation_signal" for factor in score.factors)
@@ -182,7 +182,7 @@ def test_score_candidates_demotes_colocation_fallback_flows(tmp_path: Path) -> N
         "flow_type": "dataflow",
         "parameterization": "unknown",
     }
-    scores = score_candidates(conn, [candidate, real])
+    scores = score_candidates(conn, [candidate, real], source_root=tmp_path)
 
     colo_factor = next(
         (factor for factor in scores[0].factors if factor.name == "colocation_fallback"),
@@ -208,7 +208,7 @@ def test_score_candidates_demotes_overlap_with_deterministic(tmp_path: Path) -> 
         "overlap_with_deterministic": ["CWE-639"],
     }
 
-    score = score_candidates(conn, [candidate])[0]
+    score = score_candidates(conn, [candidate], source_root=tmp_path)[0]
 
     overlap_factor = next(
         (factor for factor in score.factors if factor.name == "overlap_with_deterministic"),
@@ -248,7 +248,7 @@ def test_score_candidates_uses_sidecar_context_when_available(tmp_path: Path) ->
         "source_loc": f"{source}:1",
     }
 
-    score = score_candidates(conn, [candidate])[0]
+    score = score_candidates(conn, [candidate], source_root=repo / "source")[0]
 
     factor = next(factor for factor in score.factors if factor.name == "sidecar_context")
     assert factor.value > 0
@@ -256,12 +256,35 @@ def test_score_candidates_uses_sidecar_context_when_available(tmp_path: Path) ->
     assert "source" in factor.reason
 
 
+def test_score_candidates_rejects_sidecar_symlink_escape(tmp_path: Path) -> None:
+    repo = tmp_path / "cache" / "repo-id"
+    source_root = repo / "source"
+    source = source_root / "handler.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("export const handler = input;\n", encoding="utf-8")
+    outside = tmp_path / "outside.enrich.jsonl"
+    outside.write_text(json.dumps({"kind": "source"}) + "\n", encoding="utf-8")
+    sidecar = repo / "sidecars" / "handler.ts.enrich.jsonl"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.symlink_to(outside)
+    conn = duckdb.connect(str(repo / "index.duckdb"))
+    apply_schema(conn)
+
+    score = score_candidates(
+        conn,
+        [{"id": "A-poisoned", "stream": "A", "source_loc": f"{source}:1"}],
+        source_root=source_root,
+    )[0]
+
+    assert all(factor.name != "sidecar_context" for factor in score.factors)
+
+
 def test_persist_and_attach_scores(tmp_path: Path) -> None:
     db = tmp_path / "index.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)
     candidate = {"id": "B-auth-S1", "stream": "B", "concern": "authz-callsite"}
-    scores = score_candidates(conn, [candidate])
+    scores = score_candidates(conn, [candidate], source_root=tmp_path)
 
     persist_candidate_scores(conn, scores)
     enriched = attach_scores([candidate], scores)
@@ -296,7 +319,7 @@ def test_persist_scores_adds_processing_bucket_to_existing_table(tmp_path: Path)
         """
     )
     candidate = {"id": "B-auth-S2", "stream": "B", "concern": "authz-callsite"}
-    scores = score_candidates(conn, [candidate])
+    scores = score_candidates(conn, [candidate], source_root=tmp_path)
 
     persist_candidate_scores(conn, scores)
 

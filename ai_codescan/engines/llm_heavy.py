@@ -25,6 +25,7 @@ from ai_codescan.llm import LLMConfig, is_available
 from ai_codescan.nominator import write_llm_cmd_script
 from ai_codescan.repo_lock import repo_scan_lock
 from ai_codescan.runs.state import RunState
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
 
 SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "llm_heavy"
 _MIN_FLOW_STEPS = 2
@@ -48,46 +49,94 @@ def _validated_location(value: object, *, label: str, line_number: int) -> dict:
     return location
 
 
-def _normalized_steps(value: object, *, line_number: int) -> list[list[object]]:
+def _normalized_location(
+    value: object,
+    *,
+    label: str,
+    line_number: int,
+    source_root: Path,
+) -> dict[str, object]:
+    location = _validated_location(value, label=label, line_number=line_number)
+    try:
+        file = resolve_contained_file(source_root, str(location["file"]))
+    except SourcePathError as exc:
+        raise RuntimeError(f"llm-heavy line {line_number}: invalid {label}.file: {exc}") from exc
+    return {**location, "file": file.as_posix()}
+
+
+def _normalized_steps(
+    value: object,
+    *,
+    line_number: int,
+    source_root: Path,
+) -> list[list[object]]:
     if not isinstance(value, list) or len(value) < _MIN_FLOW_STEPS:
         raise RuntimeError(f"llm-heavy line {line_number}: steps must contain at least two items")
     normalized: list[list[object]] = []
     for index, step in enumerate(value, start=1):
-        location = _validated_location(
+        location = _normalized_location(
             step,
             label=f"steps[{index}]",
             line_number=line_number,
+            source_root=source_root,
         )
         normalized.append([location["file"], location["line"], location["line"]])
     return normalized
 
 
-def _validated_flow(raw_line: str, *, line_number: int) -> dict:
+def _validated_flow(raw_line: str, *, line_number: int, source_root: Path) -> dict:
     try:
         entry = json.loads(raw_line)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"llm-heavy line {line_number}: invalid JSON") from exc
     if not isinstance(entry, dict):
         raise RuntimeError(f"llm-heavy line {line_number}: flow must be an object")
-    source = _validated_location(entry.get("source"), label="source", line_number=line_number)
-    sink = _validated_location(entry.get("sink"), label="sink", line_number=line_number)
+    source = _normalized_location(
+        entry.get("source"),
+        label="source",
+        line_number=line_number,
+        source_root=source_root,
+    )
+    sink = _normalized_location(
+        entry.get("sink"),
+        label="sink",
+        line_number=line_number,
+        source_root=source_root,
+    )
     for label, location in (("source", source), ("sink", sink)):
         if not isinstance(location.get("class"), str) or not location["class"]:
             raise RuntimeError(f"llm-heavy line {line_number}: {label}.class must be non-empty")
     cwe = entry.get("cwe")
     if not isinstance(cwe, str) or not cwe.startswith("CWE-") or not cwe[4:].isdigit():
         raise RuntimeError(f"llm-heavy line {line_number}: cwe must use CWE-<number>")
-    entry["steps"] = _normalized_steps(entry.get("steps"), line_number=line_number)
+    steps = _normalized_steps(
+        entry.get("steps"),
+        line_number=line_number,
+        source_root=source_root,
+    )
+    if steps[0][:2] != [source["file"], source["line"]]:
+        raise RuntimeError(f"llm-heavy line {line_number}: first step must match source")
+    if steps[-1][:2] != [sink["file"], sink["line"]]:
+        raise RuntimeError(f"llm-heavy line {line_number}: last step must match sink")
+    entry["source"] = source
+    entry["sink"] = sink
+    entry["steps"] = steps
     return entry
 
 
-def _load_validated_flows(flows_path: Path) -> list[dict]:
+def _load_validated_flows(flows_path: Path, *, source_root: Path) -> list[dict]:
     entries: list[dict] = []
     for line_number, raw_line in enumerate(
         flows_path.read_text(encoding="utf-8").splitlines(), start=1
     ):
         if raw_line.strip():
-            entries.append(_validated_flow(raw_line, line_number=line_number))
+            entries.append(
+                _validated_flow(
+                    raw_line,
+                    line_number=line_number,
+                    source_root=source_root,
+                )
+            )
     return entries
 
 
@@ -95,12 +144,13 @@ def ingest_llm_heavy_flows(
     conn: duckdb.DuckDBPyConnection,
     *,
     flows_path: Path,
+    source_root: Path,
     sarif_ref: str = "",
 ) -> int:
     """Read ``flows_path`` (JSONL) and insert each flow into DuckDB. Returns count."""
     if not flows_path.is_file():
         return 0
-    entries = _load_validated_flows(flows_path)
+    entries = _load_validated_flows(flows_path, source_root=source_root)
     inserted = 0
     for entry in entries:
         source = entry.get("source", {})
@@ -222,7 +272,11 @@ def _persist_llm_flows(
     conn = duckdb.connect(str(db_path))
     try:
         conn.execute("BEGIN TRANSACTION")
-        count = ingest_llm_heavy_flows(conn, flows_path=flows_path)
+        count = ingest_llm_heavy_flows(
+            conn,
+            flows_path=flows_path,
+            source_root=db_path.parent / "source",
+        )
         if scan_fingerprint:
             completion_stage = "complete"
             if base_has_gaps:

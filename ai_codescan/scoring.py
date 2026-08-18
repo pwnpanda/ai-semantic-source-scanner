@@ -15,6 +15,7 @@ from typing import Any
 import duckdb
 
 from ai_codescan.mitigations import mitigations_for_candidate
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
 
 SCORER_VERSION = "candidate-score-v1"
 _HIGH_SCORE = 0.75
@@ -204,22 +205,27 @@ def _source_file_for_candidate(candidate: dict[str, Any]) -> str:
     return str(candidate.get("file") or "")
 
 
-def _sidecar_path_for_source(file: str) -> Path | None:
-    path = Path(file)
-    parts = path.parts
-    if "source" not in parts:
+def _sidecar_path_for_source(file: str, *, source_root: Path) -> Path | None:
+    try:
+        root = source_root.resolve(strict=True)
+        source_file = resolve_contained_file(root, file)
+    except (OSError, SourcePathError):
         return None
-    source_index = len(parts) - 1 - list(reversed(parts)).index("source")
-    repo_root = Path(*parts[:source_index])
-    rel = Path(*parts[source_index + 1 :])
-    if not rel.name:
+    rel = source_file.relative_to(root)
+    sidecars_root = root.parent / "sidecars"
+    candidate = sidecars_root / rel.with_suffix(rel.suffix + ".enrich.jsonl")
+    try:
+        return resolve_contained_file(sidecars_root, candidate)
+    except SourcePathError:
         return None
-    return repo_root / "sidecars" / rel.with_suffix(rel.suffix + ".enrich.jsonl")
 
 
-def _sidecar_factor(candidate: dict[str, Any]) -> ScoreFactor | None:
-    sidecar_path = _sidecar_path_for_source(_source_file_for_candidate(candidate))
-    if sidecar_path is None or not sidecar_path.is_file():
+def _sidecar_factor(candidate: dict[str, Any], *, source_root: Path) -> ScoreFactor | None:
+    sidecar_path = _sidecar_path_for_source(
+        _source_file_for_candidate(candidate),
+        source_root=source_root,
+    )
+    if sidecar_path is None:
         return None
     kinds: set[str] = set()
     for raw in sidecar_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -305,6 +311,8 @@ def _has_entrypoint_nearby(conn: duckdb.DuckDBPyConnection, source_loc: str) -> 
 def score_candidate(  # noqa: PLR0912, PLR0915 - factor accumulator is intentionally flat
     conn: duckdb.DuckDBPyConnection,
     candidate: dict[str, Any],
+    *,
+    source_root: Path,
 ) -> CandidateScore:
     factors: list[ScoreFactor] = []
     stream = str(candidate.get("stream") or "")
@@ -387,7 +395,7 @@ def score_candidate(  # noqa: PLR0912, PLR0915 - factor accumulator is intention
         factors.append(path_factor)
         score += path_factor.value
 
-    if sidecar_factor := _sidecar_factor(candidate):
+    if sidecar_factor := _sidecar_factor(candidate, source_root=source_root):
         factors.append(sidecar_factor)
         score += sidecar_factor.value
 
@@ -414,7 +422,7 @@ def score_candidate(  # noqa: PLR0912, PLR0915 - factor accumulator is intention
         factors.append(ScoreFactor("overlap_with_deterministic", value, reason))
         score += value
 
-    mitigations = mitigations_for_candidate(conn, candidate)
+    mitigations = mitigations_for_candidate(conn, candidate, source_root=source_root)
     if mitigations:
         factors.append(
             ScoreFactor(
@@ -449,8 +457,10 @@ def score_candidate(  # noqa: PLR0912, PLR0915 - factor accumulator is intention
 def score_candidates(
     conn: duckdb.DuckDBPyConnection,
     candidates: list[dict[str, Any]],
+    *,
+    source_root: Path,
 ) -> list[CandidateScore]:
-    return [score_candidate(conn, candidate) for candidate in candidates]
+    return [score_candidate(conn, candidate, source_root=source_root) for candidate in candidates]
 
 
 def persist_candidate_scores(

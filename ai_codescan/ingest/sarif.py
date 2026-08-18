@@ -8,8 +8,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import duckdb
+
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
 
 _CWE_RE = re.compile(r"cwe[-/](\d+)", re.IGNORECASE)
 
@@ -29,9 +32,19 @@ def _stable_id(prefix: str, *parts: str) -> str:
 
 
 def _physical_to_loc(phys: dict[str, Any], snapshot_root: Path) -> tuple[str, int, int]:
-    uri = phys.get("artifactLocation", {}).get("uri", "")
+    uri = str(phys.get("artifactLocation", {}).get("uri", "") or "")
+    if not uri:
+        raise SourcePathError("SARIF physical location has no artifact URI")
+    parsed = urlparse(uri)
+    raw_path = unquote(uri)
+    if parsed.scheme:
+        if parsed.scheme != "file":
+            raise SourcePathError(f"SARIF artifact URI uses unsupported scheme: {uri}")
+        if parsed.netloc not in {"", "localhost"}:
+            raise SourcePathError(f"SARIF file URI has a remote authority: {uri}")
+        raw_path = unquote(parsed.path)
+    file_abs = resolve_contained_file(snapshot_root, raw_path).as_posix()
     region = phys.get("region", {})
-    file_abs = (snapshot_root / uri).as_posix() if uri else ""
     start = int(region.get("startLine", 0))
     end = int(region.get("endLine", region.get("startLine", 0)))
     return file_abs, start, end
@@ -51,6 +64,17 @@ class _IngestCtx:
     rather than on each result, so per-result ``properties.tags`` is often
     empty even when the rule clearly carries a CWE label. Looking the rule up
     here lets ``_extract_cwe`` find it."""
+
+
+def _validate_result_paths(result: dict[str, Any], snapshot_root: Path) -> None:
+    """Resolve every source/sink path before any SARIF row is inserted."""
+    sink_loc = result.get("locations", [{}])[0].get("physicalLocation", {})
+    _physical_to_loc(sink_loc, snapshot_root)
+    for flow in result.get("codeFlows", []):
+        for thread in flow.get("threadFlows", []):
+            for step in thread.get("locations", []):
+                physical = step.get("location", {}).get("physicalLocation", {})
+                _physical_to_loc(physical, snapshot_root)
 
 
 def _ingest_result(conn: duckdb.DuckDBPyConnection, result: dict[str, Any], ctx: _IngestCtx) -> int:
@@ -133,8 +157,12 @@ def ingest_sarif(
     Idempotent: re-ingesting the same SARIF leaves the DB unchanged.
     """
     data = json.loads(sarif_path.read_text(encoding="utf-8"))
+    runs = data.get("runs", [])
+    for run in runs:
+        for result in run.get("results", []):
+            _validate_result_paths(result, snapshot_root)
     flows_inserted = 0
-    for run in data.get("runs", []):
+    for run in runs:
         rule_tags: dict[str, list[str]] = {}
         for rule in run.get("tool", {}).get("driver", {}).get("rules", []) or []:
             rid = rule.get("id", "")

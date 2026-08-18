@@ -298,7 +298,7 @@ def miss_candidates_from_db(db_path: Path) -> list[FlowRecord]:
     """Return miss-finder candidates as eval-comparable records."""
     conn = duckdb.connect(str(db_path))
     try:
-        candidates = build_miss_candidates(conn)
+        candidates = build_miss_candidates(conn, source_root=db_path.parent / "source")
     finally:
         conn.close()
     return [

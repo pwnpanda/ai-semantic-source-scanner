@@ -9,6 +9,8 @@ from typing import Any
 
 import duckdb
 
+from ai_codescan.source_paths import resolve_contained_file
+
 ScipLookup = dict[tuple[str, int, int], str]
 """Map of (file, range_start, range_end) → SCIP symbol id."""
 
@@ -44,53 +46,55 @@ def ingest(  # noqa: PLR0913 - cohesive bulk-ingest entrypoint, kw-only args
     snapshot_root: Path,
 ) -> None:
     """Bulk-ingest AST + SCIP records into DuckDB tables."""
-    del snapshot_root  # reserved for future cross-referencing
     file_rows = []
     for f in files:
-        path = Path(f["file"])
+        path = resolve_contained_file(snapshot_root, str(f["file"]))
         rel = path.as_posix()
-        sha = _file_sha256(path) if path.is_absolute() and path.exists() else ""
-        size = path.stat().st_size if path.is_file() else 0
+        sha = _file_sha256(path)
+        size = path.stat().st_size
         file_rows.append((rel, sha, f.get("lang", "unknown"), project_id, size))
-    if file_rows:
-        conn.executemany(
-            "INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?)",
-            file_rows,
-        )
-
     sym_rows = []
     for s in symbols:
         sid = _resolve_symbol_id(s, scip_lookup)
         if not sid:
             continue
+        file = resolve_contained_file(snapshot_root, str(s["file"])).as_posix()
         sym_rows.append(
             (
                 sid,
                 sid,
                 s["kind"],
-                s["file"],
+                file,
                 s["range"][0],
                 s["range"][1],
                 None,
                 s.get("name"),
             )
         )
-    if sym_rows:
-        conn.executemany(
-            "INSERT OR REPLACE INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            sym_rows,
-        )
-
     xref_rows = []
     for x in xrefs:
+        raw_file = x.get("file")
+        file = None
+        if raw_file:
+            file = resolve_contained_file(snapshot_root, str(raw_file)).as_posix()
         xref_rows.append(
             (
                 x.get("callerSyntheticId"),
                 None,
                 x["kind"],
-                x.get("file"),
+                file,
                 x.get("line"),
             )
+        )
+    if file_rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?)",
+            file_rows,
+        )
+    if sym_rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            sym_rows,
         )
     if xref_rows:
         conn.executemany(

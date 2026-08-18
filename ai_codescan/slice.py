@@ -8,6 +8,8 @@ from pathlib import Path
 
 import duckdb
 
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
+
 
 @dataclass(frozen=True, slots=True)
 class SliceStep:
@@ -30,17 +32,26 @@ class SliceBundle:
     steps: list[SliceStep]
 
 
-def _read_excerpt(file: Path, start: int, end: int) -> str:
-    if not file.is_file():
-        return ""
-    lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
-    return "\n".join(lines[max(0, start - 1) : end])
+def _read_excerpt(
+    file: str,
+    *,
+    source_root: Path,
+    start: int,
+    end: int,
+) -> tuple[Path, str] | None:
+    try:
+        resolved = resolve_contained_file(source_root, file)
+    except SourcePathError:
+        return None
+    lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
+    return resolved, "\n".join(lines[max(0, start - 1) : end])
 
 
 def extract_slice(
     conn: duckdb.DuckDBPyConnection,
     *,
     flow_id: str,
+    source_root: Path,
     context_lines: int = 5,
 ) -> SliceBundle | None:
     """Return a slice bundle for ``flow_id`` or ``None`` if the flow is unknown."""
@@ -66,12 +77,20 @@ def extract_slice(
         start_line = int(entry[1])
         ctx_start = max(1, start_line - context_lines)
         ctx_end = start_line + context_lines
-        excerpt = _read_excerpt(Path(file_str), ctx_start, ctx_end)
+        result = _read_excerpt(
+            file_str,
+            source_root=source_root,
+            start=ctx_start,
+            end=ctx_end,
+        )
+        if result is None:
+            continue
+        resolved, excerpt = result
         n_lines_kept = len(excerpt.splitlines())
         actual_end = ctx_start + max(0, n_lines_kept - 1)
         steps.append(
             SliceStep(
-                file=file_str,
+                file=resolved.as_posix(),
                 line=start_line,
                 context_start=ctx_start,
                 context_end=actual_end,

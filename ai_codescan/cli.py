@@ -456,7 +456,11 @@ def _latest_run_dir(repo_dir: Path) -> Path:
     return max(runs_root.iterdir(), key=lambda p: p.stat().st_mtime)
 
 
-def _rescore_candidates(conn: duckdb.DuckDBPyConnection) -> int:
+def _rescore_candidates(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    source_root: Path,
+) -> int:
     """Rebuild the candidate queue and re-persist scores.
 
     Used after `adversarial-review` so a challenger's dispute shifts the
@@ -472,7 +476,7 @@ def _rescore_candidates(conn: duckdb.DuckDBPyConnection) -> int:
     )
 
     queue = build_queue(conn, target_bug_classes=[])
-    scores = score_candidates(conn, queue)
+    scores = score_candidates(conn, queue, source_root=source_root)
     persist_candidate_scores(conn, scores)
     return len(scores)
 
@@ -680,6 +684,7 @@ def miss_finder(
         generated = write_miss_candidates(
             conn,
             out_path=out_path,
+            source_root=repo_dir / "source",
             bundles_dir=bundle_output_dir,
             review_state_dir=repo_dir,
         )
@@ -821,7 +826,7 @@ def adversarial_review(
         persist_adversarial_challenges(conn, challenges)
         # Re-score so a disputed verdict immediately shifts candidate ranking
         # (a disputed dismissal re-elevates; a disputed report demotes).
-        _rescore_candidates(conn)
+        _rescore_candidates(conn, source_root=cache_root / repo_id / "source")
     finally:
         conn.close()
 
@@ -917,7 +922,13 @@ def view(
                 raise typer.Exit(code=1)
             file = row[0]
 
-        typer.echo(render_file_view(conn, file=file))
+        typer.echo(
+            render_file_view(
+                conn,
+                file=file,
+                source_root=cache_root / repo_id / "source",
+            )
+        )
     finally:
         conn.close()
 
@@ -2000,6 +2011,7 @@ def analyze(  # noqa: PLR0913 - Typer command options are intentionally explicit
         write_miss_candidates(
             conn,
             out_path=candidates_path,
+            source_root=repo_dir / "source",
             bundles_dir=repo_dir / "miss_bundles",
             max_bundles=miss_review_max_candidates,
             review_state_dir=repo_dir,

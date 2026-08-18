@@ -229,7 +229,11 @@ def build_risk_map(conn: duckdb.DuckDBPyConnection) -> list[RiskMapEntry]:
     return entries
 
 
-def build_miss_candidates(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+def build_miss_candidates(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    source_root: Path,
+) -> list[dict[str, Any]]:
     """Return high-recall Stream B candidates for non-source/sink bug classes."""
     candidates: list[MissCandidate] = []
     seen: set[tuple[str, str, int]] = set()
@@ -305,7 +309,7 @@ def build_miss_candidates(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any
                 ),
                 entry_context=context,
             )
-    for hotspot in discover_semantic_hotspots(conn):
+    for hotspot in discover_semantic_hotspots(conn, source_root=source_root):
         _append_semantic_hotspot(candidates, seen, hotspot)
 
     # Overlap with nearby deterministic flows is recorded as the
@@ -472,15 +476,16 @@ def _purge_stale_miss_feedback(
         )
 
 
-def write_miss_candidates(
+def write_miss_candidates(  # noqa: PLR0913 - one positional arg; controls are keyword-only
     conn: duckdb.DuckDBPyConnection,
     *,
     out_path: Path,
+    source_root: Path,
     bundles_dir: Path | None = None,
     max_bundles: int | None = None,
     review_state_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
-    candidates = build_miss_candidates(conn)
+    candidates = build_miss_candidates(conn, source_root=source_root)
     redactions_by_file = _redactions_by_file(candidates)
     candidates = [
         {
@@ -508,7 +513,7 @@ def write_miss_candidates(
         candidate_fingerprints=candidate_fingerprints,
         review_state_dir=review_state_dir or out_path.parent,
     )
-    scores = score_candidates(conn, candidates)
+    scores = score_candidates(conn, candidates, source_root=source_root)
     conn.execute("DELETE FROM candidate_scores WHERE candidate_id LIKE 'B-miss-%'")
     persist_candidate_scores(conn, scores)
     enriched = attach_scores(candidates, scores)
@@ -538,7 +543,11 @@ def write_miss_candidates(
                 "review_fingerprint": candidate_fingerprints.get(candidate_id, ""),
             }
             if bundles_dir is not None and candidate_id in bundle_candidate_ids:
-                bundle = build_evidence_bundle(conn, review_candidate)
+                bundle = build_evidence_bundle(
+                    conn,
+                    review_candidate,
+                    source_root=source_root,
+                )
                 bundle_json, bundle_md = write_evidence_bundle(bundle, bundles_dir=bundles_dir)
                 output_candidate = {
                     **output_candidate,

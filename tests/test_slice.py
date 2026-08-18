@@ -32,7 +32,7 @@ def test_extract_slice_returns_source_sink_with_context(tmp_path: Path) -> None:
     apply_schema(conn)
     _seed(conn, src)
 
-    bundle = extract_slice(conn, flow_id="F1", context_lines=2)
+    bundle = extract_slice(conn, flow_id="F1", source_root=tmp_path, context_lines=2)
 
     assert isinstance(bundle, SliceBundle)
     assert bundle.cwe == "CWE-89"
@@ -48,4 +48,4 @@ def test_extract_slice_unknown_flow_returns_none(tmp_path: Path) -> None:
     db = tmp_path / "y.duckdb"
     conn = duckdb.connect(str(db))
     apply_schema(conn)
-    assert extract_slice(conn, flow_id="missing", context_lines=2) is None
+    assert extract_slice(conn, flow_id="missing", source_root=tmp_path, context_lines=2) is None

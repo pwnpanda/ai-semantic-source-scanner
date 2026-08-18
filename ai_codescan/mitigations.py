@@ -15,6 +15,8 @@ from typing import Any
 
 import duckdb
 
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
+
 _MAX_CONTEXT_LINES = 8
 _MIN_FLOW_STEP_FIELDS = 2
 
@@ -249,32 +251,45 @@ def detect_mitigations(
     return signals
 
 
-def _parse_loc(loc: str) -> tuple[Path, int] | None:
+def _parse_loc(loc: str) -> tuple[str, int] | None:
     file, sep, raw_line = loc.rpartition(":")
     if not sep:
         return None
     try:
-        return Path(file), int(raw_line)
+        return file, int(raw_line)
     except ValueError:
         return None
 
 
-def _read_context(path: Path, line: int) -> str:
-    if not path.is_file():
+def _read_context(path: str, line: int, *, source_root: Path) -> str:
+    try:
+        resolved = resolve_contained_file(source_root, path)
+    except SourcePathError:
         return ""
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
     start = max(1, line - _MAX_CONTEXT_LINES)
     end = min(len(lines), line + _MAX_CONTEXT_LINES)
     return "\n".join(lines[start - 1 : end])
 
 
-def _candidate_context(conn: duckdb.DuckDBPyConnection, candidate: dict[str, Any]) -> str:
+def _candidate_context(
+    conn: duckdb.DuckDBPyConnection,
+    candidate: dict[str, Any],
+    *,
+    source_root: Path,
+) -> str:
     chunks: list[str] = []
     if (loc := str(candidate.get("source_loc") or "")) and (parsed := _parse_loc(loc)):
-        chunks.append(_read_context(*parsed))
+        chunks.append(_read_context(*parsed, source_root=source_root))
     if candidate.get("file") and candidate.get("line"):
         with suppress(TypeError, ValueError):
-            chunks.append(_read_context(Path(str(candidate["file"])), int(candidate["line"])))
+            chunks.append(
+                _read_context(
+                    str(candidate["file"]),
+                    int(candidate["line"]),
+                    source_root=source_root,
+                )
+            )
     if candidate.get("fid"):
         row = conn.execute(
             "SELECT steps_json FROM flows WHERE fid = ?",
@@ -289,7 +304,13 @@ def _candidate_context(conn: duckdb.DuckDBPyConnection, candidate: dict[str, Any
                 if not isinstance(step, list) or len(step) < _MIN_FLOW_STEP_FIELDS:
                     continue
                 try:
-                    chunks.append(_read_context(Path(str(step[0])), int(step[1])))
+                    chunks.append(
+                        _read_context(
+                            str(step[0]),
+                            int(step[1]),
+                            source_root=source_root,
+                        )
+                    )
                 except (TypeError, ValueError):
                     continue
     return "\n".join(chunk for chunk in chunks if chunk)
@@ -298,8 +319,10 @@ def _candidate_context(conn: duckdb.DuckDBPyConnection, candidate: dict[str, Any
 def mitigations_for_candidate(
     conn: duckdb.DuckDBPyConnection,
     candidate: dict[str, Any],
+    *,
+    source_root: Path,
 ) -> list[dict[str, str]]:
-    text = _candidate_context(conn, candidate)
+    text = _candidate_context(conn, candidate, source_root=source_root)
     signals = detect_mitigations(
         text,
         cwe=str(candidate.get("cwe") or ""),

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import duckdb
 
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
+
 _LANG_FENCE_BY_SUFFIX: tuple[tuple[tuple[str, ...], str], ...] = (
     ((".ts", ".tsx"), "typescript"),
     ((".js", ".jsx", ".mjs", ".cjs"), "javascript"),
@@ -114,20 +116,31 @@ def _annotations_by_line(conn: duckdb.DuckDBPyConnection, file: str) -> dict[int
     return by_line
 
 
-def render_file_view(conn: duckdb.DuckDBPyConnection, *, file: str) -> str:
+def render_file_view(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    file: str,
+    source_root: Path,
+) -> str:
     """Return a markdown view of ``file`` with line-anchored annotations."""
-    row = conn.execute("SELECT path FROM files WHERE path = ?", [file]).fetchone()
+    try:
+        fp = resolve_contained_file(source_root, file)
+    except SourcePathError:
+        return f"No data for {file} (outside source snapshot or file missing)."
+    canonical_file = fp.as_posix()
+    row = conn.execute(
+        "SELECT path FROM files WHERE path = ? OR path = ? LIMIT 1",
+        [file, canonical_file],
+    ).fetchone()
     if not row:
         return f"No data for {file} in the index."
-    fp = Path(file)
-    if not fp.is_file():
-        return f"No data for {file} (file missing)."
-    lang = _lang_fence(file)
+    indexed_file = str(row[0])
+    lang = _lang_fence(canonical_file)
     text = fp.read_text(encoding="utf-8")
-    annotations = _annotations_by_line(conn, file)
+    annotations = _annotations_by_line(conn, indexed_file)
 
     marker = _comment_marker(lang)
-    out = [f"# View: {fp.name}", "", f"`{file}`", "", f"```{lang}"]
+    out = [f"# View: {fp.name}", "", f"`{canonical_file}`", "", f"```{lang}"]
     for idx, line in enumerate(text.splitlines(), 1):
         markers = annotations.get(idx)
         suffix = f"  {marker} {' | '.join(markers)}" if markers else ""

@@ -28,6 +28,8 @@ import duckdb
 import sqlglot
 import yaml
 
+from ai_codescan.source_paths import SourcePathError, resolve_contained_file
+
 _SQL_WRITE_VERBS = {"insert", "update"}
 _SQL_READ_VERBS = {"select"}
 
@@ -367,8 +369,9 @@ def detect_storage_reads(conn: duckdb.DuckDBPyConnection, *, snapshot_root: Path
             if not src_path.is_file():
                 continue
             try:
-                text = src_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+                source_file = resolve_contained_file(snapshot_root, src_path)
+                text = source_file.read_text(encoding="utf-8", errors="replace")
+            except (OSError, SourcePathError):
                 continue
             for match in _SELECT_STRING.finditer(text):
                 sql = match.group("sql").strip()
@@ -377,7 +380,7 @@ def detect_storage_reads(conn: duckdb.DuckDBPyConnection, *, snapshot_root: Path
                 if classify_sql_op(sql) != "read":
                     continue
                 line = text.count("\n", 0, match.start()) + 1
-                rel = src_path.relative_to(snapshot_root).as_posix()
+                rel = source_file.relative_to(snapshot_root.resolve()).as_posix()
                 symbol_id = f"read:{rel}:{line}"
                 for storage_id in detect_sql_storage_ids(sql):
                     if storage_id not in known_locations:
@@ -841,10 +844,11 @@ def _detect_dynamic_storage_reads(
             if not src_path.is_file():
                 continue
             try:
-                text = src_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+                source_file = resolve_contained_file(snapshot_root, src_path)
+                text = source_file.read_text(encoding="utf-8", errors="replace")
+            except (OSError, SourcePathError):
                 continue
-            rel = src_path.relative_to(snapshot_root).as_posix()
+            rel = source_file.relative_to(snapshot_root.resolve()).as_posix()
             _scan_dynamic_calls(
                 text=text,
                 rel=rel,
@@ -968,8 +972,9 @@ def find_unresolved_dynamic_calls(
     for caller_id, file, line, _kind in rows:
         # Read the line + surrounding context from the snapshot.
         try:
-            text = Path(file).read_text(encoding="utf-8")
-        except OSError:
+            source_file = resolve_contained_file(snapshot_root, str(file))
+            text = source_file.read_text(encoding="utf-8")
+        except (OSError, SourcePathError):
             continue
         lines = text.splitlines()
         idx = int(line) - 1
@@ -993,11 +998,12 @@ def find_unresolved_dynamic_calls(
         context_end = min(len(lines), idx + context_radius + 1)
         context = lines[context_start:context_end]
 
-        call_id = f"S-{_stable_id('dyn', file, str(line), snippet)[:12]}"
+        normalized_file = source_file.as_posix()
+        call_id = f"S-{_stable_id('dyn', normalized_file, str(line), snippet)[:12]}"
         out.append(
             UnresolvedCall(
                 call_id=call_id,
-                file=file,
+                file=normalized_file,
                 line=int(line),
                 callee=callee_match.group(0),
                 code_snippet=snippet.strip(),
@@ -1005,7 +1011,6 @@ def find_unresolved_dynamic_calls(
             )
         )
         _ = caller_id  # reserved
-    _ = snapshot_root  # reserved for future per-snapshot resolution
     # Deduplicate by call_id (same line might be picked by multiple regexes).
     by_id = {c.call_id: c for c in out}
     return list(by_id.values())

@@ -16,6 +16,7 @@ from ai_codescan.engines.hybrid import (
     run_hybrid,
 )
 from ai_codescan.index.duckdb_schema import apply_schema
+from ai_codescan.source_paths import SourcePathError
 
 
 def _seed_two_engine_flows(conn: duckdb.DuckDBPyConnection) -> None:
@@ -153,14 +154,16 @@ def test_dedupe_no_op_when_keys_unique(tmp_path: Path) -> None:
 def test_ingest_joern_records_flow_type_co_location_for_fallback(tmp_path: Path) -> None:
     """Recall-First Invariant 6: Joern fallback emissions carry flow_type=co-location
     so the scorer can demote them without dropping the candidate."""
+    source = tmp_path / "server.js"
+    source.write_text("\n" * 8, encoding="utf-8")
     jsonl = tmp_path / "flows.jsonl"
     jsonl.write_text(
         json.dumps(
             {
                 "fid": "joern-colo",
-                "source_file": "/abs/server.js",
+                "source_file": source.as_posix(),
                 "source_line": 3,
-                "sink_file": "/abs/server.js",
+                "sink_file": source.as_posix(),
                 "sink_line": 5,
                 "source_name": "req.query.html",
                 "sink_name": "send",
@@ -190,14 +193,18 @@ def test_ingest_joern_records_flow_type_co_location_for_fallback(tmp_path: Path)
 
 def test_ingest_joern_defaults_flow_type_to_dataflow(tmp_path: Path) -> None:
     """Records without flow_type default to 'dataflow' (the recall-first default)."""
+    x_source = tmp_path / "x.js"
+    y_source = tmp_path / "y.js"
+    x_source.write_text("source();\n", encoding="utf-8")
+    y_source.write_text("sink();\n", encoding="utf-8")
     jsonl = tmp_path / "flows.jsonl"
     jsonl.write_text(
         json.dumps(
             {
                 "fid": "joern-df",
-                "source_file": "/abs/x.js",
+                "source_file": x_source.as_posix(),
                 "source_line": 1,
-                "sink_file": "/abs/y.js",
+                "sink_file": y_source.as_posix(),
                 "sink_line": 2,
                 "source_name": "req.body",
                 "sink_name": "query",
@@ -214,6 +221,53 @@ def test_ingest_joern_defaults_flow_type_to_dataflow(tmp_path: Path) -> None:
     _ingest_joern_jsonl(conn, jsonl_path=jsonl, project_id="x", snapshot_root=tmp_path)
     row = conn.execute("SELECT flow_type FROM flow_metadata").fetchone()
     assert row == ("dataflow",)
+
+
+def test_ingest_joern_resolves_relative_paths_from_project_root(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    project_root = source_root / "service"
+    project_root.mkdir(parents=True)
+    source = project_root / "src.js"
+    sink = project_root / "sink.js"
+    source.write_text("source();\n", encoding="utf-8")
+    sink.write_text("sink();\n", encoding="utf-8")
+    jsonl = tmp_path / "flows.jsonl"
+    jsonl.write_text(
+        json.dumps(
+            {
+                "fid": "relative",
+                "source_file": "src.js",
+                "source_line": 1,
+                "sink_file": "sink.js",
+                "sink_line": 1,
+                "source_name": "input",
+                "sink_name": "sink",
+                "cwe": "CWE-89",
+                "sink_class": "sql.exec",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+
+    assert (
+        _ingest_joern_jsonl(
+            conn,
+            jsonl_path=jsonl,
+            project_id="service",
+            snapshot_root=source_root,
+            project_root=project_root,
+        )
+        == 1
+    )
+    steps = conn.execute("SELECT steps_json FROM flows").fetchone()
+    assert steps is not None
+    assert json.loads(steps[0]) == [
+        [source.as_posix(), 1, 1],
+        [sink.as_posix(), 1, 1],
+    ]
 
 
 def test_ingest_joern_keeps_path_containment_flow_visible(tmp_path: Path) -> None:
@@ -274,6 +328,87 @@ def test_ingest_joern_keeps_path_containment_flow_visible(tmp_path: Path) -> Non
     assert row == ("CWE-22", "joern")
 
 
+@pytest.mark.parametrize("bad_path", ("/etc/passwd", "../outside.js", "linked.js"))
+def test_ingest_joern_rejects_paths_outside_snapshot(
+    tmp_path: Path,
+    bad_path: str,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    valid = source_root / "valid.js"
+    valid.write_text("sink();\n", encoding="utf-8")
+    outside = tmp_path / "outside.js"
+    outside.write_text("outside Joern sentinel\n", encoding="utf-8")
+    (source_root / "linked.js").symlink_to(outside)
+    jsonl = tmp_path / "flows.jsonl"
+    jsonl.write_text(
+        json.dumps(
+            {
+                "source_file": bad_path,
+                "source_line": 1,
+                "sink_file": valid.as_posix(),
+                "sink_line": 1,
+                "source_name": "input",
+                "sink_name": "sink",
+                "cwe": "CWE-89",
+                "sink_class": "sql.exec",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+
+    with pytest.raises(SourcePathError, match="escapes snapshot"):
+        _ingest_joern_jsonl(
+            conn,
+            jsonl_path=jsonl,
+            project_id="poisoned",
+            snapshot_root=source_root,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM flows").fetchone() == (0,)
+
+
+def test_ingest_joern_validates_all_paths_before_inserting(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source = source_root / "valid.js"
+    source.write_text("source();\nsink();\n", encoding="utf-8")
+    base = {
+        "source_file": source.as_posix(),
+        "source_line": 1,
+        "sink_file": source.as_posix(),
+        "sink_line": 2,
+        "source_name": "input",
+        "sink_name": "sink",
+        "cwe": "CWE-89",
+        "sink_class": "sql.exec",
+    }
+    jsonl = tmp_path / "flows.jsonl"
+    jsonl.write_text(
+        json.dumps({**base, "fid": "valid"})
+        + "\n"
+        + json.dumps({**base, "fid": "poisoned", "source_file": "/etc/passwd"})
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+
+    with pytest.raises(SourcePathError, match="escapes snapshot"):
+        _ingest_joern_jsonl(
+            conn,
+            jsonl_path=jsonl,
+            project_id="transactional",
+            snapshot_root=source_root,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM flows").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM taint_sources").fetchone() == (0,)
+
+
 # ---------------------------------------------------------------------------
 # Integration: run_hybrid drives both JS and Python projects with mocked engines
 # ---------------------------------------------------------------------------
@@ -303,6 +438,8 @@ def _stub_engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         language: str = "javascript",
     ):
         captured_languages.append(language)
+        (project_root / "x").write_text("source\n", encoding="utf-8")
+        (project_root / "y").write_text("sink\n", encoding="utf-8")
         out = cache_dir / "joern" / f"{project_id}.flows.jsonl"
         out.parent.mkdir(parents=True, exist_ok=True)
         record = {
