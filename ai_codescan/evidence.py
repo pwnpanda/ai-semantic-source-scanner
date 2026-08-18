@@ -14,8 +14,9 @@ _DEFAULT_CONTEXT_LINES = 5
 _MIN_FLOW_STEP_FIELDS = 2
 _TRUNCATE_KEEP_EXCERPTS = 2
 _CONFIG_SECRET_KEY_RE = re.compile(
-    r"(?i)^\s*[A-Za-z0-9_.-]*(?:user[-_.]?info|password|secret|token|"
-    r"api[-_.]?key|credential)[A-Za-z0-9_.-]*\s*:"
+    r"(?i)^\s*(?P<quote>[\"']?)[A-Za-z0-9_.-]*"
+    r"(?:user[-_.]?info|password|secret|token|api[-_.]?key|credential)"
+    r"[A-Za-z0-9_.-]*(?P=quote)\s*:"
 )
 
 

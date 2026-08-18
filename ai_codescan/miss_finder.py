@@ -53,7 +53,7 @@ _VECTOR_CWE = {
 _HIGH_CONFIDENCE_FLOW_VALUES = {"definite", "high"}
 _ID_HASH_LEN = 12
 _CACHE_REPO_COMPONENT_RE = re.compile(r".+-[0-9a-f]{8}$", re.IGNORECASE)
-_REVIEW_FINGERPRINT_VERSION = "miss-review-input-v3"
+_REVIEW_FINGERPRINT_VERSION = "miss-review-input-v4"
 _MISS_REVIEW_CLASSIFICATIONS = frozenset(
     {
         "new-finding",
@@ -75,8 +75,6 @@ def _canonical_candidate_file(file: str) -> str:
     for index in source_indices:
         if index > 0 and _CACHE_REPO_COMPONENT_RE.fullmatch(parts[index - 1]):
             return "/".join(parts[index + 1 :])
-    if source_indices:
-        return "/".join(parts[source_indices[-1] + 1 :])
     return normalized
 
 
@@ -438,28 +436,37 @@ def _purge_stale_miss_feedback(
         return
     rows = conn.execute(
         """
-        SELECT COALESCE(NULLIF(candidate_id, ''), nomination_id)
+        SELECT COALESCE(NULLIF(candidate_id, ''), nomination_id), finding_id
         FROM review_verdicts
         WHERE reviewer = 'miss_reviewer'
         """
     ).fetchall()
-    stale_ids = {
-        str(candidate_id or "")
-        for (candidate_id,) in rows
+    stale_rows = {
+        (str(candidate_id or ""), str(finding_id or ""))
+        for candidate_id, finding_id in rows
         if not (fingerprint := candidate_fingerprints.get(str(candidate_id or "")))
         or not _marker_matches(review_state_dir, str(candidate_id or ""), fingerprint)
     }
-    if not stale_ids:
+    if not stale_rows:
         return
-    parameters = [(candidate_id,) for candidate_id in stale_ids]
+    candidate_parameters = [(candidate_id,) for candidate_id, _finding_id in stale_rows]
     conn.executemany(
-        "DELETE FROM review_verdicts WHERE reviewer = 'miss_reviewer' AND candidate_id = ?",
-        parameters,
+        """
+        DELETE FROM review_verdicts
+        WHERE reviewer = 'miss_reviewer'
+          AND COALESCE(NULLIF(candidate_id, ''), nomination_id) = ?
+        """,
+        candidate_parameters,
     )
     if _table_exists(conn, "adversarial_challenges"):
+        finding_parameters = [
+            (finding_id,) for _candidate_id, finding_id in stale_rows if finding_id
+        ]
+        if not finding_parameters:
+            return
         conn.executemany(
             "DELETE FROM adversarial_challenges WHERE finding_id = ?",
-            parameters,
+            finding_parameters,
         )
 
 

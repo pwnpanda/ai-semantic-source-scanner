@@ -288,6 +288,7 @@ def link_eval_targets(
         eval_negative=str(negative),
         rationale=proposal.rationale,
         source_path=proposal.source_path,
+        receiver_regex=proposal.receiver_regex,
     )
     target_path = proposals_dir / f"{proposal.proposal_id}.json"
     target_path.write_text(

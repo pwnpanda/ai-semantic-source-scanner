@@ -164,7 +164,7 @@ def test_yaml_credential_is_redacted_from_evidence_bundles(tmp_path: Path) -> No
 
     rendered_bundles = "\n".join(path.read_text(encoding="utf-8") for path in bundles_dir.iterdir())
     assert "synthetic-password" not in rendered_bundles
-    assert "<redacted source line>" in rendered_bundles
+    assert "user-info: <redacted>" in rendered_bundles
 
 
 @pytest.mark.skipif(not _has_node(), reason="node runtime required for Kotlin AST extraction")

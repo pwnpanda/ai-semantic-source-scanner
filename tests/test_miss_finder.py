@@ -110,6 +110,26 @@ def test_semantic_candidates_with_same_stable_identity_are_deduplicated(
     assert len({candidate["id"] for candidate in candidates}) == 1
 
 
+def test_non_cache_source_directories_do_not_collide(tmp_path: Path) -> None:
+    conn = _connect(tmp_path)
+    signature = "GET /accounts/{account_id}"
+    for module in ("module-a", "module-b"):
+        source = f"/repo/{module}/source/src/Handler.kt"
+        conn.execute(
+            "INSERT INTO entrypoints VALUES (NULL, 'http_route', ?, ?, 12)",
+            [signature, source],
+        )
+
+    candidates = [
+        candidate
+        for candidate in build_miss_candidates(conn)
+        if candidate["vector"] == "authz/bola"
+    ]
+
+    assert len(candidates) == 2
+    assert len({candidate["id"] for candidate in candidates}) == 2
+
+
 def test_build_miss_candidates_from_entrypoint_risk_signals(tmp_path: Path) -> None:
     conn = _connect(tmp_path)
     source = (tmp_path / "Program.cs").as_posix()
@@ -316,7 +336,7 @@ def test_write_miss_candidates_redacts_all_credentials_in_shared_context(tmp_pat
     rendered = "\n".join(path.read_text(encoding="utf-8") for path in bundles_dir.iterdir())
     assert "first-secret" not in rendered
     assert "second-secret" not in rendered
-    assert rendered.count("<redacted source line>") >= 2
+    assert rendered.count("user-info: <redacted>") >= 2
 
 
 def test_write_miss_candidates_bounds_bundles_to_review_queue(tmp_path: Path) -> None:
@@ -383,6 +403,7 @@ def test_write_miss_candidates_purges_stale_review_feedback_and_scores(tmp_path:
         [source.as_posix()],
     )
     candidate_id = str(build_miss_candidates(conn)[0]["id"])
+    finding_id = "F-miss-stale"
     conn.execute(
         """
         INSERT INTO review_verdicts
@@ -393,7 +414,21 @@ def test_write_miss_candidates_purges_stale_review_feedback_and_scores(tmp_path:
         VALUES (?, ?, '', ?, 'false-positive', 'rejected', 'high', 'CWE-639',
                 'stale verdict', '[]', 'miss_reviewer', '')
         """,
-        [candidate_id, candidate_id, candidate_id],
+        [candidate_id, finding_id, candidate_id],
+    )
+    legacy_candidate_id = "B-miss-legacy"
+    legacy_finding_id = "F-miss-legacy"
+    conn.execute(
+        """
+        INSERT INTO review_verdicts
+          (
+            nomination_id, finding_id, flow_id, candidate_id, verdict, status,
+            confidence, cwe, title, evidence_json, reviewer, source_path
+          )
+        VALUES (?, ?, '', '', 'false-positive', 'rejected', 'high', 'CWE-639',
+                'legacy stale verdict', '[]', 'miss_reviewer', '')
+        """,
+        [legacy_candidate_id, legacy_finding_id],
     )
     conn.execute(
         """
@@ -412,7 +447,12 @@ def test_write_miss_candidates_purges_stale_review_feedback_and_scores(tmp_path:
     conn.execute(
         "INSERT INTO adversarial_challenges VALUES "
         "(?, 'false-positive', 'miss_reviewer', 'codex', 'confirmed', 'stale', DEFAULT)",
-        [candidate_id],
+        [finding_id],
+    )
+    conn.execute(
+        "INSERT INTO adversarial_challenges VALUES "
+        "(?, 'false-positive', 'miss_reviewer', 'codex', 'confirmed', 'legacy', DEFAULT)",
+        [legacy_finding_id],
     )
     conn.execute(
         "INSERT INTO candidate_scores "

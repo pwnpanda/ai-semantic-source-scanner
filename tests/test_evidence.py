@@ -131,7 +131,8 @@ def test_secret_candidate_redacts_literal_from_every_evidence_format(tmp_path: P
         "kafka:\n"
         "  schema-registry:\n"
         "    user-info: audit-user:do-not-leak\n"
-        "    client-secret: neighboring-secret\n",
+        "    client-secret: neighboring-secret\n"
+        '    "backup-token": quoted-neighboring-secret\n',
         encoding="utf-8",
     )
     bundle = build_evidence_bundle(
@@ -150,5 +151,7 @@ def test_secret_candidate_redacts_literal_from_every_evidence_format(tmp_path: P
     serialized = json.dumps(bundle.to_jsonable()) + render_bundle_markdown(bundle)
     assert "do-not-leak" not in serialized
     assert "neighboring-secret" not in serialized
+    assert "quoted-neighboring-secret" not in serialized
     assert "user-info: <redacted>" in serialized
+    assert '"backup-token": <redacted>' in serialized
     assert bundle.source_loc == f"{source.as_posix()}:3"

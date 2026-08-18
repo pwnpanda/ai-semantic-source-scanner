@@ -17,6 +17,7 @@ from ai_codescan.model_proposals import (
     _bug_class_for_cwe,
     accept_model_proposal,
     apply_proposal_to_semgrep,
+    link_eval_targets,
     list_model_proposals,
     proposal_decision_counts,
     proposals_from_verdicts,
@@ -229,6 +230,30 @@ def test_write_list_and_accept_model_proposal(tmp_path: Path) -> None:
     assert proposals[0].proposal_id == "proposal-test"
     assert accepted["dry_run"] is True
     assert accepted["accepted"] is False
+
+
+def test_link_eval_targets_preserves_receiver_constraint(tmp_path: Path) -> None:
+    positive = tmp_path / "positive"
+    negative = tmp_path / "negative"
+    positive.mkdir()
+    negative.mkdir()
+    proposal = ModelProposal(
+        **{
+            **_proposal().to_jsonable(),
+            "receiver_regex": "Repository",
+        }
+    )
+
+    updated = link_eval_targets(
+        proposal,
+        positive=positive,
+        negative=negative,
+        proposals_dir=tmp_path,
+    )
+
+    assert updated.receiver_regex == "Repository"
+    stored = json.loads((tmp_path / "proposal-test.json").read_text(encoding="utf-8"))
+    assert stored["receiver_regex"] == "Repository"
 
 
 def test_apply_proposal_to_semgrep_writes_staged_yaml(tmp_path: Path) -> None:
