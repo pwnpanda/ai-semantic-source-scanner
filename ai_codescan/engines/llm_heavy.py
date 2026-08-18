@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from contextlib import suppress
@@ -29,6 +30,8 @@ from ai_codescan.source_paths import SourcePathError, resolve_contained_file
 
 SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "llm_heavy"
 _MIN_FLOW_STEPS = 2
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+_IDENTIFIER_FIELDS = ("fid", "tid", "sid")
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -84,6 +87,19 @@ def _normalized_steps(
     return normalized
 
 
+def _validate_identifiers(entry: dict, *, line_number: int) -> None:
+    """Reject model-provided identifiers that are unsafe as artifact components."""
+    for field in _IDENTIFIER_FIELDS:
+        value = entry.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or _SAFE_IDENTIFIER.fullmatch(value) is None:
+            raise RuntimeError(
+                f"llm-heavy line {line_number}: {field} must use 1-80 ASCII "
+                "letters, digits, underscores, or hyphens"
+            )
+
+
 def _validated_flow(raw_line: str, *, line_number: int, source_root: Path) -> dict:
     try:
         entry = json.loads(raw_line)
@@ -91,6 +107,7 @@ def _validated_flow(raw_line: str, *, line_number: int, source_root: Path) -> di
         raise RuntimeError(f"llm-heavy line {line_number}: invalid JSON") from exc
     if not isinstance(entry, dict):
         raise RuntimeError(f"llm-heavy line {line_number}: flow must be an object")
+    _validate_identifiers(entry, line_number=line_number)
     source = _normalized_location(
         entry.get("source"),
         label="source",

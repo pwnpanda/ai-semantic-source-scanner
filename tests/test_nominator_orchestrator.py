@@ -83,6 +83,40 @@ def test_build_queue_hashes_unsafe_scip_symbol_ids(tmp_path: Path) -> None:
     assert candidate["symbol_id"] == symbol_id
 
 
+def test_build_queue_hashes_unsafe_flow_and_sink_ids(tmp_path: Path) -> None:
+    db = tmp_path / "unsafe-flow-ids.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    tid = "../../../source"
+    flow_sid = "../../../flow-sink"
+    flow_id = "../../../outside"
+    sink_only_id = "../../../sink-only"
+    conn.execute(
+        "INSERT INTO taint_sources VALUES (?, NULL, 'http.body', 'id', '/abs/x.ts:1')",
+        [tid],
+    )
+    conn.execute(
+        "INSERT INTO taint_sinks VALUES (?, NULL, 'sql.exec', 'query', 'unknown', '[]')",
+        [flow_sid],
+    )
+    conn.execute(
+        "INSERT INTO taint_sinks VALUES (?, NULL, 'sql.exec', 'query', 'unknown', '[]')",
+        [sink_only_id],
+    )
+    conn.execute(
+        "INSERT INTO flows VALUES (?, ?, ?, 'CWE-89', 'llm-heavy', '[]', '', 'inferred')",
+        [flow_id, tid, flow_sid],
+    )
+
+    queue = build_queue(conn, target_bug_classes=[])
+
+    flow = next(item for item in queue if item.get("fid") == flow_id)
+    sink = next(item for item in queue if item.get("sink_id") == sink_only_id)
+    assert flow["id"].startswith("A-h-")
+    assert sink["id"].startswith("B-sink-h-")
+    assert all("/" not in item["id"] and ".." not in item["id"] for item in (flow, sink))
+
+
 def test_run_nominator_stages_scores_and_bundles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

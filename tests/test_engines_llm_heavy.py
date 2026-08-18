@@ -147,6 +147,30 @@ def test_ingest_validates_all_paths_before_inserting_any_flow(tmp_path: Path) ->
     assert conn.execute("SELECT COUNT(*) FROM taint_sinks").fetchone() == (0,)
 
 
+@pytest.mark.parametrize("field", ("fid", "tid", "sid"))
+def test_ingest_rejects_unsafe_model_identifiers_before_inserting(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source = source_root / "flow.ts"
+    source.write_text("\n" * 50, encoding="utf-8")
+    row = _flow_row(file=source.as_posix())
+    row[field] = "../../../outside"
+    flows = tmp_path / "flows.jsonl"
+    flows.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    conn = duckdb.connect(str(tmp_path / f"unsafe-{field}.duckdb"))
+    apply_schema(conn)
+
+    with pytest.raises(RuntimeError, match=rf"{field} must use"):
+        ingest_llm_heavy_flows(conn, flows_path=flows, source_root=source_root)
+
+    assert conn.execute("SELECT COUNT(*) FROM flows").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM taint_sources").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM taint_sinks").fetchone() == (0,)
+
+
 def test_ingest_requires_steps_to_match_source_and_sink(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     source_root.mkdir()

@@ -79,9 +79,10 @@ def build_queue(
     ) in flow_rows:
         if cwes is not None and cwe not in cwes:
             continue
+        candidate_component = _candidate_id_component(fid)
         queue.append(
             {
-                "id": f"A-{fid}",
+                "id": f"A-{candidate_component}",
                 "stream": "A",
                 "fid": fid,
                 "tid": tid,
@@ -104,9 +105,10 @@ def build_queue(
         """
     ).fetchall()
     for sid, sink_class, lib, parameterization in sink_no_flow:
+        candidate_component = _candidate_id_component(sid)
         queue.append(
             {
-                "id": f"B-sink-{sid}",
+                "id": f"B-sink-{candidate_component}",
                 "stream": "B",
                 "concern": "sink-without-source",
                 "sink_id": sid,
