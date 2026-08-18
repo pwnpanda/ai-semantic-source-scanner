@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from ai_codescan.engines import joern as joern_eng
+from ai_codescan.eval import load_eval_cases, run_ai_codescan_case
 
 
 def _has_joern() -> bool:
@@ -167,3 +168,30 @@ def test_joern_runs_against_tiny_aspnet_csharp(tmp_path: Path, fixtures_dir: Pat
     assert not any(f.get("cwe") == "CWE-22" and f.get("sink_name") == "Open" for f in flows), (
         f"unexpected C# co-location fallback false positive in {flows!r}"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _has_joern(), reason="joern cli not installed")
+@pytest.mark.parametrize(
+    ("positive_id", "safe_id"),
+    (
+        ("javascript-phase21-variants", "javascript-phase21-variants-safe"),
+        ("python-phase21-variants", "python-phase21-variants-safe"),
+        ("csharp-redos-variants", "csharp-redos-variants-safe"),
+        ("java-phase21-variants", "java-phase21-variants-safe"),
+    ),
+)
+def test_phase_20_21_semantic_eval_pairs(
+    tmp_path: Path,
+    positive_id: str,
+    safe_id: str,
+) -> None:
+    """Receiver/argument gates keep canonical variants and reject safe near-misses."""
+    eval_targets = Path(__file__).parents[1] / "eval-targets"
+    cases = {case.id: case for case in load_eval_cases(eval_targets)}
+
+    positive = run_ai_codescan_case(cases[positive_id], cache_root=tmp_path / "positive")
+    safe = run_ai_codescan_case(cases[safe_id], cache_root=tmp_path / "safe")
+
+    assert positive.status == "pass", positive.to_jsonable()
+    assert safe.status == "pass", safe.to_jsonable()

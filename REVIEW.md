@@ -55,25 +55,47 @@ Clears the "remaining classes from the audit" list that Phase 20 left in TODO.md
 | Class | CWE / sink_class | Languages |
 |---|---|---|
 | NoSQL operator injection | CWE-943 `nosql.query` | JS (Mongo driver/Mongoose), Python (pymongo/motor) |
-| SSTI (non-Python) | CWE-1336 `ssti` | JS (Handlebars `compile`, lodash `template`), Java (Velocity `evaluate`/`mergeTemplate`, FreeMarker `process`), Ruby (ERB `result`), Go (`text/template` `Parse`) |
+| SSTI (non-Python) | CWE-1336 `ssti` | JS (Handlebars `compile`, lodash `template`), Java (Velocity `evaluate`, FreeMarker `Template` constructor), Ruby (`ERB.new`), Go (`text/template` `Parse`) |
 | LDAP injection | CWE-90 `ldap.query` | Java, Kotlin, Python (`search_s`), PHP (`ldap_search`), C# |
 | XPath injection | CWE-643 `xpath.query` | Java, Kotlin, Python (`xpath`), PHP, C# |
 | Sensitive logging | CWE-532 `log.sensitive` | Python, Java, Kotlin, Ruby, C# (was JS-only) |
 | Email header injection | CWE-93 `email.send` | Ruby (`deliver_now`), PHP (`mail`), Go (`SendMail`) — was JS/Python-only |
-| ReDoS | CWE-1333 `redos` | JS (`RegExp`), Python (`re.compile`), Go, C# |
+| ReDoS | CWE-1333 `redos` | JS (`RegExp`), Python (`re.compile`), C# |
 
 Weights: `nosql.query` +0.18 (auth bypass / data disclosure, comparable to `sql.exec`), `ldap.query` / `xpath.query` +0.14 (subvert query logic, rarely RCE), `redos` +0.06 (availability-only).
 
-### Two deliberate narrowings (recall-first has limits)
+### Deliberate narrowings (recall-first has limits)
 
 Both were chosen because the naive pattern would have produced noise on *nearly every file*, which buries real hits rather than surfacing them:
 
 1. **Python ReDoS models only `re.compile`.** `re.search`/`sub`/`findall` take `(pattern, STRING)` and the string is attacker-controlled in almost every *correct* program. Since the flow engine checks all arguments, modelling them would fire on essentially every Python file that greps user input. `re.compile` takes `(pattern, flags)`, so a tainted argument really is the pattern.
-2. **NoSQL excludes bare `find`.** `Array.prototype.find` (JS) and `str.find` (Python) are ubiquitous. The Mongo-specific names (`findOne`, `aggregate`, `updateMany`, …) carry the same `$where`/`$ne` payloads, so the coverage is not actually lost.
+2. **Canonical Mongo `find` is receiver-gated.** `Array.prototype.find` (JS) and `str.find` (Python) are ubiquitous, while Mongo collection `find` is a primary operator-injection sink. Method/type information plus collection-assignment tracking keeps the Mongo variant without treating unrelated `find` calls as database queries.
+3. **Go standard-library regexp is excluded.** Go's `regexp` package is [guaranteed to run in time linear in the input size](https://go.dev/src/regexp/regexp.go), so `MustCompile` and `CompilePOSIX` are not CWE-1333 sinks. Classifying them as ReDoS was semantically wrong, even at a low score.
+
+### Phase 22 semantic regression audit
+
+The original Phase 20/21 rules were name tables with only three end-to-end detector families.
+The follow-up audit added a mutation-sensitive language matrix for every added sink and direct
+positive/negative tests for every receiver gate. It also corrected several CPG and API-semantics
+gaps:
+
+- JS `new RegExp(...)` is lowered to `<operator>.new`; the detector now matches that call and gates it to a RegExp constructor.
+- C# `new Regex(...)` is lowered to `<init>`; static and instance `IsMatch` select only the pattern-bearing argument/receiver.
+- JS/Python Mongo `find` is supported with type/receiver gates.
+- JS Handlebars/lodash, Java Velocity/FreeMarker, Ruby ERB, and Go template parsing use receiver and argument semantics. FreeMarker `process`, Go `ParseFiles`/`ParseGlob`, and unrelated `compile` calls are safe near-misses rather than SSTI sinks.
+- Java/Kotlin XPath includes the canonical `evaluate` and `compile` APIs and selects the expression argument. LDAP selects the filter argument.
+- Kotlin annotated request parameters join Java parameters in the Joern source set.
+
+Paired Joern eval repositories cover JS, Python, Java, and C# positive/safe semantics. The
+compact unit matrix covers every Phase 20/21 language mapping without requiring a full CPG
+build per language.
 
 ### Precision fix — Firestore receiver gate
 
-Phase 20 verification found `Object.create(null)` being reported as a Firestore mass-assignment sink, because `set`/`update`/`create` were matched by bare name. Added `firestoreReceiver` (requires a `.doc(`/`.collection(` chain or a `db.`/`firestore` identifier), wired into `restrictXssSinks` for CWE-915 and CWE-639.
+Phase 20 verification found `Object.create(null)` being reported as a Firestore mass-assignment
+sink, because `set`/`update`/`create` were matched by bare name. `firestoreReceiver` now requires a
+`.doc(`/`.collection(` chain or a Firestore/document-reference identifier and is wired into
+`restrictBuiltinSinks` for CWE-915 and CWE-639. A generic `db` receiver is deliberately rejected.
 
 Verified both directions: `express-mass-assignment` still passes (its receiver *is* Firestore-shaped), and `express-proto-pollution-safe` went from 2 spurious CWE-915 flows to **zero**.
 
@@ -191,7 +213,8 @@ Closes Phase 17 follow-up A. The `scan` command's stage chain now slots `taint-s
 - **XXE (CWE-611)** — no sinks anywhere. `DocumentBuilder.parse` (Java), `lxml.etree.parse` / `xml.sax.parse` (Python), `simplexml_load_string` (PHP), `XmlDocument.LoadXml` (C#). Well-defined, additive.
 - **HTTP response splitting (CWE-93/444)** — `response.setHeader` / `addHeader` with attacker-controlled values. Java/Python/Go.
 - **Prototype pollution (CWE-1321)** — JS-specific. `lodash.merge` / `_.set` / recursive merge with user input.
-- **NoSQL injection (CWE-943)** — Mongoose `$where` / `$function` operators. Firestore is partially covered already.
+- **NoSQL injection (CWE-943)** — Mongo operator objects in query filters. Firestore is
+  partially covered already.
 - **LDAP / XPath injection (CWE-90 / CWE-643)** — `DirContext.search` / `XPath.evaluate`.
 - **SSTI for non-Python** — Java Velocity / FreeMarker, Ruby ERB, JS Handlebars.
 - **Sensitive logging beyond JS** — only JS has CWE-532 sinks; Python `logging.info(secret)`, Java `Logger.info`, etc. missing.
@@ -541,4 +564,3 @@ Implementation choices:
 Cons:
 - No eval = CI can miss eval-only regressions. Mitigate by running eval locally before merging significant scoring/sink/mitigation changes.
 - No coverage report. `pytest --cov` is one flag away; defer until the test-quality bar needs it.
-

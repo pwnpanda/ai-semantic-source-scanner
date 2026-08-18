@@ -489,17 +489,23 @@ Remaining classes from the audit — **cleared in Phase 21 below.**
 
 ## Phase 21: Remaining audit classes + Firestore precision gate (complete)
 
-- [x] NoSQL operator injection (CWE-943, `nosql.query`) — JS + Python. Bare `find` excluded on purpose (`Array.prototype.find` / `str.find` are ubiquitous); Mongo-specific names carry the same payloads.
+- [x] NoSQL operator injection (CWE-943, `nosql.query`) — JS + Python. Canonical Mongo `find` is receiver/type-gated so Array/string `find` calls remain safe near-misses.
 - [x] SSTI for non-Python (CWE-1336) — JS Handlebars/lodash, Java Velocity/FreeMarker, Ruby ERB, Go text/template.
 - [x] LDAP (CWE-90, `ldap.query`) + XPath (CWE-643, `xpath.query`) — Java/Kotlin/Python/PHP/C#.
 - [x] Sensitive logging (CWE-532) extended beyond JS to Python/Java/Kotlin/Ruby/C#.
 - [x] Email header injection (CWE-93) extended to Ruby/PHP/Go.
-- [x] ReDoS (CWE-1333, `redos`) — JS/Python/Go/C#. Python models only `re.compile`; see REVIEW.md for why `search`/`sub`/`findall` are excluded.
+- [x] ReDoS (CWE-1333, `redos`) — JS/Python/C#. Python models only `re.compile`; Go standard `regexp` is excluded because it guarantees linear-time matching.
 - [x] Firestore receiver gate — fixes `Object.create(null)` being reported as a Firestore write. Verified: mass-assignment target still passes, spurious flows on proto-pollution-safe went 2 → 0.
 - [x] Eval targets `express-nosql-injection` + `-safe`. Eval 44 → 46 pass / 49.
+- [x] Phase 22 generalized regression audit: exact language matrix for all Phase 20/21 sinks,
+  direct receiver-gate positives/negatives, and paired JS/Python/Java/C# Joern eval repositories.
+- [x] Phase 22 semantic corrections: canonical Mongo `find`, actual JS/C# constructor call names, receiver/argument-aware non-Python SSTI/XPath/LDAP, Kotlin parameter sources, and removal of the invalid Go ReDoS mapping.
 
 Still open:
 
+- [ ] Kotlin's current `kotlin2cpg` build skips reaching-definition edges for the tested Spring
+  methods. Annotated request parameters are now discovered correctly, but cross-statement Joern
+  flows remain a frontend limitation; do not replace them with file-wide co-location matches.
 - [ ] Format-string (CWE-134): needs receiver-taint support — the vulnerable shape is a tainted *format string*, not a tainted argument. Bare `format` as a sink would be pure noise.
 - [ ] Java `JavaMailSender.send`: bare `send` too generic on the JVM; needs a receiver gate like the Firestore one.
 - [ ] Judgement-call classes pending user direction: insecure randomness (CWE-330/338), CORS misconfiguration. TOCTOU/races judged not statically detectable — skip.
@@ -529,7 +535,7 @@ Open follow-ups (next pass — sinks are well-defined, additive):
 - [ ] XXE (CWE-611) sinks: `DocumentBuilder.parse` (Java), `lxml.etree.parse` / `xml.sax.parse` (Python), `simplexml_load_string` (PHP), `XmlDocument.LoadXml` (C#).
 - [ ] HTTP response splitting (CWE-93/444): `setHeader` / `addHeader` with CRLF — Java/Python/Go.
 - [ ] Prototype pollution (CWE-1321): JS `lodash.merge` / `_.set` / recursive merge.
-- [ ] NoSQL injection: Mongoose `$where` / `$function`.
+- [ ] NoSQL injection: Mongo operator objects in query filters; use observation-only probes.
 - [ ] LDAP / XPath injection (CWE-90 / CWE-643).
 - [ ] SSTI for non-Python: Java Velocity / FreeMarker, Ruby ERB, JS Handlebars.
 - [ ] Sensitive logging beyond JS (Python/Java/Ruby).

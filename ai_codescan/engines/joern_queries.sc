@@ -93,11 +93,13 @@ import java.security.MessageDigest
           ("CWE-601", "open.redirect", "(?i)^sendRedirect$"),
           // Phase 20 — XXE + response splitting; Kotlin reuses the Java stack.
           ("CWE-611", "xml.parse",     "(?i)^(parse|unmarshal|read)$"),
+          ("CWE-611", "xml.parse",     "(?i)^(newDocumentBuilder|newSAXParser|createXMLStreamReader)$"),
           ("CWE-93",  "header.write",  "(?i)^(setHeader|addHeader|addCookie)$"),
-          // Phase 21 — logging / LDAP / XPath; same JVM libraries as Java.
+          // Phase 21 — logging / SSTI / LDAP / XPath; same JVM libraries as Java.
           ("CWE-532", "log.sensitive", "(?i)^(trace|debug|info|warn|error|fatal|severe)$"),
+          ("CWE-1336", "ssti",         "(?i)^(evaluate|<init>)$"),
           ("CWE-90",  "ldap.query",    "(?i)^search$"),
-          ("CWE-643", "xpath.query",   "(?i)^(selectNodes|selectSingleNode)$")
+          ("CWE-643", "xpath.query",   "(?i)^(evaluate|compile|evaluateExpression|compileExpression|selectNodes|selectSingleNode)$")
         )
       )
     case "csharp" | "csharpsrc" =>
@@ -143,8 +145,8 @@ import java.security.MessageDigest
           // Phase 21 — logging / LDAP / XPath / ReDoS.
           ("CWE-532", "log.sensitive", "(?i)^(LogTrace|LogDebug|LogInformation|LogWarning|LogError|LogCritical)$"),
           ("CWE-90",  "ldap.query",    "(?i)^(FindOne|FindAll)$"),
-          ("CWE-643", "xpath.query",   "(?i)^(SelectNodes|SelectSingleNode)$"),
-          ("CWE-1333", "redos",        "(?i)^(Regex|IsMatch)$")
+          ("CWE-643", "xpath.query",   "(?i)^(Select|Evaluate|Compile|SelectNodes|SelectSingleNode)$"),
+          ("CWE-1333", "redos",        "(?i)^(<init>|IsMatch)$")
         )
       )
     case "php" =>
@@ -189,7 +191,7 @@ import java.security.MessageDigest
           ("CWE-93",  "email.send",    "(?i)^mail$"),
           // Phase 21 — LDAP + XPath injection.
           ("CWE-90",  "ldap.query",    "(?i)^(ldap_search|ldap_list|ldap_read)$"),
-          ("CWE-643", "xpath.query",   "(?i)^(xpath|evaluate)$")
+          ("CWE-643", "xpath.query",   "(?i)^(xpath|query|evaluate)$")
         )
       )
     case "ruby" | "rubysrc" =>
@@ -231,9 +233,9 @@ import java.security.MessageDigest
           ("CWE-611", "xml.parse",     "(?i)^(XML|parse|noent)$"),
           // Phase 20 — response splitting via a raw header assignment.
           ("CWE-93",  "header.write",  "(?i)^(set_header|headers)$"),
-          // Phase 21 — SSTI. ``ERB.new(user).result`` and
-          // ``render inline:`` both evaluate embedded Ruby — RCE.
-          ("CWE-1336", "ssti",         "(?i)^(erb|result|result_with_hash)$"),
+          // Phase 21 — SSTI. rubysrc2cpg lowers ``ERB.new(user)`` to the
+          // receiver-specific ``erb.ERB.initialize`` call.
+          ("CWE-1336", "ssti",         "(?i)^initialize$"),
           // Phase 21 — email header injection (ActionMailer / the mail gem).
           ("CWE-93",  "email.send",    "(?i)^(deliver|deliver_now|deliver_later)$"),
           // Phase 21 — sensitive data in logs.
@@ -285,12 +287,9 @@ import java.security.MessageDigest
           ("CWE-93",  "header.write",  "(?i)^(Set|Add)$"),
           // Phase 21 — email header injection via net/smtp.
           ("CWE-93",  "email.send",    "(?i)^SendMail$"),
-          // Phase 21 — SSTI. ``text/template`` and ``html/template`` treat
-          // ``Parse``'s argument as the template body.
-          ("CWE-1336", "ssti",         "(?i)^(Parse|ParseGlob|Must)$"),
-          // Phase 21 — ReDoS. Go's RE2 has no catastrophic backtracking, so
-          // this is a resource-bound concern only; low weight by design.
-          ("CWE-1333", "redos",        "(?i)^(MustCompile|CompilePOSIX)$")
+          // Phase 21 — SSTI. Only Parse consumes template source. ParseGlob /
+          // ParseFiles consume filenames, and Must merely unwraps a result.
+          ("CWE-1336", "ssti",         "(?i)^Parse$")
         )
       )
     case "java" =>
@@ -349,12 +348,13 @@ import java.security.MessageDigest
           ("CWE-93",  "header.write",  "(?i)^(setHeader|addHeader|addCookie)$"),
           // Phase 21 — sensitive data in logs (SLF4J / Log4j / java.util.logging).
           ("CWE-532", "log.sensitive", "(?i)^(trace|debug|info|warn|error|fatal|severe)$"),
-          // Phase 21 — SSTI. Velocity ``evaluate``/``mergeTemplate`` and
-          // FreeMarker ``process`` interpret their input as a template;
-          // attacker-controlled templates reach RCE on both engines.
-          ("CWE-1336", "ssti",         "(?i)^(evaluate|mergeTemplate|process|getTemplate)$"),
+          // Phase 21 — SSTI. Velocity.evaluate consumes template source in
+          // argument four; FreeMarker consumes it in Template's constructor.
+          // ``Template.process`` only receives the data model and is not a
+          // template-injection sink.
+          ("CWE-1336", "ssti",         "(?i)^(evaluate|<init>)$"),
           // Phase 21 — XPath injection (javax.xml.xpath).
-          ("CWE-643", "xpath.query",   "(?i)^(evaluateExpression|compileExpression|selectNodes|selectSingleNode)$"),
+          ("CWE-643", "xpath.query",   "(?i)^(evaluate|compile|evaluateExpression|compileExpression|selectNodes|selectSingleNode)$"),
           // Phase 21 — LDAP injection. ``DirContext.search`` with a filter
           // built from user input subverts the filter logic.
           ("CWE-90",  "ldap.query",    "(?i)^(search|searchControls)$")
@@ -413,9 +413,9 @@ import java.security.MessageDigest
           // what makes a hit interesting, so the bare logger method names are
           // acceptable here.
           ("CWE-532", "log.sensitive", "(?i)^(debug|info|warning|warn|error|critical|exception)$"),
-          // Phase 21 — NoSQL operator injection (pymongo / motor). Bare
-          // ``find`` is excluded: ``str.find`` is ubiquitous in Python.
-          ("CWE-943", "nosql.query",   "(?i)^(find_one|find_one_and_update|find_one_and_delete|aggregate|map_reduce|distinct)$"),
+          // Phase 21/22 — NoSQL operator injection (pymongo / motor). Bare
+          // ``find`` is receiver-gated below so ``str.find`` remains excluded.
+          ("CWE-943", "nosql.query",   "(?i)^(find|find_one|find_one_and_update|find_one_and_delete|aggregate|map_reduce|distinct)$"),
           // Phase 21 — LDAP injection (python-ldap / ldap3). Filter strings
           // built from user input allow filter-logic subversion.
           ("CWE-90",  "ldap.query",    "(?i)^(search_s|search_ext_s|search_st)$"),
@@ -527,14 +527,12 @@ import java.security.MessageDigest
           // so we don't collide with the Firestore ``doc().set()`` sink.
           ("CWE-1321", "proto.pollute", "(?i)^(merge|mergeWith|defaultsDeep|extend|deepmerge)$"),
           ("CWE-1321", "proto.pollute", "(?i)^(set|setWith)$"),
-          // Phase 21 — NoSQL (operator) injection. Passing ``req.body``
+          // Phase 21/22 — NoSQL (operator) injection. Passing ``req.body``
           // straight to a Mongo query lets the attacker supply operators
-          // (``{"$ne": null}``, ``{"$where": "..."}``) instead of a value.
-          // Deliberately Mongo-specific names only: bare ``find`` is
-          // Array.prototype.find in most JS files and would drown the class
-          // in noise. ``$where``/``$function`` payloads reach these same
-          // calls, so the coverage is not lost.
-          ("CWE-943", "nosql.query",   "(?i)^(findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace)$"),
+          // (for example ``{"$ne": null}``) instead of a scalar value.
+          // Canonical bare ``find`` is receiver-gated below so
+          // Array.prototype.find does not masquerade as a database query.
+          ("CWE-943", "nosql.query",   "(?i)^(find|findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace)$"),
           ("CWE-943", "nosql.query",   "(?i)^(updateMany|deleteMany|countDocuments|aggregate|mapReduce|distinct)$"),
           // Phase 21 — client/server SSTI. Handlebars ``compile`` and lodash
           // ``template`` interpret their argument as a template; an
@@ -543,7 +541,7 @@ import java.security.MessageDigest
           ("CWE-1336", "ssti",         "(?i)^(compile|template)$"),
           // Phase 21 — ReDoS. ``new RegExp(userInput)`` lets the attacker
           // pick a catastrophically backtracking pattern.
-          ("CWE-1333", "redos",        "(?i)^RegExp$")
+          ("CWE-1333", "redos",        "(?i)^(RegExp|<operator>\\.new)$")
         )
       )
   }
@@ -628,20 +626,27 @@ import java.security.MessageDigest
   }
 
   // Pre-compute sources once for both flow-engine queries and the fallback.
-  // Java's request-borne data flows through method parameters that carry
+  // JVM request-borne data flows through method parameters that carry
   // annotations like @RequestParam / @RequestBody / @PathVariable rather
   // than top-level field reads, so for Java we additionally include matching
-  // parameter nodes (their ``code`` includes the annotation text).
+  // parameter nodes. Java usually includes the annotation in ``code``;
+  // Kotlin exposes it through the parameter's annotation edge instead.
   val baseRawSources = cpg.fieldAccess.code(sourceNamePattern).l ++
                        cpg.identifier.name(sourceNamePattern).l
   val srcRegex = sourceNamePattern.r
   val rawSources =
-    if (language.toLowerCase == "java") {
-      val javaParamSources =
+    if (language.toLowerCase == "java" || language.toLowerCase == "kotlin") {
+      val jvmParamSources =
         cpg.parameter
-          .filter(p => p.code != null && srcRegex.findFirstIn(p.code).isDefined)
+          .filter { p =>
+            val codeMatches = p.code != null && srcRegex.findFirstIn(p.code).isDefined
+            val annotationMatches = p.annotation.name.l.exists { name =>
+              srcRegex.findFirstIn(name).isDefined
+            }
+            codeMatches || annotationMatches
+          }
           .l
-      baseRawSources ++ javaParamSources
+      baseRawSources ++ jvmParamSources
     } else if (language.toLowerCase == "go" || language.toLowerCase == "golang") {
       // Go's request data lands via method calls on the request/context
       // object (``c.Query("id")``, ``r.URL.Query()``); the *call result* is
@@ -649,6 +654,12 @@ import java.security.MessageDigest
       // identifier/fieldAccess reads.
       val goCallSources = cpg.call.code(sourceNamePattern).l
       baseRawSources ++ goCallSources
+    } else if (language.toLowerCase == "python") {
+      // Indexed Flask/Django reads such as request.args["pattern"] are
+      // operator calls in pythonsrc2cpg. Include that expression so taint is
+      // not lost at the fieldAccess -> indexAccess boundary.
+      val pythonCallSources = cpg.call.code(sourceNamePattern).l
+      baseRawSources ++ pythonCallSources
     } else if (language.toLowerCase == "csharp" || language.toLowerCase == "csharpsrc") {
       // ASP.NET Core minimal APIs bind simple lambda parameters from the
       // request by convention. Joern's C# frontend exposes those as parameter
@@ -716,9 +727,36 @@ import java.security.MessageDigest
   // too generic on their own — Phase 20 verification caught
   // ``Object.create(null)`` being reported as a Firestore mass-assignment
   // sink. Require a Firestore-shaped receiver: a ``doc(...)``/``collection(...)``
-  // chain, or a db/firestore-ish identifier.
+  // chain, or a Firestore/document-reference identifier. A generic ``db``
+  // receiver is intentionally insufficient because SQL/Redis clients use it.
   val firestoreReceiver =
-    """(?is).*(?:\.doc\s*\(|\.collection\s*\(|\bdb\.|\bfirestore\b|\bdocRef\b|\bcollectionRef\b).*""".r
+    ("""(?is).*(?:\.doc\s*\(|\.collection\s*\(|\bfirestore\b|""" +
+      """\bdocRef\b|\bcollectionRef\b).*""").r
+  // Phase 22: receiver/type gates for names that are security sinks only on
+  // particular APIs. methodFullName is preferred; source-code receiver text
+  // is the fallback for frontends with incomplete type recovery.
+  val jsSstiReceiver =
+    """(?is).*(?:handlebars|lodash|nunjucks|pug|ejs|dot)(?::|\.).*(?:compile|template).*""".r
+  val jsRegExpConstructor = """(?is).*\b(?:new\s+)?RegExp\s*\(.*""".r
+  val jsMongoReceiver =
+    """(?is).*(?:mongodb|mongoose|mongojs|monk|\b(?:mongo|collection|coll)\w*\.).*""".r
+  val javaSstiReceiver =
+    """(?is).*(?:org\.apache\.velocity.*\.evaluate|freemarker\.template\.Template\.<init>).*""".r
+  val jvmXpathReceiver =
+    """(?is).*(?:javax\.xml\.xpath|org\.apache\.xpath|\bXPath\w*(?:\.|\b)|\bxpath\.).*""".r
+  val jvmLdapReceiver =
+    """(?is).*(?:javax\.naming|ldap|DirContext|LdapContext|\b(?:directory|ldap)\w*\.).*""".r
+  val csharpRegexReceiver = """(?is).*(?:\bRegex\.|\bRegex\.<init>|new\s+Regex\s*\().*""".r
+  val csharpXpathReceiver =
+    """(?is).*(?:XPath|XmlDocument|XmlNode|XmlElement|\b(?:xpath|navigator)\w*\.).*""".r
+  val pythonRegexReceiver = """(?is).*(?:\bre(?:gex)?(?:\.py)?[:.]|\bre(?:gex)?\.compile).*""".r
+  val pythonMongoReceiver =
+    """(?is).*(?:pymongo|motor|mongoengine|beanie|\b(?:mongo|collection|coll)\w*\.).*""".r
+  val phpXpathReceiver =
+    ("""(?is).*(?:DOMXPath|SimpleXMLElement|""" +
+      """\b\w*xpath\w*\s*->\s*(?:query|evaluate)\s*\().*""").r
+  val rubyErbReceiver = """(?is).*(?:erb\.ERB\.initialize|ERB\.new\s*\().*""".r
+  val goTemplateReceiver = """(?is).*(?:html/template|text/template)[^\s]*\.Parse\s.*""".r
   // Python SSRF: bare ``urlopen`` is specific enough on its own; the bare
   // method names (get/post/etc.) need receiver filtering to avoid matching
   // e.g. ``dict.get`` / ``Session.get`` outside HTTP-client contexts. The
@@ -735,6 +773,66 @@ import java.security.MessageDigest
       """http_client|httpx_client|api_client|requests_session|""" +
       """http_session)\.(?:get|post|put|delete|patch|head|options|request)\b.*""").r
   val pythonSsrfBareNames = Set("urlopen")
+
+  type CallNode = io.shiftleft.codepropertygraph.generated.nodes.Call
+
+  def receiverCode(call: CallNode): String =
+    call.argument.l
+      .find(_.argumentIndex == 0)
+      .map(node => if (node.code != null) node.code else "")
+      .getOrElse("")
+
+  def callDescriptor(call: CallNode): String = {
+    val code = if (call.code != null) call.code else ""
+    val fullName = if (call.methodFullName != null) call.methodFullName else ""
+    s"$fullName $code ${receiverCode(call)}"
+  }
+
+  def assignedReceiverVars(
+    enabled: Boolean,
+    seedPattern: scala.util.matching.Regex
+  ): scala.collection.mutable.HashSet[String] = {
+    val found = scala.collection.mutable.HashSet.empty[String]
+    if (!enabled) return found
+    val assignments = cpg.call.name("<operator>.assignment").l
+    assignments.foreach { assignment =>
+      val args = assignment.argument.l
+      if (args.length >= 2) {
+        val lhsCode = if (args.head.code != null) args.head.code else ""
+        val rhsCode = if (args(1).code != null) args(1).code else ""
+        val lhsName = lhsCode.trim.takeWhile(char => char.isLetterOrDigit || char == '_')
+        if (lhsName.nonEmpty && seedPattern.findFirstIn(rhsCode).isDefined) {
+          found.add(lhsName)
+        }
+      }
+    }
+    var grew = true
+    while (grew) {
+      grew = false
+      assignments.foreach { assignment =>
+        val args = assignment.argument.l
+        if (args.length >= 2) {
+          val lhsCode = if (args.head.code != null) args.head.code else ""
+          val rhsCode = if (args(1).code != null) args(1).code else ""
+          val lhsName = lhsCode.trim.takeWhile(char => char.isLetterOrDigit || char == '_')
+          val rhsName = rhsCode.trim
+          if (
+            lhsName.nonEmpty && rhsName.matches("[A-Za-z_]\\w*") &&
+            found.contains(rhsName) && !found.contains(lhsName)
+          ) {
+            found.add(lhsName)
+            grew = true
+          }
+        }
+      }
+    }
+    found
+  }
+
+  val jsMongoCollectionVars = assignedReceiverVars(
+    language.toLowerCase.matches("javascript|typescript|jssrc"),
+    """(?is).*(?:\.collection\s*\(|mongoose\.model\s*\(|mongojs\s*\().*""".r
+  )
 
   // Type-aware Python HTTP-client receiver discovery.
   //
@@ -827,73 +925,65 @@ import java.security.MessageDigest
   // the first identifier of the form `<name>.` from the call's code text
   // and check it against `pythonHttpClientVars`.
   val pythonReceiverIdentifierRegex = """(?is)^\s*([A-Za-z_]\w*)\.""".r
-  def restrictXssSinks(
+  def filterJavascriptSinks(
     cwe: String,
-    sinks: List[io.shiftleft.codepropertygraph.generated.nodes.Call]
-  ): List[io.shiftleft.codepropertygraph.generated.nodes.Call] = {
-    if (cwe == "CWE-79" && language.toLowerCase == "javascript") {
-      // Two-step filter: precise DOM-XSS sink names (insertAdjacentHTML / parseHTML)
-      // pass through unconditionally; ambiguous server-vs-DOM names (send/write/
-      // end/writeln) must match the xssReceiver regex.
-      sinks.filter { c =>
-        val name = if (c.name != null) c.name.toLowerCase else ""
+    sinkClass: String,
+    sinks: List[CallNode]
+  ): List[CallNode] = {
+    if (cwe == "CWE-79") {
+      sinks.filter { call =>
+        val name = if (call.name != null) call.name.toLowerCase else ""
         if (!xssAmbiguousCallNames.contains(name)) {
           true
         } else {
-          val code = if (c.code != null) c.code else ""
+          val code = if (call.code != null) call.code else ""
           xssReceiver.matches(code)
         }
       }
-    } else if (
-      (cwe == "CWE-915" || cwe == "CWE-639") && language.toLowerCase == "javascript"
-    ) {
-      // Firestore mass-assignment / IDOR sinks: require a Firestore-shaped
-      // receiver so plain ``Object.create``/``Map.set``/``obj.update`` don't
-      // masquerade as document writes (found in Phase 20 verification).
-      sinks.filter { c =>
-        val code = if (c.code != null) c.code else ""
-        firestoreReceiver.matches(code)
-      }
-    } else if (cwe == "CWE-1321" && language.toLowerCase == "javascript") {
-      // Prototype pollution: the deep-merge names pass through; only the
-      // ambiguous ``set``/``setWith`` need a lodash-shaped receiver so we
-      // don't re-report Firestore's ``doc(id).set(body)`` (CWE-915).
-      sinks.filter { c =>
-        val name = if (c.name != null) c.name.toLowerCase else ""
+    } else if (cwe == "CWE-915" || cwe == "CWE-639") {
+      sinks.filter(call => firestoreReceiver.matches(callDescriptor(call)))
+    } else if (cwe == "CWE-1321") {
+      sinks.filter { call =>
+        val name = if (call.name != null) call.name.toLowerCase else ""
         if (!protoPolluteAmbiguousNames.contains(name)) {
           true
         } else {
-          val code = if (c.code != null) c.code else ""
-          protoPolluteReceiver.matches(code)
+          protoPolluteReceiver.matches(callDescriptor(call))
         }
       }
-    } else if (cwe == "CWE-918" && language.toLowerCase == "javascript") {
-      sinks.filter { c =>
-        val code = if (c.code != null) c.code else ""
-        val name = if (c.name != null) c.name.toLowerCase else ""
+    } else if (sinkClass == "ssti") {
+      sinks.filter(call => jsSstiReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "nosql.query") {
+      sinks.filter { call =>
+        jsMongoReceiver.matches(callDescriptor(call)) ||
+        jsMongoCollectionVars.contains(receiverCode(call))
+      }
+    } else if (sinkClass == "redos") {
+      sinks.filter { call =>
+        val code = if (call.code != null) call.code else ""
+        jsRegExpConstructor.matches(code)
+      }
+    } else if (cwe == "CWE-918") {
+      sinks.filter { call =>
+        val code = if (call.code != null) call.code else ""
+        val name = if (call.name != null) call.name.toLowerCase else ""
         ssrfBareNames.contains(name) || ssrfReceiver.matches(code)
       }
-    } else if (cwe == "CWE-918" && language.toLowerCase == "java") {
-      // Java SSRF sink names (``getForObject`` / ``postForEntity`` /
-      // ``exchange`` etc.) are specific enough that they don't over-match
-      // outside HTTP-client contexts — no receiver filter needed. Same
-      // logic for ``openConnection`` / ``openStream``.
-      sinks
-    } else if (cwe == "CWE-918" && language.toLowerCase == "go") {
-      // Go SSRF sink names (``Post`` / ``Do`` / ``NewRequest*``) are
-      // similarly specific. ``Get`` was deliberately excluded from the
-      // built-in Go patterns; Phase 5 extensions can add it with a
-      // receiver_regex if a target needs the bare ``http.Get`` shape.
-      sinks
-    } else if (cwe == "CWE-918" && language.toLowerCase == "python") {
-      sinks.filter { c =>
-        val code = if (c.code != null) c.code else ""
-        val name = if (c.name != null) c.name else ""
+    } else sinks
+  }
+
+  def filterPythonSinks(cwe: String, sinkClass: String, sinks: List[CallNode]): List[CallNode] = {
+    if (sinkClass == "nosql.query") {
+      sinks.filter(call => pythonMongoReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "redos") {
+      sinks.filter(call => pythonRegexReceiver.matches(callDescriptor(call)))
+    } else if (cwe == "CWE-918") {
+      sinks.filter { call =>
+        val code = if (call.code != null) call.code else ""
+        val name = if (call.name != null) call.name else ""
         if (pythonSsrfBareNames.contains(name) || pythonSsrfReceiver.matches(code)) {
           true
         } else {
-          // Type-aware fallback: accept the call if its receiver identifier
-          // was assigned from an HTTP-client constructor in this CPG.
           pythonReceiverIdentifierRegex.findFirstMatchIn(code) match {
             case Some(m) => pythonHttpClientVars.contains(m.group(1))
             case None => false
@@ -903,6 +993,91 @@ import java.security.MessageDigest
     } else sinks
   }
 
+  def filterJvmSinks(sinkClass: String, sinks: List[CallNode]): List[CallNode] = {
+    if (sinkClass == "ssti") {
+      sinks.filter(call => javaSstiReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "xpath.query") {
+      sinks.filter(call => jvmXpathReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "ldap.query") {
+      sinks.filter(call => jvmLdapReceiver.matches(callDescriptor(call)))
+    } else sinks
+  }
+
+  def filterOtherLanguageSinks(sinkClass: String, sinks: List[CallNode]): List[CallNode] = {
+    language.toLowerCase match {
+      case "csharp" | "csharpsrc" if sinkClass == "redos" =>
+        sinks.filter(call => csharpRegexReceiver.matches(callDescriptor(call)))
+      case "csharp" | "csharpsrc" if sinkClass == "xpath.query" =>
+        sinks.filter(call => csharpXpathReceiver.matches(callDescriptor(call)))
+      case "php" if sinkClass == "xpath.query" =>
+        sinks.filter { call =>
+          val name = if (call.name != null) call.name.toLowerCase else ""
+          name == "xpath" || phpXpathReceiver.matches(callDescriptor(call))
+        }
+      case "ruby" | "rubysrc" if sinkClass == "ssti" =>
+        sinks.filter(call => rubyErbReceiver.matches(callDescriptor(call)))
+      case "go" | "golang" if sinkClass == "ssti" =>
+        sinks.filter(call => goTemplateReceiver.matches(callDescriptor(call)))
+      case _ => sinks
+    }
+  }
+
+  def restrictBuiltinSinks(cwe: String, sinkClass: String, sinks: List[CallNode]): List[CallNode] = {
+    language.toLowerCase match {
+      case "javascript" | "typescript" | "jssrc" =>
+        filterJavascriptSinks(cwe, sinkClass, sinks)
+      case "python" => filterPythonSinks(cwe, sinkClass, sinks)
+      case "java" | "kotlin" => filterJvmSinks(sinkClass, sinks)
+      case _ => filterOtherLanguageSinks(sinkClass, sinks)
+    }
+  }
+
+  def indexedArguments(call: CallNode, indexes: Set[Int]) = {
+    val selected = call.argument.l.filter(argument => indexes.contains(argument.argumentIndex))
+    if (selected.nonEmpty) selected else call.argument.l
+  }
+
+  def isStaticValueArgument(argument: io.shiftleft.codepropertygraph.generated.nodes.Expression) = {
+    val code = if (argument.code != null) argument.code.trim else ""
+    val isLiteral =
+      argument.isInstanceOf[io.shiftleft.codepropertygraph.generated.nodes.Literal]
+    val isConstantIdentifier = code.matches("(?:[A-Za-z_]\\w*\\.)*[A-Z][A-Z0-9_]*")
+    isLiteral || isConstantIdentifier
+  }
+
+  def dynamicArguments(call: CallNode, indexes: Set[Int]) =
+    indexedArguments(call, indexes).filterNot(isStaticValueArgument)
+
+  def sinkArguments(cwe: String, sinkClass: String, call: CallNode) = {
+    val name = if (call.name != null) call.name.toLowerCase else ""
+    val lang = language.toLowerCase
+    if (sinkClass == "nosql.query" || sinkClass == "xpath.query") {
+      dynamicArguments(call, Set(1))
+    } else if (sinkClass == "header.write") {
+      dynamicArguments(call, Set(1, 2))
+    } else if (sinkClass == "ldap.query" && (lang == "java" || lang == "kotlin")) {
+      dynamicArguments(call, Set(2))
+    } else if (sinkClass == "ldap.query" && lang == "php") {
+      dynamicArguments(call, Set(3))
+    } else if (sinkClass == "ssti" && (lang == "java" || lang == "kotlin")) {
+      val templateArgs =
+        if (name == "evaluate") indexedArguments(call, Set(4))
+        else indexedArguments(call, Set(2))
+      templateArgs.filterNot(isStaticValueArgument)
+    } else if (sinkClass == "ssti") {
+      dynamicArguments(call, Set(1))
+    } else if (sinkClass == "redos" && (lang == "csharp" || lang == "csharpsrc")) {
+      if (name == "<init>") dynamicArguments(call, Set(1))
+      else if (receiverCode(call).equalsIgnoreCase("Regex")) dynamicArguments(call, Set(2))
+      // Instance IsMatch receives only the input string. A dynamic pattern is
+      // already captured at Regex.<init>; treating the receiver as a second
+      // pattern sink creates false flows through fixed static Regex fields.
+      else call.argument.l.take(0)
+    } else if (sinkClass == "redos") {
+      dynamicArguments(call, Set(1))
+    } else call.argument.l
+  }
+
   val extensionSinkKeys: Set[(String, String, String)] =
     extensionSinks.toSet
   val w = new BufferedWriter(new FileWriter(outPath))
@@ -910,7 +1085,7 @@ import java.security.MessageDigest
     for ((cwe, sinkClass, sinkPattern) <- sinkClasses) {
       val callCandidates = cpg.call.name(sinkPattern).l
       // Phase 5: extension-owned sinks bypass the built-in receiver filter
-      // (restrictXssSinks). Proposals are explicit about which call names
+      // (restrictBuiltinSinks). Proposals are explicit about which call names
       // qualify; subjecting them to the built-in allowlist would block
       // arbitrary custom-client sinks like `apiv2_fetch` (no `httpx.`
       // receiver, no bare `fetch`/`request` name). When the extension
@@ -928,14 +1103,14 @@ import java.security.MessageDigest
           case None => callCandidates
         }
       } else {
-        restrictXssSinks(cwe, callCandidates)
+        restrictBuiltinSinks(cwe, sinkClass, callCandidates)
       }
 
       // ---- Pass 1: reachableByFlows on each sink's arguments ----
       for (call <- sinkCalls) {
         val sinkFile = fileOf(call)
         val sinkLine = lineOf(call)
-        val args = call.argument.l
+        val args = sinkArguments(cwe, sinkClass, call)
         val paths =
           try args.reachableByFlows(rawSources).l
           catch { case _: Throwable => Nil }
@@ -978,7 +1153,10 @@ import java.security.MessageDigest
       // a strong negative factor without dropping it. Class-by-class fallback
       // deny lists are forbidden.
       val fallbackEnabled = language.toLowerCase == "javascript"
-      for (sink <- sinkCalls if fallbackEnabled) {
+      val fallbackSinks = sinkCalls.filter { sink =>
+        fallbackEnabled && sinkArguments(cwe, sinkClass, sink).nonEmpty
+      }
+      for (sink <- fallbackSinks) {
         val sinkFile = fileOf(sink)
         val sinkLine = lineOf(sink)
         if (pass1HitSinks.contains((sinkFile, sinkLine, cwe))) {

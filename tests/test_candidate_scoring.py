@@ -4,9 +4,66 @@ import json
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.scoring import attach_scores, persist_candidate_scores, score_candidates
+
+
+@pytest.mark.parametrize(
+    ("sink_class", "expected_weight"),
+    (
+        ("xml.parse", 0.18),
+        ("proto.pollute", 0.14),
+        ("header.write", 0.08),
+        ("nosql.query", 0.18),
+        ("ldap.query", 0.14),
+        ("xpath.query", 0.14),
+        ("redos", 0.06),
+    ),
+)
+def test_phase_20_21_sink_classes_contribute_expected_score(
+    tmp_path: Path,
+    sink_class: str,
+    expected_weight: float,
+) -> None:
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    candidate = {
+        "id": f"A-{sink_class}",
+        "stream": "A",
+        "fid": f"F-{sink_class}",
+        "engine": "joern",
+        "sink_class": sink_class,
+    }
+
+    score = score_candidates(conn, [candidate])[0]
+
+    factor = next(item for item in score.factors if item.name == "dangerous_sink")
+    assert factor.value == expected_weight
+
+
+@pytest.mark.parametrize(
+    ("signal_strength", "expected_weight"),
+    (("strong", 0.12), ("deterministic", 0.2)),
+)
+def test_source_aware_semantic_strength_contributes_expected_score(
+    tmp_path: Path,
+    signal_strength: str,
+    expected_weight: float,
+) -> None:
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    candidate = {
+        "id": f"B-{signal_strength}",
+        "stream": "B",
+        "signal_strength": signal_strength,
+    }
+
+    score = score_candidates(conn, [candidate])[0]
+
+    factor = next(item for item in score.factors if item.name == "semantic_signal")
+    assert factor.value == expected_weight
 
 
 def test_score_candidates_ranks_static_sql_flow_high(tmp_path: Path) -> None:

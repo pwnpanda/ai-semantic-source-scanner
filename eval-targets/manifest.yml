@@ -207,6 +207,10 @@ cases:
     allowed_false_positives:
       - cwe: CWE-352
         file: server.js
+      # Joern's JS frontend over-taints the chained call receiver and can
+      # connect req.body to doc(req.user.id); the CWE-915 update is the target.
+      - cwe: CWE-639
+        file: server.js
   - id: express-mass-assignment-safe
     target: express-mass-assignment-safe
     language: javascript
@@ -230,6 +234,10 @@ cases:
         line_tolerance: 1
     allowed_false_positives:
       - cwe: CWE-352
+        file: server.js
+      # The token is not returned, but JS closure dataflow can over-taint the
+      # later constant res.send("ok") call.
+      - cwe: CWE-79
         file: server.js
   - id: express-sensitive-logging-safe
     target: express-sensitive-logging-safe
@@ -804,6 +812,161 @@ cases:
         file: server.js
       - cwe: CWE-943
         file: server.js
+  - id: javascript-phase21-variants
+    target: javascript-phase21-variants
+    language: javascript
+    engine: joern
+    # Canonical receiver/constructor variants that the initial Phase 21 table
+    # either omitted (`find`) or modelled without receiver/CPG-call precision.
+    expected_findings:
+      - id: JAVASCRIPT-MONGO-FIND-001
+        cwe: CWE-943
+        file: server.js
+        source_line: 15
+        sink_line: 19
+        source_contains: req.body.filter
+        sink_contains: find
+        line_tolerance: 1
+      - id: JAVASCRIPT-HANDLEBARS-SSTI-001
+        cwe: CWE-1336
+        file: server.js
+        source_line: 16
+        sink_line: 20
+        source_contains: req.body.template
+        sink_contains: compile
+        line_tolerance: 1
+      - id: JAVASCRIPT-REGEXP-REDOS-001
+        cwe: CWE-1333
+        file: server.js
+        source_line: 17
+        sink_line: 21
+        source_contains: req.body.pattern
+        sink_contains: <operator>.new
+        line_tolerance: 1
+      - id: JAVASCRIPT-HEADER-WRITE-001
+        cwe: CWE-93
+        file: server.js
+        source_line: 18
+        sink_line: 22
+        source_contains: req.body.headerValue
+        sink_contains: setHeader
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: javascript-phase21-variants-safe
+    target: javascript-phase21-variants-safe
+    language: javascript
+    engine: joern
+    # Array.find, WebAssembly.compile and URL construction are tainted safe
+    # near-misses. Constant template/header arguments are excluded before the
+    # co-location fallback.
+    expected_findings: []
+    allowed_false_positives: []
+  - id: csharp-redos-variants
+    target: csharp-redos-variants
+    language: csharp
+    engine: joern
+    expected_findings:
+      - id: CSHARP-REGEX-CONSTRUCTOR-001
+        cwe: CWE-1333
+        file: SecurityShapes.cs
+        source_line: 5
+        sink_line: 7
+        source_contains: pattern
+        sink_contains: <init>
+        line_tolerance: 1
+      - id: CSHARP-REGEX-ISMATCH-001
+        cwe: CWE-1333
+        file: SecurityShapes.cs
+        source_line: 5
+        sink_line: 8
+        source_contains: pattern
+        sink_contains: IsMatch
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: csharp-redos-variants-safe
+    target: csharp-redos-variants-safe
+    language: csharp
+    engine: joern
+    # Request/input data is matched against a fixed pattern; it is not used as
+    # the regular expression itself.
+    expected_findings: []
+    allowed_false_positives: []
+  - id: java-phase21-variants
+    target: java-phase21-variants
+    language: java
+    engine: joern
+    expected_findings:
+      - id: JAVA-FREEMARKER-SSTI-001
+        cwe: CWE-1336
+        file: src/main/java/example/SecurityShapes.java
+        source_line: 45
+        sink_line: 47
+        source_contains: RequestBody
+        sink_contains: <init>
+        line_tolerance: 1
+      - id: JAVA-VELOCITY-SSTI-001
+        cwe: CWE-1336
+        file: src/main/java/example/SecurityShapes.java
+        source_line: 53
+        sink_line: 54
+        source_contains: RequestBody
+        sink_contains: evaluate
+        line_tolerance: 1
+      - id: JAVA-XPATH-001
+        cwe: CWE-643
+        file: src/main/java/example/SecurityShapes.java
+        source_line: 59
+        sink_line: 60
+        source_contains: RequestParam
+        sink_contains: evaluate
+        line_tolerance: 1
+      - id: JAVA-LDAP-001
+        cwe: CWE-90
+        file: src/main/java/example/SecurityShapes.java
+        source_line: 64
+        sink_line: 65
+        source_contains: RequestParam
+        sink_contains: search
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: java-phase21-variants-safe
+    target: java-phase21-variants-safe
+    language: java
+    engine: joern
+    # Request data is a FreeMarker/Velocity data model, never template source;
+    # XPath and LDAP expressions are compile-time constants.
+    expected_findings: []
+    allowed_false_positives: []
+  - id: python-phase21-variants
+    target: python-phase21-variants
+    language: python
+    engine: joern
+    expected_findings:
+      - id: PYTHON-MONGO-FIND-001
+        cwe: CWE-943
+        file: server.py
+        source_line: 14
+        sink_line: 16
+        source_contains: request.json
+        sink_contains: find
+        line_tolerance: 1
+      - id: PYTHON-REGEX-COMPILE-001
+        cwe: CWE-1333
+        file: server.py
+        source_line: 15
+        sink_line: 17
+        source_contains: request.args
+        sink_contains: compile
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: python-phase21-variants-safe
+    target: python-phase21-variants-safe
+    language: python
+    engine: joern
+    # Application methods named find_one/compile are tainted near-misses; the
+    # real re.compile call has a static pattern.
+    expected_findings: []
+    allowed_false_positives: []
   - id: kotlin-spring-semantic-hotspots
     target: kotlin-spring-semantic-hotspots
     language: kotlin

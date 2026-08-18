@@ -62,8 +62,8 @@ _DANGEROUS_SINK_CLASSES: dict[str, float] = {
     # disclosure) but rarely reach code execution.
     "ldap.query": 0.14,
     "xpath.query": 0.14,
-    # ReDoS is availability-only, and Go's RE2 cannot backtrack at all, so
-    # this stays low and leans on the reviewer.
+    # ReDoS is availability-only, so this stays low and leans on the reviewer.
+    # Go's linear-time standard regexp engine is intentionally not modelled.
     "redos": 0.06,
 }
 
