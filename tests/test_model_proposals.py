@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import duckdb
@@ -21,6 +22,7 @@ from ai_codescan.model_proposals import (
     link_eval_targets,
     list_model_proposals,
     proposal_decision_counts,
+    proposal_path_for,
     proposals_from_verdicts,
     record_proposal_decision,
     write_model_proposals,
@@ -61,6 +63,100 @@ def _proposal() -> ModelProposal:
         rationale="missing BOLA model",
         source_path="findings/F-001.md",
     )
+
+
+@pytest.mark.parametrize(
+    "proposal_id",
+    ("../../outside", "/tmp/outside", "proposal-%2foutside", r"proposal-..\outside"),
+)
+def test_proposal_path_rejects_separator_variants(
+    tmp_path: Path,
+    proposal_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="invalid proposal id"):
+        proposal_path_for(tmp_path / "proposals", proposal_id)
+
+
+def test_write_model_proposals_validates_before_creating_directory(tmp_path: Path) -> None:
+    proposals_dir = tmp_path / "proposals"
+    unsafe = replace(_proposal(), proposal_id="../../../outside")
+
+    with pytest.raises(ValueError, match="invalid proposal id"):
+        write_model_proposals([unsafe], proposals_dir=proposals_dir)
+
+    assert not proposals_dir.exists()
+
+
+def test_apply_semgrep_rejects_unsafe_id_before_creating_rules_root(tmp_path: Path) -> None:
+    rules_root = tmp_path / "rules-root"
+    unsafe = replace(_proposal(), proposal_id="../../../outside")
+
+    with pytest.raises(ValueError, match="invalid proposal id"):
+        apply_proposal_to_semgrep(unsafe, rules_root=rules_root)
+
+    assert not rules_root.exists()
+
+
+def test_list_model_proposals_rejects_symlinked_artifact(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps(_proposal().to_jsonable()), encoding="utf-8")
+    proposals_dir = tmp_path / "proposals"
+    proposals_dir.mkdir()
+    (proposals_dir / "proposal-test.json").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="direct regular file"):
+        list_model_proposals(proposals_dir)
+
+
+@pytest.mark.parametrize(
+    "proposal_id",
+    ("../../outside", "/tmp/outside", "proposal-%2foutside", r"proposal-..\outside"),
+)
+def test_model_proposals_cli_rejects_unsafe_id_before_cache_access(
+    tmp_path: Path,
+    proposal_id: str,
+) -> None:
+    cache = tmp_path / "cache"
+
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "model-proposals",
+            "apply",
+            proposal_id,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "invalid proposal id" in result.output
+    assert not cache.exists()
+
+
+@pytest.mark.parametrize("engine", ("../../outside", "/tmp/outside", "joern%2foutside"))
+def test_model_proposals_clone_rejects_unsupported_engine_before_cache_access(
+    tmp_path: Path,
+    engine: str,
+) -> None:
+    cache = tmp_path / "cache"
+
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "model-proposals",
+            "clone",
+            "proposal-test",
+            "--engine",
+            engine,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "unsupported model-proposal engine" in result.output
+    assert not cache.exists()
 
 
 def test_proposals_from_needs_model_extension_verdicts(tmp_path: Path) -> None:

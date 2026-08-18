@@ -51,8 +51,10 @@ from ai_codescan.model_proposals import (
     link_eval_targets,
     list_model_proposals,
     proposal_decision_counts,
+    proposal_path_for,
     proposals_from_verdicts,
     record_proposal_decision,
+    validate_proposal_id,
     write_model_proposals,
 )
 from ai_codescan.nominator import run_nominator, write_llm_cmd_script
@@ -114,6 +116,25 @@ model_proposals_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(model_proposals_app)
+
+_MODEL_PROPOSAL_ENGINES = frozenset({"codeql", "joern", "semgrep"})
+
+
+def _validated_model_proposal_id(proposal_id: str) -> str:
+    try:
+        return validate_proposal_id(proposal_id)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _validated_model_proposal_engine(engine: str) -> str:
+    normalized = engine.lower()
+    if normalized not in _MODEL_PROPOSAL_ENGINES:
+        choices = ", ".join(sorted(_MODEL_PROPOSAL_ENGINES))
+        typer.echo(f"unsupported model-proposal engine {engine!r}; choose: {choices}", err=True)
+        raise typer.Exit(code=1)
+    return normalized
 
 
 _CacheDirOption = Annotated[
@@ -1122,10 +1143,11 @@ def model_proposals_accept(  # noqa: PLR0913 - Typer command surface; each arg i
     ] = False,
 ) -> None:
     """Dry-run accept a proposal after checking that a regression target exists."""
+    proposal_id = _validated_model_proposal_id(proposal_id)
     cache_root: Path = ctx.obj["cache_root"]
     repo_id = _resolve_repo_id(cache_root, repo_id)
     run_dir = _latest_run_dir(cache_root / repo_id)
-    proposal_path = run_dir / "model_proposals" / f"{proposal_id}.json"
+    proposal_path = proposal_path_for(run_dir / "model_proposals", proposal_id)
     if not proposal_path.is_file():
         typer.echo(f"unknown proposal: {proposal_id}", err=True)
         raise typer.Exit(code=1)
@@ -1153,11 +1175,12 @@ def model_proposals_link_targets(
     repo_id: Annotated[str, typer.Option("--repo-id", help="Which cached repo.")] = "",
 ) -> None:
     """Attach paired positive + negative eval targets to a proposal (Phase 3 Invariant 5)."""
+    proposal_id = _validated_model_proposal_id(proposal_id)
     cache_root: Path = ctx.obj["cache_root"]
     repo_id = _resolve_repo_id(cache_root, repo_id)
     run_dir = _latest_run_dir(cache_root / repo_id)
     proposals_dir = run_dir / "model_proposals"
-    proposal_path = proposals_dir / f"{proposal_id}.json"
+    proposal_path = proposal_path_for(proposals_dir, proposal_id)
     if not proposal_path.is_file():
         typer.echo(f"unknown proposal: {proposal_id}", err=True)
         raise typer.Exit(code=1)
@@ -1220,10 +1243,12 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
     repo_id: Annotated[str, typer.Option("--repo-id", help="Which cached repo.")] = "",
 ) -> None:
     """Render a Semgrep YAML rule from a proposal. Stages by default (Phase 7 dry-run gate)."""
+    proposal_id = _validated_model_proposal_id(proposal_id)
+    engine = _validated_model_proposal_engine(engine)
     cache_root: Path = ctx.obj["cache_root"]
     repo_id = _resolve_repo_id(cache_root, repo_id)
     run_dir = _latest_run_dir(cache_root / repo_id)
-    proposal_path = run_dir / "model_proposals" / f"{proposal_id}.json"
+    proposal_path = proposal_path_for(run_dir / "model_proposals", proposal_id)
     if not proposal_path.is_file():
         typer.echo(f"unknown proposal: {proposal_id}", err=True)
         raise typer.Exit(code=1)
@@ -1390,6 +1415,8 @@ def model_proposals_promote(
     repo_id: Annotated[str, typer.Option("--repo-id", help="Which cached repo.")] = "",
 ) -> None:
     """Promote staged Joern extensions into the active file Joern reads."""
+    if proposal_id and not all_staged:
+        proposal_id = _validated_model_proposal_id(proposal_id)
     if engine != "joern":
         typer.echo(
             f"engine '{engine}' has no separate staged/promoted distinction; "
@@ -1469,6 +1496,8 @@ def model_proposals_clone(  # noqa: PLR0913 - Typer command surface
     independently. Provenance to the source proposal is preserved via the
     rationale prefix.
     """
+    proposal_id = _validated_model_proposal_id(proposal_id)
+    engine = _validated_model_proposal_engine(engine)
     cache_root: Path = ctx.obj["cache_root"]
     repo_id = _resolve_repo_id(cache_root, repo_id)
     run_dir = _latest_run_dir(cache_root / repo_id)
@@ -1479,7 +1508,7 @@ def model_proposals_clone(  # noqa: PLR0913 - Typer command surface
         typer.echo(f"unknown proposal: {proposal_id}", err=True)
         raise typer.Exit(code=1)
     source = by_id[proposal_id]
-    if (source.target_engine or "").lower() == engine.lower():
+    if (source.target_engine or "").lower() == engine:
         typer.echo(
             f"proposal {proposal_id} already targets engine '{engine}'; nothing to clone",
             err=True,
@@ -1487,7 +1516,7 @@ def model_proposals_clone(  # noqa: PLR0913 - Typer command surface
         raise typer.Exit(code=1)
     from ai_codescan.model_proposals import ModelProposal, write_model_proposals  # noqa: PLC0415
 
-    cloned_id = f"{source.proposal_id}-{engine.lower()}"
+    cloned_id = f"{source.proposal_id}-{engine}"
     if cloned_id in by_id:
         typer.echo(f"clone already exists: {cloned_id}", err=True)
         raise typer.Exit(code=1)
@@ -1506,7 +1535,7 @@ def model_proposals_clone(  # noqa: PLR0913 - Typer command surface
             translated = rewriter(
                 sink_pattern=source.sink_pattern,
                 source_engine=source.target_engine,
-                target_engine=engine.lower(),
+                target_engine=engine,
                 language=source.language,
                 cwe=source.cwe,
             )
@@ -1531,7 +1560,7 @@ def model_proposals_clone(  # noqa: PLR0913 - Typer command surface
         sanitizer_pattern=source.sanitizer_pattern,
         vulnerable_example=source.vulnerable_example,
         safe_example=source.safe_example,
-        target_engine=engine.lower(),
+        target_engine=engine,
         eval_target=source.eval_target,
         rationale=f"clone of {source.proposal_id} for engine={engine}; {source.rationale}",
         source_path=source.source_path,
@@ -1540,7 +1569,7 @@ def model_proposals_clone(  # noqa: PLR0913 - Typer command surface
         receiver_regex=source.receiver_regex,
     )
     write_model_proposals([cloned], proposals_dir=proposals_dir)
-    typer.echo(f"cloned: {source.proposal_id} -> {cloned_id} (target_engine={engine.lower()})")
+    typer.echo(f"cloned: {source.proposal_id} -> {cloned_id} (target_engine={engine})")
 
 
 @model_proposals_app.command("reject")
@@ -1550,6 +1579,7 @@ def model_proposals_reject(
     repo_id: Annotated[str, typer.Option("--repo-id", help="Which cached repo.")] = "",
 ) -> None:
     """Mark a proposal as rejected — recorded in proposal_decisions."""
+    proposal_id = _validated_model_proposal_id(proposal_id)
     cache_root: Path = ctx.obj["cache_root"]
     repo_id = _resolve_repo_id(cache_root, repo_id)
     db_path = cache_root / repo_id / "index.duckdb"

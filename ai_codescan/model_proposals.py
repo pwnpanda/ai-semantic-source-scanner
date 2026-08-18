@@ -19,6 +19,7 @@ import yaml
 
 _STAGED_DIR_NAME = "rules.staged"
 _RULE_ID_SAFE_RE = re.compile(r"[^a-z0-9-]+")
+_SAFE_PROPOSAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,120}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,31 @@ def _proposal_id(*parts: str) -> str:
     blob = "|".join(parts)
     digest = hashlib.sha1(blob.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return f"proposal-{digest}"
+
+
+def validate_proposal_id(proposal_id: str) -> str:
+    """Return a proposal ID only when it is safe as one path component.
+
+    Args:
+        proposal_id: Identifier to validate before any artifact path is built.
+
+    Returns:
+        The unchanged, validated identifier.
+
+    Raises:
+        ValueError: If the identifier contains traversal, separators, encoding
+            metacharacters, or exceeds the supported length.
+    """
+    if _SAFE_PROPOSAL_ID.fullmatch(proposal_id) is None:
+        raise ValueError(
+            "invalid proposal id: use 1-120 ASCII letters, digits, underscores, or hyphens"
+        )
+    return proposal_id
+
+
+def proposal_path_for(proposals_dir: Path, proposal_id: str) -> Path:
+    """Build a contained proposal path after validating its identifier."""
+    return proposals_dir / f"{validate_proposal_id(proposal_id)}.json"
 
 
 def _bug_class_for_cwe(cwe: str) -> str:
@@ -146,23 +172,30 @@ def proposals_from_verdicts(  # noqa: PLR0913 - optional keyword-only proposal s
 
 
 def write_model_proposals(proposals: list[ModelProposal], *, proposals_dir: Path) -> list[Path]:
+    paths = [proposal_path_for(proposals_dir, proposal.proposal_id) for proposal in proposals]
     proposals_dir.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = []
-    for proposal in proposals:
-        path = proposals_dir / f"{proposal.proposal_id}.json"
+    for proposal, path in zip(proposals, paths, strict=True):
         path.write_text(
             json.dumps(proposal.to_jsonable(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        paths.append(path)
     return paths
 
 
 def load_model_proposal(path: Path) -> ModelProposal:
+    expected_path = proposal_path_for(path.parent, path.stem)
+    if path != expected_path or path.is_symlink() or not path.is_file():
+        raise ValueError(f"model proposal path must be a direct regular file: {path}")
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"model proposal must be an object: {path}")
-    return ModelProposal(**{field: str(data.get(field) or "") for field in ModelProposal.__slots__})
+    proposal = ModelProposal(
+        **{field: str(data.get(field) or "") for field in ModelProposal.__slots__}
+    )
+    validate_proposal_id(proposal.proposal_id)
+    if proposal.proposal_id != path.stem:
+        raise ValueError(f"model proposal id does not match its filename: {path}")
+    return proposal
 
 
 def list_model_proposals(proposals_dir: Path) -> list[ModelProposal]:
@@ -264,6 +297,7 @@ def link_eval_targets(
     proposals_dir: Path,
 ) -> ModelProposal:
     """Attach positive + negative eval targets to a proposal and persist."""
+    validate_proposal_id(proposal.proposal_id)
     if not positive.exists():
         raise ValueError(f"positive eval target does not exist: {positive}")
     if not negative.exists():
@@ -290,7 +324,7 @@ def link_eval_targets(
         source_path=proposal.source_path,
         receiver_regex=proposal.receiver_regex,
     )
-    target_path = proposals_dir / f"{proposal.proposal_id}.json"
+    target_path = proposal_path_for(proposals_dir, proposal.proposal_id)
     target_path.write_text(
         json.dumps(updated.to_jsonable(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -301,7 +335,7 @@ def link_eval_targets(
 def _semgrep_rule_id(proposal: ModelProposal) -> str:
     """Stable, filename-safe rule id derived from CWE + proposal id."""
     cwe_slug = _RULE_ID_SAFE_RE.sub("-", (proposal.cwe or "unknown").lower())
-    return f"aics-{cwe_slug}-{proposal.proposal_id}"
+    return f"aics-{cwe_slug}-{validate_proposal_id(proposal.proposal_id)}"
 
 
 def apply_proposal_to_semgrep(
@@ -319,9 +353,9 @@ def apply_proposal_to_semgrep(
     rule still lands but its `pattern` field carries a `TODO:` so a human
     (or another LLM pass) refines it before promotion.
     """
+    rule_id = _semgrep_rule_id(proposal)
     target_dir = rules_root / (_STAGED_DIR_NAME if staged else "rules")
     target_dir.mkdir(parents=True, exist_ok=True)
-    rule_id = _semgrep_rule_id(proposal)
     pattern: Any = (
         proposal.sink_pattern
         if proposal.sink_pattern
