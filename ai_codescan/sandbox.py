@@ -12,10 +12,15 @@ the target repo here.
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from ai_codescan.user_config import load as load_user_config
 
@@ -33,6 +38,13 @@ _HARDENING_FLAGS: tuple[str, ...] = (
     "--memory=512m",
     "--cpus=1",
     "--pids-limit=64",
+)
+_DOCKER_HELPER_FALLBACKS: tuple[str, ...] = (
+    "secretservice",
+    "pass",
+    "osxkeychain",
+    "wincred",
+    "desktop",
 )
 
 
@@ -79,6 +91,100 @@ def runtime_binary(name: str) -> str:
     return name
 
 
+def _run_container_command(
+    container_argv: list[str],
+    *,
+    timeout: int,
+    signal_pattern: str,
+    runtime: str,
+    env: dict[str, str] | None = None,
+) -> SandboxResult:
+    try:
+        proc = subprocess.run(  # noqa: S603 - argv-only, no shell
+            container_argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+        return SandboxResult(
+            exit_code=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+            duration_sec=float(timeout),
+            signal_seen=signal_pattern in proc.stdout,
+            timed_out=False,
+            runtime=runtime,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _decode(exc.stdout)
+        return SandboxResult(
+            exit_code=124,
+            stdout=stdout,
+            stderr=_decode(exc.stderr),
+            duration_sec=float(timeout),
+            signal_seen=signal_pattern in stdout,
+            timed_out=True,
+            runtime=runtime,
+        )
+
+
+def _load_docker_config() -> tuple[Path, dict[str, object]] | None:
+    configured_dir = os.environ.get("DOCKER_CONFIG")
+    config_dir = Path(configured_dir).expanduser() if configured_dir else Path.home() / ".docker"
+    config_path = config_dir / "config.json"
+    try:
+        parsed = json.loads(config_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return config_path, {str(key): value for key, value in parsed.items()}
+
+
+def _helper_available(helper: str) -> bool:
+    return shutil.which(f"docker-credential-{helper}") is not None
+
+
+def _fallback_helper() -> str | None:
+    return next((helper for helper in _DOCKER_HELPER_FALLBACKS if _helper_available(helper)), None)
+
+
+def _fallback_docker_config(config: dict[str, object]) -> dict[str, object] | None:
+    configured_helper = config.get("credsStore")
+    if not isinstance(configured_helper, str) or _helper_available(configured_helper):
+        return None
+    updated = config.copy()
+    fallback_helper = _fallback_helper()
+    if fallback_helper:
+        updated["credsStore"] = fallback_helper
+    else:
+        updated.pop("credsStore", None)
+        updated.pop("credHelpers", None)
+    return updated
+
+
+@contextmanager
+def _docker_environment() -> Iterator[dict[str, str] | None]:
+    loaded = _load_docker_config()
+    if loaded is None:
+        yield None
+        return
+    _config_path, config = loaded
+    fallback_config = _fallback_docker_config(config)
+    if fallback_config is None:
+        yield None
+        return
+    with TemporaryDirectory(prefix="ai-codescan-docker-") as docker_config:
+        fallback_path = Path(docker_config) / "config.json"
+        fallback_path.write_text(json.dumps(fallback_config), encoding="utf-8")
+        fallback_path.chmod(0o600)
+        env = os.environ.copy()
+        env["DOCKER_CONFIG"] = docker_config
+        yield env
+
+
 def run_in_sandbox(  # noqa: PLR0913 - kw-only args mirror the CLI surface
     argv: list[str],
     *,
@@ -109,35 +215,21 @@ def run_in_sandbox(  # noqa: PLR0913 - kw-only args mirror the CLI surface
         image,
         *argv,
     ]
-    timed_out = False
-    try:
-        proc = subprocess.run(  # noqa: S603 - argv-only, no shell
+    if chosen != "docker":
+        return _run_container_command(
             container_argv,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
+            signal_pattern=signal_pattern,
+            runtime=chosen,
         )
-        exit_code = proc.returncode
-        stdout = proc.stdout
-        stderr = proc.stderr
-        duration = float(timeout)  # placeholder; subprocess.run doesn't expose elapsed
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        exit_code = 124
-        stdout = _decode(exc.stdout)
-        stderr = _decode(exc.stderr)
-        duration = float(timeout)
-
-    return SandboxResult(
-        exit_code=exit_code,
-        stdout=stdout,
-        stderr=stderr,
-        duration_sec=duration,
-        signal_seen=signal_pattern in stdout,
-        timed_out=timed_out,
-        runtime=chosen,
-    )
+    with _docker_environment() as env:
+        return _run_container_command(
+            container_argv,
+            timeout=timeout,
+            signal_pattern=signal_pattern,
+            runtime=chosen,
+            env=env,
+        )
 
 
 # ---------------------------------------------------------------------------

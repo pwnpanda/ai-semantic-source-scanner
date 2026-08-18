@@ -1,7 +1,10 @@
 """Tests for ai_codescan.sandbox."""
 
+import json
 import shutil
+import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -139,6 +142,96 @@ def test_run_in_sandbox_raises_when_runtime_missing(
     monkeypatch.setenv("PATH", "/nonexistent")
     with pytest.raises(SandboxUnavailableError):
         run_in_sandbox(["echo", "hi"], image="alpine:3.20", work_dir=tmp_path, runtime="docker")
+
+
+def test_run_in_sandbox_uses_available_credential_helper_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker_config = tmp_path / "docker"
+    docker_config.mkdir()
+    (docker_config / "config.json").write_text(
+        json.dumps({"auths": {}, "credsStore": "desktop"}),
+        encoding="utf-8",
+    )
+    observed_config: dict[str, object] = {}
+    temporary_config_dir: Path | None = None
+
+    def fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal temporary_config_dir
+        env = cast("dict[str, str]", kwargs.get("env"))
+        docker_config_value = env.get("DOCKER_CONFIG")
+        assert isinstance(docker_config_value, str)
+        temporary_config_dir = Path(docker_config_value)
+        observed_config.update(
+            json.loads((temporary_config_dir / "config.json").read_text(encoding="utf-8"))
+        )
+        return subprocess.CompletedProcess([], 0, stdout=DEFAULT_SIGNAL, stderr="")
+
+    def fake_which(name: str) -> str | None:
+        return f"/usr/bin/{name}" if name in {"docker", "docker-credential-pass"} else None
+
+    monkeypatch.setenv("DOCKER_CONFIG", str(docker_config))
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_in_sandbox(
+        ["python3", "poc.py"],
+        image="python:3.13-slim",
+        work_dir=tmp_path,
+        runtime="docker",
+    )
+
+    assert result.exit_code == 0
+    assert result.signal_seen is True
+    assert observed_config["credsStore"] == "pass"
+    assert temporary_config_dir is not None
+    assert not temporary_config_dir.exists()
+
+
+def test_run_in_sandbox_falls_back_to_file_based_docker_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker_config = tmp_path / "docker"
+    docker_config.mkdir()
+    (docker_config / "config.json").write_text(
+        json.dumps(
+            {
+                "auths": {"registry.example": {"auth": "encoded"}},
+                "credsStore": "desktop",
+                "credHelpers": {"registry.example": "desktop"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed_config: dict[str, object] = {}
+
+    def fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = cast("dict[str, str]", kwargs.get("env"))
+        docker_config_value = env.get("DOCKER_CONFIG")
+        assert isinstance(docker_config_value, str)
+        config_path = Path(docker_config_value) / "config.json"
+        observed_config.update(json.loads(config_path.read_text(encoding="utf-8")))
+        return subprocess.CompletedProcess([], 0, stdout="BENIGN", stderr="")
+
+    monkeypatch.setenv("DOCKER_CONFIG", str(docker_config))
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None,
+    )
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    sandbox_result = run_in_sandbox(
+        ["python3", "poc.py"],
+        image="python:3.13-slim",
+        work_dir=tmp_path,
+        runtime="docker",
+    )
+
+    assert sandbox_result.exit_code == 0
+    assert "credsStore" not in observed_config
+    assert "credHelpers" not in observed_config
+    assert "auths" in observed_config
 
 
 @pytest.mark.integration
