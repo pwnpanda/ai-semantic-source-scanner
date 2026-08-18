@@ -76,7 +76,7 @@ _CURRENT_APPROVAL_GUARD_RE = re.compile(
 )
 _VALIDATION_RE = re.compile(
     r"(?i)\b(?:validat|valider|vurderingsreg|assessmentRule|requirement|"
-    r"execute|utfoer|utfør)\w*\b"
+    r"enforc|execute|utfoer|utfør)\w*\b"
 )
 _SKIP_VALIDATION_RE = re.compile(
     r"(?i)\b(?:skip|bypass|disable|ignore|omit|suppress|without|unchecked)\w*.{0,50}"
@@ -125,6 +125,15 @@ _NULLABLE_POLICY_ASSIGN_RE = re.compile(
 _NULLABLE_POLICY_PARAMETER_RE = re.compile(rf"(?i)\b(?P<name>{_POLICY_NAME})\s*:\s*[^,\n]+\?")
 _FAIL_OPEN_AFTER_LOOKUP_RE = re.compile(
     r"(?is)^\s*(?:\{[^{}]{0,500}\}\s*)?\?:\s*return(?:\s+emptyList\s*\(\))?"
+)
+_DESTRUCTURED_POLICY_LAMBDA_RE = re.compile(
+    r"(?s)\b(?P<iterator>forEach(?:Indexed)?)\s*"
+    r"(?:(?P<label>[A-Za-z_]\w*)@\s*)?"
+    r"(?P<open>\{)\s*(?P<bindings>[^{}\n]{1,300}?)\s*->"
+)
+_POLICY_ENFORCEMENT_TERM = (
+    r"(?:rule|require|constraint|field|felt|allow|deny|valid|approv|godkjenn|"
+    r"paakrevd|tillat|krav|permission|entitle|control|policy|spec)"
 )
 _IDENTITY_SWITCH_RE = re.compile(
     r"(?is)\b(?:with(?:User|Identity|Principal|Subject)(?:Id)?|"
@@ -477,6 +486,76 @@ def _code_without_literals(text: str) -> str:
     return "\n".join(code_lines)
 
 
+def _balanced_brace_end(text: str, opening: int, *, max_chars: int = 30_000) -> int | None:
+    depth = 0
+    end = min(len(text), opening + max_chars)
+    for index in range(opening, end):
+        character = text[index]
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _untyped_policy_bindings(bindings: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for group in re.finditer(r"\((?P<items>[^()\n]*)\)", bindings):
+        for item in group.group("items").split(","):
+            name = item.strip()
+            if not re.fullmatch(r"[A-Za-z_]\w*", name):
+                continue
+            if re.fullmatch(_POLICY_NAME, name) and name not in names:
+                names.append(name)
+    return tuple(names)
+
+
+def _labeled_null_skip(body: str, *, name: str, label: str) -> re.Match[str] | None:
+    name_pattern = re.escape(name)
+    label_pattern = re.escape(label)
+    return re.search(
+        rf"(?s)(?:\bif\s*\(\s*(?:{name_pattern}\s*==\s*null|"
+        rf"null\s*==\s*{name_pattern})\s*\)\s*(?:\{{\s*)?"
+        rf"return@{label_pattern}\b|\b{name_pattern}\s*\?:\s*"
+        rf"return@{label_pattern}\b)",
+        body,
+    )
+
+
+def _has_downstream_policy_enforcement(text: str, *, name: str) -> bool:
+    name_pattern = re.escape(name)
+    call = re.compile(
+        rf"(?s)\b(?i:validat|valider|enforce|authoriz|check|require|approv|godkjenn)\w*"
+        rf"\s*\([^)]{{0,2000}}\b{name_pattern}\b"
+    )
+    member = re.compile(rf"(?s)\b{name_pattern}\s*\.\s*\w*(?i:{_POLICY_ENFORCEMENT_TERM})\w*\b")
+    return call.search(text) is not None or member.search(text) is not None
+
+
+def _destructured_policy_fail_open_offsets(text: str) -> tuple[int, int] | None:
+    for match in _DESTRUCTURED_POLICY_LAMBDA_RE.finditer(text):
+        policy_names = _untyped_policy_bindings(match.group("bindings"))
+        if not policy_names:
+            continue
+        closing = _balanced_brace_end(text, match.start("open"))
+        if closing is None:
+            continue
+        body_start = match.end()
+        body = text[body_start:closing]
+        label = match.group("label") or match.group("iterator")
+        for name in policy_names:
+            guard = _labeled_null_skip(body, name=name, label=label)
+            if guard is None:
+                continue
+            if not _has_downstream_policy_enforcement(body[guard.end() :], name=name):
+                continue
+            binding = match.group("bindings").find(name)
+            return (match.start("bindings") + binding, body_start + guard.start())
+    return None
+
+
 def _fail_open_policy_offsets(region: SourceRegion) -> tuple[int, int] | None:
     for match in _NULLABLE_POLICY_ASSIGN_RE.finditer(region.text):
         name = match.group("name")
@@ -502,7 +581,7 @@ def _fail_open_policy_offsets(region: SourceRegion) -> tuple[int, int] | None:
         )
         if failure is not None:
             return (match.start(), match.end() + failure.start())
-    return None
+    return _destructured_policy_fail_open_offsets(region.text)
 
 
 def _is_bypass_declaration_line(code_line: str) -> bool:

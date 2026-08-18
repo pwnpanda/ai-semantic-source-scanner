@@ -535,6 +535,103 @@ def test_qualified_policy_variable_name_is_nominated(tmp_path: Path) -> None:
     assert "workflow/fail-open-policy-lookup" in _vectors(hotspots)
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        """fun validateBatch(entries: Map<Action, Rule?>) {
+    entries.forEach { (action, rule) ->
+        if (rule == null) return@forEach
+        validateRequirements(action, rule)
+    }
+}
+""",
+        """fun enforcePolicies(items: List<Pair<Policy?, Command>>) {
+    items.forEach policyLoop@ { (policy, command) ->
+        policy ?: return@policyLoop
+        enforcePolicy(policy, command)
+    }
+}
+""",
+        """fun validateIndexed(entries: List<Pair<Action, Definition?>>) {
+    entries.forEachIndexed { _, (action, definition) ->
+        if (definition == null) return@forEachIndexed
+        validateDefinition(action, definition)
+    }
+}
+""",
+    ],
+)
+def test_untyped_destructured_policy_labeled_return_is_nominated(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    hotspots = _scan_source(tmp_path, source)
+
+    assert "workflow/fail-open-policy-lookup" in _vectors(hotspots)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        """fun validateBatch(entries: Map<Action, Rule?>): ValidationError? {
+    entries.forEach { (action, rule) ->
+        if (rule == null) return ValidationError("missing rule")
+        validateRequirements(action, rule)
+    }
+    return null
+}
+""",
+        """fun validateBatch(entries: Map<Action, Rule?>) {
+    entries.forEach { (action, rule) ->
+        val effectiveRule = rule ?: DEFAULT_DENY_RULE
+        validateRequirements(action, effectiveRule)
+    }
+}
+""",
+        """fun validateBatch(entries: Map<Action, Note?>) {
+    entries.forEach { (action, note) ->
+        if (note == null) return@forEach
+        validateAction(action)
+    }
+}
+""",
+        """fun validateBatch(entries: Map<Action?, Rule?>) {
+    entries.forEach { (action, rule) ->
+        if (action == null) return@forEach
+        validateRequirements(action, rule)
+    }
+}
+""",
+        """fun renderRows(rows: Map<Row, Spec?>) {
+    rows.forEach { (row, spec) ->
+        if (spec == null) return@forEach
+        render(row, spec)
+    }
+}
+""",
+        """fun validateBatch(entries: Map<Action, Rule?>) =
+    entries.mapNotNull { (action, rule) ->
+        rule ?: return@mapNotNull null
+        validateRequirements(action, rule)
+    }
+""",
+        """fun validateBatch(entries: Map<Action, Rule?>) {
+    // entries.forEach { (action, rule) -> if (rule == null) return@forEach }
+    logger.info("rule ?: return@forEach")
+    validateRequirements(entries)
+}
+""",
+    ],
+)
+def test_untyped_destructured_policy_safe_near_misses_are_not_nominated(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    hotspots = _scan_source(tmp_path, source)
+
+    assert "workflow/fail-open-policy-lookup" not in _vectors(hotspots)
+
+
 def test_unrelated_word_containing_spec_is_not_a_policy_lookup(tmp_path: Path) -> None:
     hotspots = _scan_source(
         tmp_path,
