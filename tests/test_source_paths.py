@@ -41,3 +41,11 @@ def test_resolve_contained_file_rejects_symlink_escape(tmp_path: Path) -> None:
 
     with pytest.raises(SourcePathError, match="escapes snapshot"):
         resolve_contained_file(source_root, "linked.kt")
+
+
+def test_resolve_contained_file_normalizes_malformed_path_errors(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+
+    with pytest.raises(SourcePathError, match="source file does not exist"):
+        resolve_contained_file(source_root, "invalid\x00path.kt")

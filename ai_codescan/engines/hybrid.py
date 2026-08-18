@@ -320,6 +320,83 @@ def _ingest_joern_jsonl(  # noqa: PLR0913 - keyword-only fan-in is the cleanest 
     return inserted
 
 
+def _hybrid_stage_state(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    scan_fingerprint: str | None,
+) -> tuple[HybridStats | None, tuple[str, str] | None]:
+    if scan_fingerprint is None:
+        return None, None
+    stage = scan_stage_for_inputs(
+        conn,
+        fingerprint=scan_fingerprint,
+        engine="hybrid",
+    )
+    if stage == "complete":
+        return _cached_stats(conn), None
+    if stage not in {"prep", "prep_with_gaps"}:
+        raise HybridStageError("hybrid stage refused: no matching completed prep generation")
+    completion_stage = "complete_with_gaps" if stage == "prep_with_gaps" else "complete"
+    return None, (scan_fingerprint, completion_stage)
+
+
+def _record_hybrid_completion(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    completion: tuple[str, str] | None,
+    used_mutable_semgrep: bool,
+) -> None:
+    if completion is None:
+        return
+    scan_fingerprint, completion_stage = completion
+    if completion_stage == "complete" and used_mutable_semgrep:
+        completion_stage = "complete_unpinned"
+    set_scan_stage(
+        conn,
+        fingerprint=scan_fingerprint,
+        engine="hybrid",
+        stage=completion_stage,
+    )
+
+
+def _run_hybrid_transaction(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    project_roots: list[tuple[Path, str, str]],
+    snapshot_root: Path,
+    repo_dir: Path,
+    completion: tuple[str, str] | None,
+) -> HybridStats:
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        codeql_flows = _count_flows(conn, engine_like="codeql%")
+        semgrep_flows, joern_flows, failures, mutable_semgrep = _run_project_engines(
+            conn,
+            project_roots=project_roots,
+            snapshot_root=snapshot_root,
+            repo_dir=repo_dir,
+        )
+        if failures:
+            raise HybridStageError("hybrid stage incomplete: " + "; ".join(failures))
+        deduped = dedupe_flows(conn)
+        _record_hybrid_completion(
+            conn,
+            completion=completion,
+            used_mutable_semgrep=mutable_semgrep,
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        with suppress(duckdb.Error):
+            conn.execute("ROLLBACK")
+        raise
+    return HybridStats(
+        codeql_flows=codeql_flows,
+        semgrep_flows=semgrep_flows,
+        joern_flows=joern_flows,
+        deduped=deduped,
+    )
+
+
 def run_hybrid(
     project_roots: list[tuple[Path, str, str]],
     *,
@@ -340,55 +417,18 @@ def run_hybrid(
             raise HybridStageError("hybrid stage refused: prep is incomplete")
         conn = duckdb.connect(str(db_path))
         try:
-            base_has_gaps = False
-            if scan_fingerprint:
-                stage = scan_stage_for_inputs(
-                    conn,
-                    fingerprint=scan_fingerprint,
-                    engine="hybrid",
-                )
-                if stage == "complete":
-                    return _cached_stats(conn)
-                if stage not in {"prep", "prep_with_gaps"}:
-                    raise HybridStageError(
-                        "hybrid stage refused: no matching completed prep generation"
-                    )
-                base_has_gaps = stage == "prep_with_gaps"
-            conn.execute("BEGIN TRANSACTION")
-            codeql_flows = _count_flows(conn, engine_like="codeql%")
-            semgrep_flows, joern_flows, failures, used_mutable_semgrep = _run_project_engines(
+            cached, completion = _hybrid_stage_state(
+                conn,
+                scan_fingerprint=scan_fingerprint,
+            )
+            if cached is not None:
+                return cached
+            return _run_hybrid_transaction(
                 conn,
                 project_roots=project_roots,
                 snapshot_root=snapshot_root,
                 repo_dir=repo_dir,
+                completion=completion,
             )
-
-            if failures:
-                raise HybridStageError("hybrid stage incomplete: " + "; ".join(failures))
-            deduped = dedupe_flows(conn)
-            if scan_fingerprint:
-                completion_stage = "complete"
-                if base_has_gaps:
-                    completion_stage = "complete_with_gaps"
-                elif used_mutable_semgrep:
-                    completion_stage = "complete_unpinned"
-                set_scan_stage(
-                    conn,
-                    fingerprint=scan_fingerprint,
-                    engine="hybrid",
-                    stage=completion_stage,
-                )
-            conn.execute("COMMIT")
-        except BaseException:
-            with suppress(duckdb.Error):
-                conn.execute("ROLLBACK")
-            raise
         finally:
             conn.close()
-
-    return HybridStats(
-        codeql_flows=codeql_flows,
-        semgrep_flows=semgrep_flows,
-        joern_flows=joern_flows,
-        deduped=deduped,
-    )

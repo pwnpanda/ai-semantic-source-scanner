@@ -67,6 +67,60 @@ def is_available() -> bool:
     return shutil.which("semgrep") is not None
 
 
+def _semgrep_command(
+    project_root: Path,
+    *,
+    cache_dir: Path,
+    config: str,
+    output_path: Path,
+) -> list[str]:
+    cmd = [
+        "semgrep",
+        "scan",
+        f"--config={config}",
+        "--sarif",
+        "--output",
+        str(output_path),
+    ]
+    if _BUNDLED_RULES_DIR.is_dir() and any(_BUNDLED_RULES_DIR.glob("*.yaml")):
+        cmd.append(f"--config={_BUNDLED_RULES_DIR}")
+    for rules_dir in active_rule_dirs(cache_dir):
+        has_rules = any(
+            path.is_file() and path.suffix in {".yml", ".yaml"} for path in rules_dir.rglob("*")
+        )
+        if has_rules:
+            cmd.append(f"--config={rules_dir}")
+    from ai_codescan.proposal_triage import enabled_packs  # noqa: PLC0415
+
+    cmd.extend(f"--config={pack}" for pack in enabled_packs(cache_dir))
+    cmd.append(str(project_root))
+    return cmd
+
+
+def _validate_sarif(path: Path, *, project_id: str) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"semgrep produced invalid SARIF for {project_id}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("runs"), list):
+        raise RuntimeError(f"semgrep produced invalid SARIF for {project_id}")
+
+
+def _run_semgrep_process(cmd: list[str], *, project_id: str, timeout: int) -> None:
+    result = subprocess.run(  # noqa: S603 - argv-only, no shell
+        cmd,  # noqa: S607
+        check=False,
+        capture_output=True,
+        timeout=timeout,
+    )
+    if result.returncode == 0:
+        return
+    stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+    raise RuntimeError(
+        f"semgrep exited {result.returncode} for {project_id}: {stderr.strip() or 'no stderr'}"
+    )
+
+
 def run_semgrep(
     project_root: Path,
     *,
@@ -102,49 +156,18 @@ def run_semgrep(
     ) as temporary_file:
         temporary_path = Path(temporary_file.name)
     temporary_path.unlink()
-    cmd = [
-        "semgrep",
-        "scan",
-        f"--config={config}",
-        "--sarif",
-        "--output",
-        str(temporary_path),
-    ]
-    if _BUNDLED_RULES_DIR.is_dir() and any(_BUNDLED_RULES_DIR.glob("*.yaml")):
-        cmd.append(f"--config={_BUNDLED_RULES_DIR}")
-    for rules_dir in active_rule_dirs(cache_dir):
-        if any(
-            path.is_file() and path.suffix in {".yml", ".yaml"} for path in rules_dir.rglob("*")
-        ):
-            cmd.append(f"--config={rules_dir}")
-    # Local-import to avoid a circular dependency at module load time —
-    # proposal_triage is a higher-level module that itself imports model_proposals.
-    from ai_codescan.proposal_triage import enabled_packs  # noqa: PLC0415
-
-    for pack in enabled_packs(cache_dir):
-        cmd.append(f"--config={pack}")
-    cmd.append(str(project_root))
+    cmd = _semgrep_command(
+        project_root,
+        cache_dir=cache_dir,
+        config=config,
+        output_path=temporary_path,
+    )
     try:
-        result = subprocess.run(  # noqa: S603 - argv-only, no shell
-            cmd,  # noqa: S607
-            check=False,
-            capture_output=True,
-            timeout=timeout,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
-            raise RuntimeError(
-                f"semgrep exited {result.returncode} for {project_id}: "
-                f"{stderr.strip() or 'no stderr'}"
-            )
+        _run_semgrep_process(cmd, project_id=project_id, timeout=timeout)
         if not temporary_path.is_file():
             raise RuntimeError(f"semgrep did not produce SARIF for {project_id}")
-        payload = json.loads(temporary_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or not isinstance(payload.get("runs"), list):
-            raise RuntimeError(f"semgrep produced invalid SARIF for {project_id}")
+        _validate_sarif(temporary_path, project_id=project_id)
         temporary_path.replace(sarif_path)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"semgrep produced invalid SARIF for {project_id}") from exc
     finally:
         temporary_path.unlink(missing_ok=True)
     return sarif_path

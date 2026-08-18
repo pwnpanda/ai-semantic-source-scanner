@@ -178,27 +178,37 @@ def _stage_slices(
     return bundle_sizes
 
 
-def _remove_obsolete_analysis_artifacts(state: RunState, items: list[QueueItem]) -> None:
-    """Delete generated analysis outputs that no longer belong to the staged queue."""
-    nomination_ids = {item.nomination_id for item in items}
-    finding_names = {f"F-{nomination_id.removeprefix('N-')}.md" for nomination_id in nomination_ids}
-    findings_dir = state.run_dir / "findings"
-    for path in findings_dir.glob("F-*.md"):
-        if not path.name.startswith("F-miss-") and path.name not in finding_names:
+def _remove_obsolete_findings(run_dir: Path, nomination_ids: set[str]) -> None:
+    finding_names = {f"F-{item.removeprefix('N-')}.md" for item in nomination_ids}
+    for path in (run_dir / "findings").glob("F-*.md"):
+        obsolete = not path.name.startswith("F-miss-") and path.name not in finding_names
+        if obsolete:
             path.unlink(missing_ok=True)
-    done_dir = state.run_dir / ".done-analyze"
-    for path in done_dir.glob("N-*"):
-        nomination_id = path.name.removesuffix(".stdout")
-        if nomination_id not in nomination_ids:
+
+
+def _remove_obsolete_analysis_markers(run_dir: Path, nomination_ids: set[str]) -> None:
+    for path in (run_dir / ".done-analyze").glob("N-*"):
+        if path.name.removesuffix(".stdout") not in nomination_ids:
             path.unlink(missing_ok=True)
+
+
+def _remove_obsolete_evidence(run_dir: Path, nomination_ids: set[str]) -> None:
     for directory, patterns in (
-        (state.run_dir / "bundles", ("N-*.json", "N-*.md")),
-        (state.run_dir / "slices", ("N-*.json",)),
+        (run_dir / "bundles", ("N-*.json", "N-*.md")),
+        (run_dir / "slices", ("N-*.json",)),
     ):
         for pattern in patterns:
             for path in directory.glob(pattern):
                 if path.stem not in nomination_ids:
                     path.unlink(missing_ok=True)
+
+
+def _remove_obsolete_analysis_artifacts(state: RunState, items: list[QueueItem]) -> None:
+    """Delete generated analysis outputs that no longer belong to the staged queue."""
+    nomination_ids = {item.nomination_id for item in items}
+    _remove_obsolete_findings(state.run_dir, nomination_ids)
+    _remove_obsolete_analysis_markers(state.run_dir, nomination_ids)
+    _remove_obsolete_evidence(state.run_dir, nomination_ids)
 
 
 def _clear_analysis_verdicts(conn: duckdb.DuckDBPyConnection) -> None:
