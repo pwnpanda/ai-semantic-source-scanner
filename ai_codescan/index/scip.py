@@ -21,6 +21,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from google.protobuf.message import DecodeError
+
 from ai_codescan.artifact_id import normalize_artifact_id
 from ai_codescan.manifest import IGNORED_SOURCE_DIRS
 from ai_codescan.third_party import scip_pb2
@@ -152,6 +154,17 @@ def _run_scip_java(workspace: Path, *, scip_path: Path) -> None:
     shutil.move(str(produced), str(scip_path))
 
 
+def _validate_prebuilt_scip_java_index(path: Path) -> None:
+    index = scip_pb2.Index()
+    try:
+        index.ParseFromString(path.read_bytes())
+    except (DecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"invalid SCIP-Java prebuilt index at {path}; regenerate it or unset "
+            "AI_CODESCAN_SCIP_JAVA_INDEX"
+        ) from exc
+
+
 def _build_scip_java(project_root: Path, *, scip_path: Path) -> None:
     """Run ``scip-java index`` and move the produced index to ``scip_path``.
 
@@ -167,6 +180,7 @@ def _build_scip_java(project_root: Path, *, scip_path: Path) -> None:
             raise RuntimeError(
                 f"AI_CODESCAN_SCIP_JAVA_INDEX does not point to a file: {prebuilt_path}"
             )
+        _validate_prebuilt_scip_java_index(prebuilt_path)
         shutil.copy2(prebuilt_path, scip_path)
         return
     if shutil.which("scip-java") is None:

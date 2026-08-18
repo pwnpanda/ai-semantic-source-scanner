@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from ai_codescan.index.scip import IndexResult, build_scip_index
+from ai_codescan.third_party import scip_pb2
 
 
 def _has_scip_typescript() -> bool:
@@ -52,13 +53,16 @@ def test_build_scip_java_uses_prebuilt_index(tmp_path: Path, monkeypatch) -> Non
     cache = tmp_path / "cache"
     cache.mkdir()
     prebuilt = tmp_path / "prebuilt.scip"
-    prebuilt.write_bytes(b"prebuilt-index")
+    payload = scip_pb2.Index(
+        documents=[scip_pb2.Document(relative_path="src/App.kt")]
+    ).SerializeToString()
+    prebuilt.write_bytes(payload)
     monkeypatch.setenv("AI_CODESCAN_SCIP_JAVA_INDEX", str(prebuilt))
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 
     result = build_scip_index(project, cache_dir=cache, project_id="j", language="java")
 
-    assert result.scip_path.read_bytes() == b"prebuilt-index"
+    assert result.scip_path.read_bytes() == payload
 
 
 def test_build_scip_java_rejects_missing_prebuilt_index(tmp_path: Path, monkeypatch) -> None:
@@ -70,6 +74,19 @@ def test_build_scip_java_rejects_missing_prebuilt_index(tmp_path: Path, monkeypa
     monkeypatch.setenv("AI_CODESCAN_SCIP_JAVA_INDEX", str(missing))
 
     with pytest.raises(RuntimeError, match="does not point to a file"):
+        build_scip_index(project, cache_dir=cache, project_id="j", language="java")
+
+
+def test_build_scip_java_rejects_malformed_prebuilt_index(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "j"
+    project.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    prebuilt = tmp_path / "malformed.scip"
+    prebuilt.write_bytes(b"not-a-protobuf")
+    monkeypatch.setenv("AI_CODESCAN_SCIP_JAVA_INDEX", str(prebuilt))
+
+    with pytest.raises(RuntimeError, match=r"malformed\.scip.*regenerate.*unset"):
         build_scip_index(project, cache_dir=cache, project_id="j", language="java")
 
 
