@@ -18,6 +18,7 @@ from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.index.scip import build_scip_index
 from ai_codescan.prep import _index_projects
 from ai_codescan.stack_detect import Project, ProjectKind
+from ai_codescan.third_party import scip_pb2
 
 
 def _assert_inside(path: Path, root: Path) -> None:
@@ -74,7 +75,7 @@ def test_scip_direct_entrypoint_keeps_traversal_id_inside_cache(
     project.mkdir()
     cache = tmp_path / "cache"
     prebuilt = tmp_path / "prebuilt.scip"
-    prebuilt.write_bytes(b"index")
+    prebuilt.write_bytes(scip_pb2.Index().SerializeToString())
     monkeypatch.setenv("AI_CODESCAN_SCIP_JAVA_INDEX", str(prebuilt))
 
     result = build_scip_index(
