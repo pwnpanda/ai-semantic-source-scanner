@@ -24,12 +24,12 @@ from ai_codescan.sidecars import emit_sidecars
 from ai_codescan.snapshot import SnapshotResult, take_snapshot
 from ai_codescan.stack_detect import Project, ProjectKind, detect_projects
 from ai_codescan.taxonomy.loader import BugClass
+from ai_codescan.third_party import scip_pb2
 
 log = logging.getLogger(__name__)
 
-_SCIP_RANGE_WITH_END_LINE = 3
-"""SCIP occurrence range with [start_line, start_col, end_col] is len 3; with end_line is len 4."""
-
+_SCIP_SINGLE_LINE_RANGE_LENGTH = 3
+_SCIP_MULTI_LINE_RANGE_LENGTH = 4
 
 _PYTHON_SKIP_PARTS: frozenset[str] = frozenset(
     {
@@ -269,6 +269,28 @@ def _scip_language_for_project(project: Project) -> str | None:
     return None
 
 
+def _scip_occurrence_line_range(
+    occurrence: scip_pb2.Occurrence,
+) -> tuple[int, int] | None:
+    typed_range = occurrence.WhichOneof("typed_range")
+    if typed_range == "single_line_range":
+        line = occurrence.single_line_range.line + 1
+        return line, line
+    if typed_range == "multi_line_range":
+        return (
+            occurrence.multi_line_range.start_line + 1,
+            occurrence.multi_line_range.end_line + 1,
+        )
+
+    legacy_range = occurrence.range
+    if len(legacy_range) == _SCIP_SINGLE_LINE_RANGE_LENGTH:
+        line = legacy_range[0] + 1
+        return line, line
+    if len(legacy_range) == _SCIP_MULTI_LINE_RANGE_LENGTH:
+        return legacy_range[0] + 1, legacy_range[2] + 1
+    return None
+
+
 def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: Path) -> dict:
     lookup: dict = {}
     for project in projects:
@@ -282,16 +304,17 @@ def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: 
                 project_id=f"{project.name}-{project.base_path.as_posix().replace('/', '_')}",
                 language=scip_language,
             )
-        except (RuntimeError, OSError) as exc:
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             log.warning("scip index failed for %s: %s", project.name, exc)
             continue
         for doc in result.iter_documents():
             file = (snapshot_root / project.base_path / doc.relative_path).as_posix()
             for occ in doc.occurrences:
-                start = occ.range[0] + 1
-                end = occ.range[2] + 1 if len(occ.range) >= _SCIP_RANGE_WITH_END_LINE else start
-                if occ.symbol:
-                    lookup[(file, start, end)] = f"scip:{occ.symbol}"
+                line_range = _scip_occurrence_line_range(occ)
+                if not occ.symbol or line_range is None:
+                    continue
+                start, end = line_range
+                lookup[(file, start, end)] = f"scip:{occ.symbol}"
     return lookup
 
 

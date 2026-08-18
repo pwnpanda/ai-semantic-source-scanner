@@ -12,6 +12,7 @@ raises ``RuntimeError`` and the caller treats SCIP as unavailable.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -28,9 +29,9 @@ class IndexResult:
     scip_path: Path
     project_id: str
 
-    def iter_documents(self) -> Iterator[scip_pb2.Document]:  # ty: ignore[unresolved-attribute]
+    def iter_documents(self) -> Iterator[scip_pb2.Document]:
         """Yield each ``scip_pb2.Document`` from the index."""
-        index = scip_pb2.Index()  # ty: ignore[unresolved-attribute]
+        index = scip_pb2.Index()
         index.ParseFromString(self.scip_path.read_bytes())
         yield from index.documents
 
@@ -119,6 +120,15 @@ def _build_scip_java(project_root: Path, *, scip_path: Path) -> None:
     PATH. Output lands at ``index.scip`` inside the project root by
     default; we move it to the cache.
     """
+    prebuilt_index = os.environ.get("AI_CODESCAN_SCIP_JAVA_INDEX")
+    if prebuilt_index:
+        prebuilt_path = Path(prebuilt_index).expanduser().resolve()
+        if not prebuilt_path.is_file():
+            raise RuntimeError(
+                f"AI_CODESCAN_SCIP_JAVA_INDEX does not point to a file: {prebuilt_path}"
+            )
+        shutil.copy2(prebuilt_path, scip_path)
+        return
     if shutil.which("scip-java") is None:
         raise RuntimeError(
             "scip-java is not on PATH; install via "

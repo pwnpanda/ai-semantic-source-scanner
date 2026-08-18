@@ -46,6 +46,33 @@ def test_build_scip_java_raises_when_cli_missing(tmp_path: Path, monkeypatch) ->
         build_scip_index(project, cache_dir=cache, project_id="j", language="java")
 
 
+def test_build_scip_java_uses_prebuilt_index(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "j"
+    project.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    prebuilt = tmp_path / "prebuilt.scip"
+    prebuilt.write_bytes(b"prebuilt-index")
+    monkeypatch.setenv("AI_CODESCAN_SCIP_JAVA_INDEX", str(prebuilt))
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    result = build_scip_index(project, cache_dir=cache, project_id="j", language="java")
+
+    assert result.scip_path.read_bytes() == b"prebuilt-index"
+
+
+def test_build_scip_java_rejects_missing_prebuilt_index(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "j"
+    project.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    missing = tmp_path / "missing.scip"
+    monkeypatch.setenv("AI_CODESCAN_SCIP_JAVA_INDEX", str(missing))
+
+    with pytest.raises(RuntimeError, match="does not point to a file"):
+        build_scip_index(project, cache_dir=cache, project_id="j", language="java")
+
+
 def test_build_scip_go_raises_when_cli_missing(tmp_path: Path, monkeypatch) -> None:
     project = tmp_path / "g"
     project.mkdir()
