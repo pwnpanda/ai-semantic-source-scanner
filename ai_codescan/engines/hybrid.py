@@ -330,11 +330,10 @@ def run_hybrid(
 ) -> HybridStats:
     """Drive Semgrep (and Joern when available) and dedupe.
 
-    Each ``project_roots`` entry is ``(root_path, project_id, language)``;
-    ``language`` is one of ``"javascript"`` or ``"python"`` and routes to the
-    matching Joern frontend. CodeQL is expected to have already populated the
-    flows table via the standard prep stage. This function adds Semgrep + Joern
-    flows and runs the dedupe pass.
+    Each ``project_roots`` entry is ``(root_path, project_id, language)``. The
+    language selects the matching supported Joern frontend. CodeQL is expected
+    to have already populated the flows table via the standard prep stage. This
+    function adds Semgrep + Joern flows and runs the dedupe pass.
     """
     with repo_scan_lock(repo_dir):
         if scan_fingerprint and (repo_dir / ".prep-incomplete").is_file():
