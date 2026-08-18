@@ -889,96 +889,6 @@ class StageOutcome:
     stderr: str
 
 
-# ``ai-codescan ...`` argv builders for each stage. Kept tiny so the
-# orchestrator stays declarative and the per-stage flag plumbing lives in
-# one obvious place.
-def _argv_for(  # noqa: PLR0911, PLR0912, PLR0913 - direct mapping; flattening hurts readability
-    stage: str,
-    *,
-    cache_root: Path,
-    target: Path,
-    repo_id: str,
-    llm_provider: str,
-    llm_model: str,
-    temperature: float,
-    target_bug_class: str,
-    commit: str,
-    yes: bool,
-    no_sandbox: bool,
-    bugbounty: bool,
-    engine: str = "hybrid",
-    run_id: str = "",
-) -> list[str]:
-    base = ["ai-codescan", "--cache-dir", str(cache_root)]
-    if stage == "prep":
-        argv = [*base, "prep", str(target), "--llm-provider", llm_provider]
-        if llm_model:
-            argv += ["--llm-model", llm_model]
-        argv += ["--engine", engine]
-        if commit:
-            argv += ["--commit", commit]
-        if target_bug_class:
-            argv += ["--target-bug-class", target_bug_class]
-        return argv
-    if stage == "nominate":
-        argv = [
-            *base,
-            "nominate",
-            "--repo-id",
-            repo_id,
-            "--temperature",
-            str(temperature),
-            "--llm-provider",
-            llm_provider,
-        ]
-        if llm_model:
-            argv += ["--llm-model", llm_model]
-        if run_id:
-            argv += ["--run-id", run_id]
-        if target_bug_class:
-            argv += ["--target-bug-class", target_bug_class]
-        return argv
-    if stage in {"gate-1", "gate-2", "gate-3"}:
-        argv = [*base, stage, "--repo-id", repo_id]
-        if yes:
-            argv.append("--yes")
-        return argv
-    if stage == "analyze":
-        argv = [
-            *base,
-            "analyze",
-            "--repo-id",
-            repo_id,
-            "--temperature",
-            str(temperature),
-            "--llm-provider",
-            llm_provider,
-        ]
-        if llm_model:
-            argv += ["--llm-model", llm_model]
-        return argv
-    if stage == "validate":
-        argv = [
-            *base,
-            "validate",
-            "--repo-id",
-            repo_id,
-            "--llm-provider",
-            llm_provider,
-        ]
-        if llm_model:
-            argv += ["--llm-model", llm_model]
-        if no_sandbox:
-            argv.append("--no-sandbox")
-        return argv
-    if stage == "report":
-        argv = [*base, "report", "--repo-id", repo_id]
-        if bugbounty:
-            argv.append("--bugbounty")
-        return argv
-    raise ValueError(f"unknown stage: {stage}")
-
-
 def _run_subprocess(argv: list[str]) -> StageOutcome:
     """Streaming subprocess runner. Mirrors stdout live; captures stderr."""
     proc = subprocess.Popen(  # noqa: S603 - argv-only, no shell
@@ -1013,6 +923,102 @@ class DriveOptions:
     engine: str = "hybrid"
 
 
+def _base_argv(opts: DriveOptions, stage: str) -> list[str]:
+    return ["ai-codescan", "--cache-dir", str(opts.cache_root), stage]
+
+
+def _prep_argv(opts: DriveOptions, _: str) -> list[str]:
+    argv = [
+        *_base_argv(opts, "prep"),
+        str(opts.target),
+        "--llm-provider",
+        opts.llm_provider,
+    ]
+    if opts.llm_model:
+        argv += ["--llm-model", opts.llm_model]
+    argv += ["--engine", opts.engine]
+    if opts.commit:
+        argv += ["--commit", opts.commit]
+    if opts.target_bug_class:
+        argv += ["--target-bug-class", opts.target_bug_class]
+    return argv
+
+
+def _nominate_argv(opts: DriveOptions, fingerprint: str) -> list[str]:
+    argv = [
+        *_base_argv(opts, "nominate"),
+        "--repo-id",
+        opts.repo_id,
+        "--temperature",
+        str(opts.temperature),
+        "--llm-provider",
+        opts.llm_provider,
+    ]
+    if opts.llm_model:
+        argv += ["--llm-model", opts.llm_model]
+    if fingerprint:
+        argv += ["--run-id", _nominate_run_id(fingerprint)]
+    if opts.target_bug_class:
+        argv += ["--target-bug-class", opts.target_bug_class]
+    return argv
+
+
+def _gate_argv(opts: DriveOptions, stage: str) -> list[str]:
+    argv = [*_base_argv(opts, stage), "--repo-id", opts.repo_id]
+    if opts.yes:
+        argv.append("--yes")
+    return argv
+
+
+def _analyze_argv(opts: DriveOptions, _: str) -> list[str]:
+    argv = [
+        *_base_argv(opts, "analyze"),
+        "--repo-id",
+        opts.repo_id,
+        "--temperature",
+        str(opts.temperature),
+        "--llm-provider",
+        opts.llm_provider,
+    ]
+    if opts.llm_model:
+        argv += ["--llm-model", opts.llm_model]
+    return argv
+
+
+def _validate_argv(opts: DriveOptions, _: str) -> list[str]:
+    argv = [
+        *_base_argv(opts, "validate"),
+        "--repo-id",
+        opts.repo_id,
+        "--llm-provider",
+        opts.llm_provider,
+    ]
+    if opts.llm_model:
+        argv += ["--llm-model", opts.llm_model]
+    if opts.no_sandbox:
+        argv.append("--no-sandbox")
+    return argv
+
+
+def _report_argv(opts: DriveOptions, _: str) -> list[str]:
+    argv = [*_base_argv(opts, "report"), "--repo-id", opts.repo_id]
+    if opts.bugbounty:
+        argv.append("--bugbounty")
+    return argv
+
+
+_STAGE_ARGV_BUILDERS: dict[str, Callable[[DriveOptions, str], list[str]]] = {
+    "prep": _prep_argv,
+    "nominate": _nominate_argv,
+    "gate-1": _gate_argv,
+    "gate-2": _gate_argv,
+    "gate-3": _gate_argv,
+    "analyze": _analyze_argv,
+    "validate": _validate_argv,
+    "report": _report_argv,
+}
+
+
 _ABORT = "abort"
 _CONTINUE = "continue"
 
@@ -1023,25 +1029,10 @@ def _build_argv(
     *,
     stage_fingerprint: str = "",
 ) -> list[str]:
-    run_id = ""
-    if stage == "nominate" and stage_fingerprint:
-        run_id = _nominate_run_id(stage_fingerprint)
-    return _argv_for(
-        stage,
-        engine=opts.engine,
-        cache_root=opts.cache_root,
-        target=opts.target,
-        repo_id=opts.repo_id,
-        llm_provider=opts.llm_provider,
-        llm_model=opts.llm_model,
-        temperature=opts.temperature,
-        target_bug_class=opts.target_bug_class,
-        commit=opts.commit,
-        yes=opts.yes,
-        no_sandbox=opts.no_sandbox,
-        bugbounty=opts.bugbounty,
-        run_id=run_id,
-    )
+    builder = _STAGE_ARGV_BUILDERS.get(stage)
+    if builder is None:
+        raise ValueError(f"unknown stage: {stage}")
+    return builder(opts, stage_fingerprint if stage == "nominate" else stage)
 
 
 def _handle_failure(  # noqa: PLR0913 - keyword-only fan-in

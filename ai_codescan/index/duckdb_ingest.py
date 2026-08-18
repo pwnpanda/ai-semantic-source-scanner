@@ -35,6 +35,72 @@ def _resolve_symbol_id(record: dict[str, Any], scip_lookup: ScipLookup) -> str |
     return record.get("syntheticId")
 
 
+def _file_rows(
+    files: Iterable[dict[str, Any]], snapshot_root: Path, project_id: str
+) -> list[tuple[Any, ...]]:
+    rows = []
+    for record in files:
+        path = resolve_contained_file(snapshot_root, str(record["file"]))
+        rows.append(
+            (
+                path.as_posix(),
+                _file_sha256(path),
+                record.get("lang", "unknown"),
+                project_id,
+                path.stat().st_size,
+            )
+        )
+    return rows
+
+
+def _symbol_rows(
+    symbols: Iterable[dict[str, Any]],
+    snapshot_root: Path,
+    scip_lookup: ScipLookup,
+) -> list[tuple[Any, ...]]:
+    rows = []
+    for record in symbols:
+        symbol_id = _resolve_symbol_id(record, scip_lookup)
+        if not symbol_id:
+            continue
+        file = resolve_contained_file(snapshot_root, str(record["file"])).as_posix()
+        rows.append(
+            (
+                symbol_id,
+                symbol_id,
+                record["kind"],
+                file,
+                record["range"][0],
+                record["range"][1],
+                None,
+                record.get("name"),
+            )
+        )
+    return rows
+
+
+def _xref_rows(xrefs: Iterable[dict[str, Any]], snapshot_root: Path) -> list[tuple[Any, ...]]:
+    rows = []
+    for record in xrefs:
+        raw_file = record.get("file")
+        file = resolve_contained_file(snapshot_root, str(raw_file)).as_posix() if raw_file else None
+        rows.append(
+            (
+                record.get("callerSyntheticId"),
+                None,
+                record["kind"],
+                file,
+                record.get("line"),
+            )
+        )
+    return rows
+
+
+def _insert_rows(conn: duckdb.DuckDBPyConnection, query: str, rows: list[tuple[Any, ...]]) -> None:
+    if rows:
+        conn.executemany(query, rows)
+
+
 def ingest(  # noqa: PLR0913 - cohesive bulk-ingest entrypoint, kw-only args
     conn: duckdb.DuckDBPyConnection,
     *,
@@ -46,58 +112,21 @@ def ingest(  # noqa: PLR0913 - cohesive bulk-ingest entrypoint, kw-only args
     snapshot_root: Path,
 ) -> None:
     """Bulk-ingest AST + SCIP records into DuckDB tables."""
-    file_rows = []
-    for f in files:
-        path = resolve_contained_file(snapshot_root, str(f["file"]))
-        rel = path.as_posix()
-        sha = _file_sha256(path)
-        size = path.stat().st_size
-        file_rows.append((rel, sha, f.get("lang", "unknown"), project_id, size))
-    sym_rows = []
-    for s in symbols:
-        sid = _resolve_symbol_id(s, scip_lookup)
-        if not sid:
-            continue
-        file = resolve_contained_file(snapshot_root, str(s["file"])).as_posix()
-        sym_rows.append(
-            (
-                sid,
-                sid,
-                s["kind"],
-                file,
-                s["range"][0],
-                s["range"][1],
-                None,
-                s.get("name"),
-            )
-        )
-    xref_rows = []
-    for x in xrefs:
-        raw_file = x.get("file")
-        file = None
-        if raw_file:
-            file = resolve_contained_file(snapshot_root, str(raw_file)).as_posix()
-        xref_rows.append(
-            (
-                x.get("callerSyntheticId"),
-                None,
-                x["kind"],
-                file,
-                x.get("line"),
-            )
-        )
-    if file_rows:
-        conn.executemany(
-            "INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?)",
-            file_rows,
-        )
-    if sym_rows:
-        conn.executemany(
-            "INSERT OR REPLACE INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            sym_rows,
-        )
-    if xref_rows:
-        conn.executemany(
-            "INSERT INTO xrefs VALUES (?, ?, ?, ?, ?)",
-            xref_rows,
-        )
+    file_rows = _file_rows(files, snapshot_root, project_id)
+    symbol_rows = _symbol_rows(symbols, snapshot_root, scip_lookup)
+    xref_rows = _xref_rows(xrefs, snapshot_root)
+    _insert_rows(
+        conn,
+        "INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?)",
+        file_rows,
+    )
+    _insert_rows(
+        conn,
+        "INSERT OR REPLACE INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        symbol_rows,
+    )
+    _insert_rows(
+        conn,
+        "INSERT INTO xrefs VALUES (?, ?, ?, ?, ?)",
+        xref_rows,
+    )

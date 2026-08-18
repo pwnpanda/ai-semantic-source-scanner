@@ -8,7 +8,8 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from itertools import chain
 from pathlib import Path
 
 import duckdb
@@ -380,6 +381,58 @@ def _render_codeql_extension_packs(repo_dir: Path) -> list[Path]:
     return list(lang_dirs)
 
 
+def _codeql_packs_for_language(
+    extension_packs: list[Path] | None,
+    language: str,
+) -> list[Path] | None:
+    if not extension_packs:
+        return None
+    matching = [path for path in extension_packs if path.name == language]
+    return matching or None
+
+
+def _codeql_tags(bug_classes: list[BugClass] | None) -> list[str]:
+    return list(chain.from_iterable(item.codeql_tags for item in bug_classes or []))
+
+
+@dataclass(frozen=True, slots=True)
+class _CodeQLRunContext:
+    snapshot_root: Path
+    repo_dir: Path
+    tags: list[str]
+    extension_packs: list[Path] | None
+    conn: duckdb.DuckDBPyConnection
+
+
+def _run_codeql_project(
+    project: Project,
+    language: str,
+    context: _CodeQLRunContext,
+) -> None:
+    project_id = project_artifact_id(project.name, project.base_path)
+    db_path = build_database(
+        context.snapshot_root / project.base_path,
+        cache_dir=context.repo_dir,
+        project_id=project_id,
+        language=language,
+    )
+    result = run_queries(
+        db_path,
+        cache_dir=context.repo_dir,
+        project_id=project_id,
+        codeql_tags=context.tags,
+        language=language,
+        extension_packs=_codeql_packs_for_language(context.extension_packs, language),
+    )
+    ingest_sarif(
+        context.conn,
+        sarif_path=result.sarif_path,
+        project_id=project_id,
+        snapshot_root=context.snapshot_root,
+        engine="codeql",
+    )
+
+
 def _run_codeql_for_projects(  # noqa: PLR0913 - five positional data inputs; policy is keyword-only
     snapshot_root: Path,
     projects: list[Project],
@@ -390,54 +443,27 @@ def _run_codeql_for_projects(  # noqa: PLR0913 - five positional data inputs; po
     strict: bool,
 ) -> bool:
     """Run CodeQL and return whether available projects failed in fallback mode."""
-    tags: list[str] = []
-    if bug_classes:
-        for c in bug_classes:
-            tags.extend(c.codeql_tags)
+    tags = _codeql_tags(bug_classes)
     extension_packs = _render_codeql_extension_packs(repo_dir) or None
+    if shutil.which("codeql") is None:
+        if strict:
+            raise RuntimeError("codeql engine requested but codeql is not on PATH")
+        log.warning("codeql unavailable; hybrid fallback remains active")
+        return False
+    context = _CodeQLRunContext(
+        snapshot_root=snapshot_root,
+        repo_dir=repo_dir,
+        tags=tags,
+        extension_packs=extension_packs,
+        conn=conn,
+    )
     had_failures = False
     for project in projects:
         language = _codeql_language_for_project(project)
         if language is None:
             continue
-        if shutil.which("codeql") is None:
-            if strict:
-                raise RuntimeError("codeql engine requested but codeql is not on PATH")
-            log.warning("codeql unavailable for %s; hybrid fallback remains active", project.name)
-            continue
-        project_id = project_artifact_id(project.name, project.base_path)
         try:
-            db_path = build_database(
-                snapshot_root / project.base_path,
-                cache_dir=repo_dir,
-                project_id=project_id,
-                language=language,
-            )
-            # Filter extension packs to those matching this project's language.
-            # ``run_queries`` will pass each as ``--model-packs <dir>``; passing
-            # a Java pack to a Python scan would either no-op or fail
-            # depending on CodeQL CLI version, so we pre-filter.
-            project_packs: list[Path] | None
-            if extension_packs:
-                project_packs = [p for p in extension_packs if p.name == language]
-                project_packs = project_packs or None
-            else:
-                project_packs = None
-            result = run_queries(
-                db_path,
-                cache_dir=repo_dir,
-                project_id=project_id,
-                codeql_tags=tags,
-                language=language,
-                extension_packs=project_packs,
-            )
-            ingest_sarif(
-                conn,
-                sarif_path=result.sarif_path,
-                project_id=project_id,
-                snapshot_root=snapshot_root,
-                engine="codeql",
-            )
+            _run_codeql_project(project, language, context)
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             if strict:
                 raise RuntimeError(f"codeql failed for {project.name}: {exc}") from exc

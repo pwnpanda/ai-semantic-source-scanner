@@ -69,7 +69,7 @@ from ai_codescan.runs.orchestrator import (
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.server import serve as start_server
 from ai_codescan.snapshot import SnapshotResult, force_remove
-from ai_codescan.stack_detect import ProjectKind, detect_projects
+from ai_codescan.stack_detect import Project, ProjectKind, detect_projects
 from ai_codescan.storage_taint import (
     find_unresolved_dynamic_calls,
     load_schema_yaml,
@@ -143,29 +143,29 @@ def _prep_bug_classes(target_bug_class: str) -> list[BugClass]:
         raise typer.Exit(code=2) from exc
 
 
+_HYBRID_LANGUAGES = {
+    ProjectKind.NODE: "javascript",
+    ProjectKind.PYTHON: "python",
+    ProjectKind.GO: "go",
+    ProjectKind.RUBY: "ruby",
+    ProjectKind.PHP: "php",
+    ProjectKind.CSHARP: "csharp",
+}
+
+
+def _hybrid_language(snapshot_root: Path, project: Project) -> str | None:
+    if project.kind is not ProjectKind.JAVA:
+        return _HYBRID_LANGUAGES.get(project.kind)
+    project_dir = snapshot_root / project.base_path
+    java_count = sum(1 for _ in project_dir.rglob("*.java"))
+    kotlin_count = sum(1 for path in project_dir.rglob("*") if path.suffix in {".kt", ".kts"})
+    return "kotlin" if kotlin_count > java_count else "java"
+
+
 def _hybrid_project_roots(snapshot_root: Path) -> list[tuple[Path, str, str]]:
     roots: list[tuple[Path, str, str]] = []
     for project in detect_projects(snapshot_root):
-        language: str | None = None
-        if project.kind is ProjectKind.NODE:
-            language = "javascript"
-        elif project.kind is ProjectKind.PYTHON:
-            language = "python"
-        elif project.kind is ProjectKind.JAVA:
-            project_dir = snapshot_root / project.base_path
-            java_count = sum(1 for _ in project_dir.rglob("*.java"))
-            kotlin_count = sum(
-                1 for path in project_dir.rglob("*") if path.suffix in {".kt", ".kts"}
-            )
-            language = "kotlin" if kotlin_count > java_count else "java"
-        elif project.kind is ProjectKind.GO:
-            language = "go"
-        elif project.kind is ProjectKind.RUBY:
-            language = "ruby"
-        elif project.kind is ProjectKind.PHP:
-            language = "php"
-        elif project.kind is ProjectKind.CSHARP:
-            language = "csharp"
+        language = _hybrid_language(snapshot_root, project)
         if language is None:
             continue
         project_id = project_artifact_id(project.name, project.base_path)
