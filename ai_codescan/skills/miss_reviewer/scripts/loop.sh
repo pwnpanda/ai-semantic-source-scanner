@@ -90,17 +90,51 @@ out_path.write_text(match.group(1).strip() + "\n", encoding="utf-8")
 PY
 }
 
+read_marker_fingerprint() {
+  local marker_path="$1"
+  python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as marker:
+    print(json.load(marker).get("review_fingerprint", ""))
+' "$marker_path" 2>/dev/null || true
+}
+
+write_done_marker() {
+  local candidate_json="$1"
+  local marker_path="$2"
+  printf '%s' "$candidate_json" | python3 -c '
+import json
+import sys
+from pathlib import Path
+
+candidate = json.load(sys.stdin)
+payload = {
+    "evidence_fingerprint": candidate.get("review_evidence_fingerprint", ""),
+    "review_fingerprint": candidate.get("review_fingerprint", ""),
+    "provider": candidate.get("review_provider", ""),
+    "model": candidate.get("review_model", ""),
+}
+if not payload["evidence_fingerprint"] or not payload["review_fingerprint"]:
+    raise SystemExit("candidate has no bound review fingerprint")
+Path(sys.argv[1]).write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+' "$marker_path"
+}
+
 total=$(grep -c '^' "$QUEUE" || true)
 done_count=$(find "$RUN_DIR/.done-miss-review" -maxdepth 1 -type f ! -name '*.stdout' 2>/dev/null | wc -l | tr -d ' ')
 echo "[miss-review] queue: $total candidates ($done_count already done)" >&2
 
 idx=0
+failures=0
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   idx=$((idx + 1))
   candidate_id=$(printf '%s' "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('id',''))" 2>/dev/null || true)
   if [[ -z "$candidate_id" ]]; then
-    echo "[miss-review] $idx/$total ??? … skip (no candidate id)" >&2
+    echo "[miss-review] $idx/$total ??? … FAIL (no candidate id)" >&2
+    failures=$((failures + 1))
     continue
   fi
   done_marker="$RUN_DIR/.done-miss-review/${candidate_id}"
@@ -127,27 +161,41 @@ if bundle.is_file():
     digest.update(bundle.read_bytes())
 print(digest.hexdigest())
 ' "$bundle_path")
-  if [[ -f "$done_marker" && -f "$review_path" && "$(cat "$done_marker")" == "$candidate_fingerprint" ]]; then
+  marker_fingerprint=""
+  if [[ -f "$done_marker" ]]; then
+    marker_fingerprint="$(read_marker_fingerprint "$done_marker")"
+  fi
+  if [[ -f "$review_path" && "$marker_fingerprint" == "$candidate_fingerprint" ]]; then
     echo "[miss-review] $idx/$total $candidate_id … skip (unchanged evidence)" >&2
     continue
   fi
   # Never ingest a stale verdict when refreshing this candidate fails.
-  rm -f "$review_path"
+  rm -f "$review_path" "$done_marker"
   printf '[miss-review] %d/%d %s … ' "$idx" "$total" "$candidate_id" >&2
   iter_log="$RUN_DIR/.done-miss-review/${candidate_id}.stdout"
   start_ts=$(date +%s)
   if ! render_prompt "$line" "$bundle_path" | invoke_llm >"$iter_log"; then
     echo "FAIL (llm error)" >&2
+    failures=$((failures + 1))
     continue
   fi
   if ! write_review_from_stdout "$iter_log" "$review_path"; then
     elapsed=$(($(date +%s) - start_ts))
     echo "FAIL no review block (${elapsed}s)" >&2
+    failures=$((failures + 1))
     continue
   fi
   elapsed=$(($(date +%s) - start_ts))
   classification=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('classification',''))" "$review_path" 2>/dev/null || echo unknown)
   echo "ok → ${classification} (${elapsed}s)" >&2
-  printf '%s\n' "$candidate_fingerprint" >"$done_marker"
+  if ! write_done_marker "$line" "$done_marker"; then
+    echo "[miss-review] $candidate_id … FAIL (could not persist review marker)" >&2
+    rm -f "$review_path" "$done_marker"
+    failures=$((failures + 1))
+  fi
 done <"$QUEUE"
+if [[ "$failures" -ne 0 ]]; then
+  echo "[miss-review] incomplete: $failures required candidate(s) failed" >&2
+  exit 1
+fi
 echo "[miss-review] done" >&2

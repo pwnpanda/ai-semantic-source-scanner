@@ -19,6 +19,7 @@ from ai_codescan.findings.queue import (
 )
 from ai_codescan.llm import LLMConfig, is_available
 from ai_codescan.nominator import write_llm_cmd_script
+from ai_codescan.review_cache import build_llm_context_fingerprint
 from ai_codescan.review_verdicts import sync_review_verdicts
 from ai_codescan.runs.state import RunState, save
 from ai_codescan.slice import extract_slice
@@ -229,6 +230,10 @@ def run_analyzer(
     env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
     env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
     env["AI_CODESCAN_SOURCE_ROOT"] = str(repo_dir / "source")
+    env["AI_CODESCAN_LLM_CONTEXT"] = build_llm_context_fingerprint(
+        effective,
+        source_root=repo_dir / "source",
+    )
     env["CLAUDE_NO_AUTO_REGISTER"] = "1"
 
     subprocess.run(  # noqa: S603 - argv-only, no shell

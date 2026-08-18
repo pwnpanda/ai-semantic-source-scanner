@@ -18,12 +18,16 @@ flag would skip the prompt next time.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from ai_codescan.manifest import build_manifest
 
 PIPELINE_STAGES: tuple[str, ...] = (
     "prep",
@@ -71,6 +75,7 @@ class OrchestratorState:
     target: str
     phases: list[str]
     completed: list[str] = field(default_factory=list)
+    stage_fingerprints: dict[str, str] = field(default_factory=dict)
     last_error: str | None = None
     decisions: dict[str, str] = field(default_factory=dict)
 
@@ -89,6 +94,7 @@ def load_state(cache_root: Path, repo_id: str) -> OrchestratorState | None:
         target=str(data["target"]),
         phases=list(data.get("phases", PIPELINE_STAGES)),
         completed=list(data.get("completed", [])),
+        stage_fingerprints=dict(data.get("stage_fingerprints", {})),
         last_error=data.get("last_error"),
         decisions=dict(data.get("decisions", {})),
     )
@@ -102,6 +108,7 @@ def save_state(cache_root: Path, state: OrchestratorState) -> None:
         "target": state.target,
         "phases": state.phases,
         "completed": state.completed,
+        "stage_fingerprints": state.stage_fingerprints,
         "last_error": state.last_error,
         "decisions": state.decisions,
     }
@@ -117,6 +124,164 @@ def detect_rate_limit_or_auth(stderr: str) -> bool:
     """Best-effort match against well-known LLM/auth failure phrasings."""
     low = f" {stderr.lower()} "
     return any(kw in low for kw in _RATE_LIMIT_KEYWORDS)
+
+
+# ---------------------------------------------------------------------------
+# Completion fingerprints
+# ---------------------------------------------------------------------------
+
+
+_SCANNER_FILE_SUFFIXES = frozenset({".json", ".md", ".py", ".pyi", ".sc", ".sh", ".yaml", ".yml"})
+_REPO_SCANNER_CONFIG_FILES = (
+    "aics-codeql-extension-packs.json",
+    "aics-enabled-packs.json",
+    "aics-joern-extension-packs.json",
+    "aics-semgrep-rules.json",
+)
+_STAGE_FINGERPRINT_VERSION = 1
+
+
+def _digest_payload(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _git_source_revision(target: Path, commit: str) -> str | None:
+    if not (target / ".git").exists():
+        return None
+    result = subprocess.run(  # noqa: S603 - argv-only, no shell
+        ["git", "-C", str(target), "rev-parse", commit or "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _source_fingerprint(target: Path, *, commit: str) -> str:
+    revision = _git_source_revision(target, commit)
+    if commit and revision is not None:
+        return _digest_payload({"kind": "git", "revision": revision})
+    if not target.is_dir():
+        return _digest_payload({"kind": "missing", "target": str(target.resolve())})
+    entries = build_manifest(target)
+    files = [(entry.path, entry.sha256, entry.size) for entry in entries]
+    return _digest_payload({"files": files, "git_revision": revision, "kind": "live-manifest"})
+
+
+def _update_file_digest(digest: Any, path: Path, *, label: str) -> None:
+    digest.update(label.encode("utf-8"))
+    digest.update(b"\0")
+    if path.is_file() and not path.is_symlink():
+        digest.update(path.read_bytes())
+    else:
+        digest.update(b"missing")
+    digest.update(b"\0")
+
+
+def _external_pack_paths(repo_dir: Path) -> list[tuple[str, Path]]:
+    registry = repo_dir / "aics-enabled-packs.json"
+    try:
+        payload = json.loads(registry.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    paths: list[tuple[str, Path]] = []
+    for raw in sorted(str(item) for item in payload):
+        path = Path(raw)
+        paths.append((raw, path if path.is_absolute() else repo_dir / path))
+    return paths
+
+
+def _active_semgrep_roots(repo_dir: Path) -> list[Path]:
+    roots = [repo_dir / ".semgrep"]
+    registry = repo_dir / "aics-semgrep-rules.json"
+    try:
+        payload = json.loads(registry.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return roots
+    if isinstance(payload, dict) and payload.get("rules_root"):
+        roots.append(Path(str(payload["rules_root"])).expanduser())
+    return roots
+
+
+def _hash_active_scanner_inputs(digest: Any, repo_dir: Path) -> None:
+    for label, path in _external_pack_paths(repo_dir):
+        _update_file_digest(digest, path, label=f"enabled-pack:{label}")
+    for root in _active_semgrep_roots(repo_dir):
+        rules_dir = root.resolve() / "rules"
+        if not rules_dir.is_dir():
+            _update_file_digest(digest, rules_dir, label=f"semgrep-rules:{rules_dir}")
+            continue
+        for path in sorted(rules_dir.rglob("*")):
+            if path.is_file() and not path.is_symlink() and path.suffix in {".yaml", ".yml"}:
+                _update_file_digest(
+                    digest,
+                    path,
+                    label=f"semgrep-rule:{rules_dir}:{path.relative_to(rules_dir)}",
+                )
+
+
+def _scanner_configuration_fingerprint(repo_dir: Path) -> str:
+    package_root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted(package_root.rglob("*")):
+        if not path.is_file() or path.is_symlink() or path.suffix not in _SCANNER_FILE_SUFFIXES:
+            continue
+        digest.update(path.relative_to(package_root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    for filename in _REPO_SCANNER_CONFIG_FILES:
+        path = repo_dir / filename
+        _update_file_digest(digest, path, label=filename)
+    _hash_active_scanner_inputs(digest, repo_dir)
+    return digest.hexdigest()
+
+
+def _stage_configuration(stage: str, opts: DriveOptions) -> dict[str, object]:
+    stage_index = PIPELINE_STAGES.index(stage)
+    config: dict[str, object] = {
+        "commit": opts.commit,
+        "engine": opts.engine,
+        "target_bug_class": opts.target_bug_class,
+    }
+    if stage_index >= PIPELINE_STAGES.index("nominate") or opts.engine == "llm-heavy":
+        config.update(
+            {
+                "llm_model": opts.llm_model,
+                "llm_provider": opts.llm_provider,
+                "temperature": opts.temperature,
+            }
+        )
+    if stage_index >= PIPELINE_STAGES.index("gate-1"):
+        config["yes"] = opts.yes
+    if stage_index >= PIPELINE_STAGES.index("validate"):
+        config["no_sandbox"] = opts.no_sandbox
+    if stage_index >= PIPELINE_STAGES.index("report"):
+        config["bugbounty"] = opts.bugbounty
+    return config
+
+
+def _stage_fingerprint(
+    stage: str,
+    opts: DriveOptions,
+    *,
+    source_fingerprint: str,
+    scanner_fingerprint: str,
+) -> str:
+    return _digest_payload(
+        {
+            "configuration": _stage_configuration(stage, opts),
+            "scanner": scanner_fingerprint,
+            "source": source_fingerprint,
+            "stage": stage,
+            "version": _STAGE_FINGERPRINT_VERSION,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +374,29 @@ def _latest_run_dir(repo_dir: Path) -> Path | None:
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _clear_marker_dir(path: Path) -> None:
+    if not path.is_dir():
+        return
+    for marker in path.iterdir():
+        if marker.is_file() or marker.is_symlink():
+            marker.unlink(missing_ok=True)
+
+
+def _invalidate_inner_stage_cache(repo_dir: Path, stage: str) -> None:
+    """Remove generated completion markers when a stage identity changes."""
+    run_dir = _latest_run_dir(repo_dir)
+    if run_dir is None:
+        return
+    marker_names = {
+        "analyze": (".done-analyze",),
+        "validate": (".done-validate",),
+    }.get(stage, ())
+    for marker_name in marker_names:
+        _clear_marker_dir(run_dir / marker_name)
+    if stage == "analyze":
+        _clear_marker_dir(repo_dir / ".done-miss-review")
 
 
 _NEVER_BLOCKS_ON_ZERO: frozenset[str] = frozenset({"prep", "gate-1", "gate-2", "gate-3"})
@@ -512,11 +700,31 @@ def drive_pipeline(  # noqa: PLR0912 - top-level loop; helpers absorb the rest
     save_state(opts.cache_root, state)
 
     repo_dir = opts.cache_root / opts.repo_id
+    source_fingerprint = _source_fingerprint(opts.target, commit=opts.commit)
+    scanner_fingerprint = _scanner_configuration_fingerprint(repo_dir)
 
     for stage in opts.phases:
-        if stage in state.completed:
+        fingerprint = _stage_fingerprint(
+            stage,
+            opts,
+            source_fingerprint=source_fingerprint,
+            scanner_fingerprint=scanner_fingerprint,
+        )
+        previous_fingerprint = state.stage_fingerprints.get(stage)
+        if stage in state.completed and previous_fingerprint == fingerprint:
             sys.stderr.write(f"[orchestrator] skipping {stage} (already complete)\n")
             continue
+        if stage in state.completed or (
+            previous_fingerprint is not None and previous_fingerprint != fingerprint
+        ):
+            _invalidate_inner_stage_cache(repo_dir, stage)
+        if stage in state.completed:
+            state.completed.remove(stage)
+            sys.stderr.write(f"[orchestrator] rerunning {stage} (inputs changed)\n")
+        elif previous_fingerprint is not None and previous_fingerprint != fingerprint:
+            sys.stderr.write(f"[orchestrator] restarting {stage} (attempt inputs changed)\n")
+        state.stage_fingerprints[stage] = fingerprint
+        save_state(opts.cache_root, state)
         sys.stderr.write(f"\n[orchestrator] === {stage} ===\n")
         argv = _build_argv(stage, opts)
         outcome = runner(argv)
@@ -533,6 +741,7 @@ def drive_pipeline(  # noqa: PLR0912 - top-level loop; helpers absorb the rest
             )
             if action == "skip":
                 state.completed.append(stage)
+                state.stage_fingerprints[stage] = fingerprint
                 state.last_error = f"{stage}: user-skipped after auth/rate-limit"
                 save_state(opts.cache_root, state)
                 continue
@@ -561,6 +770,7 @@ def drive_pipeline(  # noqa: PLR0912 - top-level loop; helpers absorb the rest
                 return 0
 
         state.completed.append(stage)
+        state.stage_fingerprints[stage] = fingerprint
         state.last_error = None
         save_state(opts.cache_root, state)
 

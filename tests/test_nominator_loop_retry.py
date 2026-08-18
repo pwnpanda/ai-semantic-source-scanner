@@ -35,7 +35,12 @@ def _make_run_dir(tmp_path: Path, *, candidates: int) -> Path:
     return run_dir
 
 
-def _run_loop(run_dir: Path, stub: Path) -> subprocess.CompletedProcess[str]:
+def _run_loop(
+    run_dir: Path,
+    stub: Path,
+    *,
+    retries: str = "3",
+) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": "/usr/bin:/bin:/usr/local/bin",
         "AI_CODESCAN_RUN_DIR": str(run_dir),
@@ -43,7 +48,7 @@ def _run_loop(run_dir: Path, stub: Path) -> subprocess.CompletedProcess[str]:
         "AI_CODESCAN_LLM_CMD": str(stub),
         "AI_CODESCAN_SOURCE_ROOT": str(run_dir / "source"),
         "AI_CODESCAN_LLM_RETRY_DELAY": "0",
-        "AI_CODESCAN_LLM_RETRIES": "3",
+        "AI_CODESCAN_LLM_RETRIES": retries,
     }
     return subprocess.run(
         ["bash", str(LOOP_SH)],
@@ -81,18 +86,51 @@ def test_transient_llm_failure_is_retried(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
-def test_persistent_llm_failure_gives_up_without_killing_the_loop(tmp_path: Path) -> None:
-    """A candidate whose every attempt fails is skipped, not fatal."""
+def test_persistent_llm_failure_leaves_loop_incomplete(tmp_path: Path) -> None:
+    """A required candidate whose every attempt fails makes the stage fail."""
     run_dir = _make_run_dir(tmp_path, candidates=1)
     stub = tmp_path / "dead_llm.sh"
     stub.write_text("#!/usr/bin/env bash\ncat - >/dev/null\nexit 1\n", encoding="utf-8")
     stub.chmod(0o755)
 
     result = _run_loop(run_dir, stub)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode != 0
     assert "FAIL (llm error)" in result.stderr
+    assert "incomplete" in result.stderr
     ids = _ID_LINE.findall((run_dir / "nominations.md").read_text(encoding="utf-8"))
     assert ids == []
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_partial_queue_failure_retries_only_incomplete_item(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path, candidates=2)
+    attempts = tmp_path / "attempts"
+    stub = tmp_path / "partial_llm.sh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "cat - >/dev/null\n"
+        f'if [[ -f "{run_dir / ".done" / "A-0"}" ]]; then '
+        "candidate=A-1; else candidate=A-0; fi\n"
+        f'printf \'%s\\n\' "$candidate" >> "{attempts}"\n'
+        f'if [[ "$candidate" == "A-1" && ! -f "{tmp_path / "allow-second"}" ]]; '
+        "then exit 1; fi\n"
+        f"cat <<'BLOCK'\n{_BLOCK}\nBLOCK\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+    first = _run_loop(run_dir, stub, retries="1")
+    assert first.returncode != 0
+    assert (run_dir / ".done" / "A-0").is_file()
+    assert not (run_dir / ".done" / "A-1").exists()
+
+    (tmp_path / "allow-second").touch()
+    second = _run_loop(run_dir, stub, retries="1")
+    assert second.returncode == 0, second.stderr
+    assert attempts.read_text(encoding="utf-8").splitlines() == ["A-0", "A-1", "A-1"]
+    ids = _ID_LINE.findall((run_dir / "nominations.md").read_text(encoding="utf-8"))
+    assert sorted(ids) == ["N-001", "N-002"]
 
 
 ALL_LOOPS = sorted(

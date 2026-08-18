@@ -18,6 +18,11 @@ from ai_codescan.llm import LLMConfig, is_available
 from ai_codescan.model_proposals import proposals_from_verdicts, write_model_proposals
 from ai_codescan.nominator import write_llm_cmd_script
 from ai_codescan.proposal_triage import triage_and_route
+from ai_codescan.review_cache import (
+    ReviewCacheKey,
+    build_review_cache_key,
+    read_review_cache_key,
+)
 from ai_codescan.review_verdicts import persist_miss_reviews
 from ai_codescan.scoring import select_review_candidates
 
@@ -160,22 +165,21 @@ def ingest_miss_reviews(
 def _stale_candidate_ids(
     done_dir: Path,
     review_dir: Path,
-    candidate_fingerprints: dict[str, str],
+    candidate_cache_keys: dict[str, ReviewCacheKey],
 ) -> frozenset[str]:
     stale_candidate_ids: set[str] = set()
-    for candidate_id, fingerprint in candidate_fingerprints.items():
+    for candidate_id, cache_key in candidate_cache_keys.items():
         marker = done_dir / candidate_id
         review_path = review_dir / f"{candidate_id}.json"
         if not marker.is_file() or not review_path.is_file():
             stale_candidate_ids.add(candidate_id)
             continue
         try:
-            marker_fingerprint = marker.read_text(encoding="utf-8", errors="replace").strip()
             raw = review_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             stale_candidate_ids.add(candidate_id)
             continue
-        if marker_fingerprint != fingerprint:
+        if read_review_cache_key(marker) != cache_key:
             stale_candidate_ids.add(candidate_id)
             continue
         wrapped = f"<<<AI_CODESCAN_MISS_REVIEW>>>\n{raw}\n<<<AI_CODESCAN_MISS_REVIEW:END>>>"
@@ -230,16 +234,16 @@ def _remove_obsolete_miss_artifacts(
     *,
     repo_dir: Path,
     run_dir: Path,
-    candidate_fingerprints: dict[str, str],
+    candidate_cache_keys: dict[str, ReviewCacheKey],
 ) -> None:
     """Remove generated artifacts that cannot describe the current queue."""
-    current_candidate_ids = frozenset(candidate_fingerprints)
+    current_candidate_ids = frozenset(candidate_cache_keys)
     done_dir = repo_dir / ".done-miss-review"
     review_dir = repo_dir / "miss_reviews"
     stale_candidate_ids = _stale_candidate_ids(
         done_dir,
         review_dir,
-        candidate_fingerprints,
+        candidate_cache_keys,
     )
     for review_path in review_dir.glob("B-miss-*.json"):
         if _is_obsolete_candidate(
@@ -300,9 +304,11 @@ def _remove_outputs_for_candidates(
             proposal_path.unlink(missing_ok=True)
 
 
-def _candidate_review_fingerprint(candidate: dict[str, Any], *, repo_dir: Path) -> str:
-    """Return the stored fingerprint or the shell review loop's legacy digest."""
-    stored = str(candidate.get("review_fingerprint") or "")
+def _candidate_evidence_fingerprint(candidate: dict[str, Any], *, repo_dir: Path) -> str:
+    """Return the fingerprint of the prompt and evidence, excluding the LLM."""
+    stored = str(
+        candidate.get("review_evidence_fingerprint") or candidate.get("review_fingerprint") or ""
+    )
     if stored:
         return stored
     candidate_bytes = json.dumps(candidate, sort_keys=True).encode("utf-8")
@@ -316,6 +322,32 @@ def _candidate_review_fingerprint(candidate: dict[str, Any], *, repo_dir: Path) 
     if bundle_path.is_file():
         digest.update(bundle_path.read_bytes())
     return digest.hexdigest()
+
+
+def _bind_review_cache_keys(
+    candidates: list[dict[str, Any]],
+    *,
+    repo_dir: Path,
+    llm: LLMConfig,
+) -> tuple[list[dict[str, Any]], dict[str, ReviewCacheKey]]:
+    bound: list[dict[str, Any]] = []
+    cache_keys: dict[str, ReviewCacheKey] = {}
+    for candidate in candidates:
+        candidate_id = str(candidate.get("id") or "")
+        evidence_fingerprint = _candidate_evidence_fingerprint(candidate, repo_dir=repo_dir)
+        cache_key = build_review_cache_key(evidence_fingerprint, llm)
+        if candidate_id:
+            cache_keys[candidate_id] = cache_key
+        bound.append(
+            {
+                **candidate,
+                "review_evidence_fingerprint": cache_key.evidence_fingerprint,
+                "review_fingerprint": cache_key.review_fingerprint,
+                "review_model": cache_key.model,
+                "review_provider": cache_key.provider,
+            }
+        )
+    return bound, cache_keys
 
 
 def _execute_review_loop(
@@ -340,6 +372,53 @@ def _execute_review_loop(
         env=env,
         check=True,
     )
+
+
+def _require_complete_reviews(
+    *,
+    repo_dir: Path,
+    review_dir: Path,
+    staged_candidate_ids: frozenset[str],
+    candidate_cache_keys: dict[str, ReviewCacheKey],
+) -> None:
+    staged_cache_keys = {
+        candidate_id: candidate_cache_keys[candidate_id]
+        for candidate_id in staged_candidate_ids
+        if candidate_id in candidate_cache_keys
+    }
+    incomplete = _stale_candidate_ids(
+        repo_dir / ".done-miss-review",
+        review_dir,
+        staged_cache_keys,
+    )
+    if incomplete:
+        missing = ", ".join(sorted(incomplete))
+        raise RuntimeError(f"miss-review loop completed without valid reviews for: {missing}")
+
+
+def _persist_reviews_and_route(
+    *,
+    db_path: Path,
+    reviews: list[MissReview],
+    proposals_dir: Path,
+    repo_dir: Path,
+) -> dict[str, int]:
+    routing = {"routed_to_pack": 0, "routed_to_joern": 0, "pending_custom_rule": 0}
+    conn = duckdb.connect(str(db_path))
+    try:
+        persist_miss_reviews(conn, reviews)
+        reviewed_candidate_ids = frozenset(review.candidate_id for review in reviews)
+        proposals = proposals_from_verdicts(
+            conn,
+            nomination_ids=reviewed_candidate_ids,
+            proposal_details={review.candidate_id: review.proposal for review in reviews},
+        )
+        if proposals:
+            write_model_proposals(proposals, proposals_dir=proposals_dir)
+            routing = triage_and_route(proposals, conn=conn, repo_dir=repo_dir)
+    finally:
+        conn.close()
+    return routing
 
 
 def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer's shape
@@ -368,24 +447,21 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
     review_dir = repo_dir / "miss_reviews"
     proposals_dir = run_dir / "model_proposals"
     findings_dir = run_dir / "findings"
+    effective = llm or LLMConfig(provider="claude")
+    candidates, candidate_cache_keys = _bind_review_cache_keys(
+        candidates,
+        repo_dir=repo_dir,
+        llm=effective,
+    )
 
     staged = stage_miss_review_queue(
         candidates, queue_path=queue_path, max_candidates=max_candidates
     )
-    candidate_fingerprints: dict[str, str] = {}
-    for candidate in candidates:
-        candidate_id = str(candidate.get("id") or "")
-        if candidate_id:
-            candidate_fingerprints[candidate_id] = _candidate_review_fingerprint(
-                candidate,
-                repo_dir=repo_dir,
-            )
     _remove_obsolete_miss_artifacts(
         repo_dir=repo_dir,
         run_dir=run_dir,
-        candidate_fingerprints=candidate_fingerprints,
+        candidate_cache_keys=candidate_cache_keys,
     )
-    effective = llm or LLMConfig(provider="claude")
     if not is_available(effective.provider):
         return {
             "queue": str(queue_path),
@@ -402,6 +478,12 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
     staged_candidate_ids = frozenset(
         candidate_id for candidate in staged if (candidate_id := str(candidate.get("id") or ""))
     )
+    _require_complete_reviews(
+        repo_dir=repo_dir,
+        review_dir=review_dir,
+        staged_candidate_ids=staged_candidate_ids,
+        candidate_cache_keys=candidate_cache_keys,
+    )
     _remove_outputs_for_candidates(
         findings_dir=findings_dir,
         proposals_dir=proposals_dir,
@@ -412,26 +494,12 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
         findings_dir=findings_dir,
         candidate_ids=staged_candidate_ids,
     )
-    conn = duckdb.connect(str(db_path))
-    routing = {"routed_to_pack": 0, "routed_to_joern": 0, "pending_custom_rule": 0}
-    try:
-        persist_miss_reviews(conn, reviews)
-        # Phase 3 single-command flow: turn `needs-model-extension` verdicts
-        # into ModelProposal artifacts, then triage each into either a
-        # community-pack enablement (auto-applied) or a pending custom rule
-        # (user runs `model-proposals apply` later). See
-        # `ai_codescan.proposal_triage` for the mapping.
-        reviewed_candidate_ids = frozenset(review.candidate_id for review in reviews)
-        proposals = proposals_from_verdicts(
-            conn,
-            nomination_ids=reviewed_candidate_ids,
-            proposal_details={review.candidate_id: review.proposal for review in reviews},
-        )
-        if proposals:
-            write_model_proposals(proposals, proposals_dir=proposals_dir)
-            routing = triage_and_route(proposals, conn=conn, repo_dir=repo_dir)
-    finally:
-        conn.close()
+    routing = _persist_reviews_and_route(
+        db_path=db_path,
+        reviews=reviews,
+        proposals_dir=proposals_dir,
+        repo_dir=repo_dir,
+    )
 
     return {
         "queue": str(queue_path),

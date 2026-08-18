@@ -105,6 +105,21 @@ def _write_candidates(repo_dir: Path) -> Path:
     return candidates_path
 
 
+def _write_queued_markers(env: dict[str, str]) -> None:
+    done_dir = Path(env["AI_CODESCAN_RUN_DIR"]) / ".done-miss-review"
+    done_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = Path(env["AI_CODESCAN_MISS_QUEUE"])
+    for line in queue_path.read_text(encoding="utf-8").splitlines():
+        candidate = json.loads(line)
+        marker = {
+            "evidence_fingerprint": candidate["review_evidence_fingerprint"],
+            "review_fingerprint": candidate["review_fingerprint"],
+            "provider": candidate["review_provider"],
+            "model": candidate["review_model"],
+        }
+        (done_dir / candidate["id"]).write_text(json.dumps(marker), encoding="utf-8")
+
+
 def test_run_miss_review_stages_queue_when_llm_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -121,7 +136,7 @@ def test_run_miss_review_stages_queue_when_llm_unavailable(
         db_path=db_path,
         run_dir=run_dir,
         max_candidates=10,
-        llm=LLMConfig(provider="claude"),
+        llm=LLMConfig(provider="codex", model="gpt-5.6-codex"),
     )
 
     assert result["executed"] is False
@@ -129,6 +144,10 @@ def test_run_miss_review_stages_queue_when_llm_unavailable(
     queue_path = repo_dir / "miss_review_queue.jsonl"
     assert queue_path.is_file()
     assert "B-miss-0001" in queue_path.read_text(encoding="utf-8")
+    [queued] = [json.loads(line) for line in queue_path.read_text(encoding="utf-8").splitlines()]
+    assert queued["review_provider"] == "codex"
+    assert queued["review_model"] == "gpt-5.6-codex"
+    assert queued["review_fingerprint"] != queued["review_evidence_fingerprint"]
 
 
 def test_run_miss_review_removes_obsolete_generated_artifacts(
@@ -285,6 +304,7 @@ def test_run_miss_review_invokes_loop_when_llm_available(
             ),
             encoding="utf-8",
         )
+        _write_queued_markers(env)
 
     monkeypatch.setattr("ai_codescan.miss_review.is_available", lambda _provider: True)
     monkeypatch.setattr("ai_codescan.miss_review.subprocess.run", fake_subprocess_run)
@@ -383,6 +403,7 @@ def test_run_miss_review_replaces_outputs_when_current_review_changes(
             ),
             encoding="utf-8",
         )
+        _write_queued_markers(env)
 
     monkeypatch.setattr("ai_codescan.miss_review.is_available", lambda _provider: True)
     monkeypatch.setattr("ai_codescan.miss_review.subprocess.run", fake_subprocess_run)

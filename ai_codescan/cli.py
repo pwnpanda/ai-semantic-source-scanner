@@ -2338,6 +2338,12 @@ def taint_schema(  # noqa: PLR0911, PLR0913, PLR0912, PLR0915 - CLI orchestrator
         env["AICS_RUN_DIR"] = str(state.run_dir)
         env["AICS_SKILL_DIR"] = str(skill_dir)
         env["AICS_LLM_CMD"] = str(cmd_script)
+        from ai_codescan.review_cache import build_llm_context_fingerprint  # noqa: PLC0415
+
+        env["AICS_LLM_CONTEXT"] = build_llm_context_fingerprint(
+            provider,
+            source_root=snapshot_root,
+        )
         env["CLAUDE_NO_AUTO_REGISTER"] = "1"
         # Stage repo.md + schema.taint.yml as inputs.
         inputs_dir = state.run_dir / "inputs"
@@ -2349,7 +2355,7 @@ def taint_schema(  # noqa: PLR0911, PLR0913, PLR0912, PLR0915 - CLI orchestrator
         subprocess.run(  # noqa: S603 - argv-only, no shell
             ["bash", str(skill_dir / "scripts" / "loop.sh")],  # noqa: S607
             env=env,
-            check=False,
+            check=True,
         )
         proposals = parse_resolver_proposals(state.run_dir)
         merged = merge_proposals_into_schema(schema_path, proposals)

@@ -12,6 +12,7 @@ from typing import Any, cast
 from ai_codescan.findings.model import Finding, Status, parse_finding, render_finding
 from ai_codescan.llm import LLMConfig, is_available
 from ai_codescan.nominator import write_llm_cmd_script
+from ai_codescan.review_cache import build_llm_context_fingerprint
 from ai_codescan.runs.state import RunState, save
 from ai_codescan.sandbox import (
     DEFAULT_SIGNAL,
@@ -191,6 +192,10 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
         env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
         env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
         env["AI_CODESCAN_SOURCE_ROOT"] = str(repo_dir / "source")
+        env["AI_CODESCAN_LLM_CONTEXT"] = build_llm_context_fingerprint(
+            effective,
+            source_root=repo_dir / "source",
+        )
         env["CLAUDE_NO_AUTO_REGISTER"] = "1"
         # Stage validation hints per finding so the skill can read them.
         hints_dir = state.run_dir / "validation_hints"
@@ -209,7 +214,7 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
         subprocess.run(  # noqa: S603 - argv-only, no shell
             ["bash", str(SKILL_DIR / "scripts" / "loop.sh")],  # noqa: S607
             env=env,
-            check=False,  # one PoC failure should not abort the rest
+            check=True,
         )
     _ = repo_dir  # reserved for future passes
 

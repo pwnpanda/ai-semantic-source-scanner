@@ -154,6 +154,7 @@ done_count=$(find "$RUN_DIR/.done" -maxdepth 1 -type f ! -name '*.stdout' 2>/dev
 echo "[nominate] queue: $total candidates ($done_count already done)" >&2
 
 idx=0
+failures=0
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   idx=$((idx + 1))
@@ -168,15 +169,21 @@ while IFS= read -r line; do
   start_ts=$(date +%s)
   if ! render_prompt "$line" | invoke_llm >"$iter_log"; then
     echo "FAIL (llm error)" >&2
+    failures=$((failures + 1))
     continue
   fi
   stream=$(append_nomination_from_stdout "$iter_log" 2>&1) || stream=""
   elapsed=$(($(date +%s) - start_ts))
   if [[ -z "$stream" || ! "$stream" =~ ^[ABC]$ ]]; then
     echo "FAIL no block (${elapsed}s)" >&2
+    failures=$((failures + 1))
     continue
   fi
   echo "ok → Stream $stream (${elapsed}s)" >&2
   touch "$done_marker"
 done <"$QUEUE"
+if [[ "$failures" -ne 0 ]]; then
+  echo "[nominate] incomplete: $failures required candidate(s) failed" >&2
+  exit 1
+fi
 echo "[nominate] done" >&2

@@ -1039,7 +1039,8 @@ def parse_resolver_proposals(run_dir: Path) -> list[dict[str, Any]]:
     p = run_dir / "storage_resolver" / "proposals.jsonl"
     if not p.is_file():
         return []
-    out: list[dict[str, Any]] = []
+    without_call_id: list[dict[str, Any]] = []
+    latest_by_call_id: dict[str, dict[str, Any]] = {}
     for line in p.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped:
@@ -1048,9 +1049,14 @@ def parse_resolver_proposals(run_dir: Path) -> list[dict[str, Any]]:
             data = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if isinstance(data, dict):
-            out.append(data)
-    return out
+        if not isinstance(data, dict):
+            continue
+        call_id = str(data.get("call_id") or "")
+        if call_id:
+            latest_by_call_id[call_id] = data
+        else:
+            without_call_id.append(data)
+    return [*without_call_id, *latest_by_call_id.values()]
 
 
 def merge_proposals_into_schema(

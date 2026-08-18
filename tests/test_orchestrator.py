@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -100,6 +101,7 @@ def test_state_round_trip(tmp_path: Path) -> None:
         target="/tmp/sample",
         phases=["prep", "nominate"],
         completed=["prep"],
+        stage_fingerprints={"prep": "fingerprint"},
         last_error=None,
         decisions={"nominate:zero_output": "c"},
     )
@@ -258,15 +260,19 @@ def test_drive_pipeline_runs_each_stage_in_order(tmp_path: Path) -> None:
 
 
 def test_drive_pipeline_skips_completed_stages_on_resume(tmp_path: Path) -> None:
-    save_state(
-        tmp_path,
-        OrchestratorState(
-            repo_id="repo-x",
-            target=str(tmp_path / "src"),
-            phases=["prep", "nominate"],
-            completed=["prep"],
-        ),
+    first_seen: list[str] = []
+
+    def first_runner(argv: list[str]) -> StageOutcome:
+        first_seen.append(argv[3])
+        return StageOutcome(rc=0, stderr="")
+
+    drive_pipeline(
+        _opts(tmp_path, phases=["prep"]),
+        runner=first_runner,
+        asker=lambda _p: "c",
     )
+    assert first_seen == ["prep"]
+
     seen: list[str] = []
 
     def runner(argv: list[str]) -> StageOutcome:
@@ -279,6 +285,149 @@ def test_drive_pipeline_skips_completed_stages_on_resume(tmp_path: Path) -> None
         asker=lambda _p: "c",
     )
     assert seen == ["nominate"]
+
+
+def test_drive_pipeline_provider_change_reruns_llm_stage(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def runner(argv: list[str]) -> StageOutcome:
+        seen.append(argv[argv.index("--llm-provider") + 1])
+        return StageOutcome(rc=0, stderr="")
+
+    claude = _opts(tmp_path, phases=["nominate"])
+    codex = replace(claude, llm_provider="codex", llm_model="gpt-5.6-codex")
+
+    assert drive_pipeline(claude, runner=runner, asker=lambda _p: "c") == 0
+    assert drive_pipeline(codex, runner=runner, asker=lambda _p: "c") == 0
+
+    assert seen == ["claude", "codex"]
+
+
+def test_changed_analyze_attempt_clears_inner_completion_markers(tmp_path: Path) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    source_file = source / "handler.kt"
+    source_file.write_text("fun handler() = 1\n", encoding="utf-8")
+    marker_dir = tmp_path / "repo-x" / "runs" / "run-1" / ".done-analyze"
+    marker_dir.mkdir(parents=True)
+    marker = marker_dir / "N-001"
+    calls = 0
+
+    def runner(_argv: list[str]) -> StageOutcome:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            marker.write_text("old-attempt", encoding="utf-8")
+            return StageOutcome(rc=2, stderr="failed")
+        assert not marker.exists()
+        return StageOutcome(rc=0, stderr="")
+
+    opts = _opts(tmp_path, phases=["analyze"])
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 2
+    source_file.write_text("fun handler() = 2\n", encoding="utf-8")
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+    assert calls == 2
+
+
+def test_drive_pipeline_source_change_reruns_completed_stage(tmp_path: Path) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    source_file = source / "handler.kt"
+    source_file.write_text("fun handler() = 1\n", encoding="utf-8")
+    calls = 0
+
+    def runner(_argv: list[str]) -> StageOutcome:
+        nonlocal calls
+        calls += 1
+        return StageOutcome(rc=0, stderr="")
+
+    opts = _opts(tmp_path, phases=["prep"])
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+    source_file.write_text("fun handler() = 2\n", encoding="utf-8")
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+
+    assert calls == 2
+
+
+def test_drive_pipeline_dirty_git_source_reruns_completed_stage(tmp_path: Path) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    source_file = source / "handler.kt"
+    source_file.write_text("fun handler() = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "add", "handler.kt"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        check=True,
+    )
+    calls = 0
+
+    def runner(_argv: list[str]) -> StageOutcome:
+        nonlocal calls
+        calls += 1
+        return StageOutcome(rc=0, stderr="")
+
+    opts = _opts(tmp_path, phases=["prep"])
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+    source_file.write_text("fun handler() = 2\n", encoding="utf-8")
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+
+    assert calls == 2
+
+
+def test_drive_pipeline_scanner_change_reruns_completed_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanner_fingerprint = "rules-v1"
+    monkeypatch.setattr(
+        "ai_codescan.runs.orchestrator._scanner_configuration_fingerprint",
+        lambda _repo_dir: scanner_fingerprint,
+    )
+    calls = 0
+
+    def runner(_argv: list[str]) -> StageOutcome:
+        nonlocal calls
+        calls += 1
+        return StageOutcome(rc=0, stderr="")
+
+    opts = _opts(tmp_path, phases=["prep"])
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+    scanner_fingerprint = "rules-v2"
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+
+    assert calls == 2
+
+
+def test_drive_pipeline_promoted_semgrep_rule_reruns_completed_stage(tmp_path: Path) -> None:
+    rules_dir = tmp_path / "repo-x" / ".semgrep" / "rules"
+    rules_dir.mkdir(parents=True)
+    rule = rules_dir / "approved.yml"
+    rule.write_text("rules:\n  - id: first\n", encoding="utf-8")
+    calls = 0
+
+    def runner(_argv: list[str]) -> StageOutcome:
+        nonlocal calls
+        calls += 1
+        return StageOutcome(rc=0, stderr="")
+
+    opts = _opts(tmp_path, phases=["prep"])
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+    rule.write_text("rules:\n  - id: second\n", encoding="utf-8")
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+
+    assert calls == 2
 
 
 def test_drive_pipeline_aborts_on_non_zero_when_no_rate_limit(tmp_path: Path) -> None:

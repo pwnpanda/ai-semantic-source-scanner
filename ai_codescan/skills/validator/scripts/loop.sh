@@ -10,8 +10,15 @@ PROMPT="$SKILL_DIR/prompts/validator.md"
 FINDINGS_DIR="$RUN_DIR/findings"
 SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:-$RUN_DIR/../../source}"
 REPO_MD="$RUN_DIR/inputs/repo.md"
+AICS_LLM_CONTEXT="${AI_CODESCAN_LLM_CONTEXT:-}"
+export AICS_LLM_CONTEXT
+# shellcheck source=/dev/null
+source "$(dirname "$SKILL_DIR")/item_cache.sh"
 
-[[ -d "$FINDINGS_DIR" ]] || { echo "no $FINDINGS_DIR" >&2; exit 1; }
+[[ -d "$FINDINGS_DIR" ]] || {
+  echo "no $FINDINGS_DIR" >&2
+  exit 1
+}
 mkdir -p "$RUN_DIR/sandbox" "$RUN_DIR/.done-validate"
 
 invoke_llm() {
@@ -23,24 +30,26 @@ invoke_llm() {
   # stdin is consumed by the first attempt, so buffer the prompt to replay it.
   local prompt_file attempt delay rc
   prompt_file="$(mktemp)"
-  cat - > "$prompt_file"
+  cat - >"$prompt_file"
   delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
   rc=1
   for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
     if [[ -n "$LLM_CMD" ]]; then
-      "$LLM_CMD" < "$prompt_file" && rc=0
+      "$LLM_CMD" <"$prompt_file" && rc=0
     else
       claude -p "$(cat "$prompt_file")" && rc=0
     fi
     [[ "$rc" -eq 0 ]] && break
     printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
     sleep "$delay"
-    delay=$(( delay * 2 ))
+    delay=$((delay * 2))
   done
   rm -f "$prompt_file"
   return "$rc"
 }
 
+# Markdown backticks are literal prompt syntax.
+# shellcheck disable=SC2016
 render_prompt() {
   local finding_path="$1"
   local slice_file="$2"
@@ -118,6 +127,7 @@ done_count=$(find "$RUN_DIR/.done-validate" -maxdepth 1 -type f ! -name '*.stdou
 echo "[validate] queue: $total unverified findings ($done_count already done)" >&2
 
 idx=0
+failures=0
 for finding in "$FINDINGS_DIR"/*.md; do
   [[ -f "$finding" ]] || continue
   finding_id="$(basename "$finding" .md)"
@@ -128,32 +138,49 @@ for finding in "$FINDINGS_DIR"/*.md; do
   fi
   idx=$((idx + 1))
   done_marker="$RUN_DIR/.done-validate/${finding_id}"
-  if [[ -f "$done_marker" ]]; then
-    echo "[validate] $idx/$total $finding_id … skip (already done)" >&2
-    continue
-  fi
 
   nom_id="${finding_id#F-}"
   slice_file="$RUN_DIR/slices/N-${nom_id}.json"
   hints_path="$HINTS_DIR/${finding_id}.md"
   poc_dir="$RUN_DIR/sandbox/${finding_id}"
   mkdir -p "$poc_dir"
+  item_fingerprint="$(
+    aics_item_fingerprint \
+      "${finding_id}|${TARGET_LANG}" \
+      "$PROMPT" "$finding" "$slice_file" "$hints_path" "$REPO_MD"
+  )"
+  marker_fingerprint=""
+  if [[ -f "$done_marker" ]]; then
+    marker_fingerprint="$(cat "$done_marker")"
+  fi
+  existing_poc="$(find "$poc_dir" -maxdepth 1 -type f -name 'poc.*' -print -quit)"
+  if [[ -n "$existing_poc" && "$marker_fingerprint" == "$item_fingerprint" ]]; then
+    echo "[validate] $idx/$total $finding_id … skip (unchanged review input)" >&2
+    continue
+  fi
+  rm -f "$done_marker" "$poc_dir"/poc.*
 
   printf '[validate] %d/%d %s … ' "$idx" "$total" "$finding_id" >&2
   iter_log="$RUN_DIR/.done-validate/${finding_id}.stdout"
   start_ts=$(date +%s)
-  if ! render_prompt "$finding" "$slice_file" "$hints_path" "$TARGET_LANG" \
-       | invoke_llm > "$iter_log"; then
+  if ! render_prompt "$finding" "$slice_file" "$hints_path" "$TARGET_LANG" |
+    invoke_llm >"$iter_log"; then
     echo "FAIL (llm error)" >&2
+    failures=$((failures + 1))
     continue
   fi
   poc_path=$(write_poc_from_stdout "$iter_log" "$poc_dir" 2>/dev/null) || poc_path=""
-  elapsed=$(( $(date +%s) - start_ts ))
+  elapsed=$(($(date +%s) - start_ts))
   if [[ -z "$poc_path" ]]; then
     echo "FAIL no PoC block (${elapsed}s)" >&2
+    failures=$((failures + 1))
     continue
   fi
   echo "ok → $(basename "$poc_path") (${elapsed}s)" >&2
-  touch "$done_marker"
+  printf '%s\n' "$item_fingerprint" >"$done_marker"
 done
+if [[ "$failures" -ne 0 ]]; then
+  echo "[validate] incomplete: $failures required finding(s) failed" >&2
+  exit 1
+fi
 echo "[validate] done" >&2

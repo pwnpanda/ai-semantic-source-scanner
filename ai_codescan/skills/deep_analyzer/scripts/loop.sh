@@ -10,8 +10,15 @@ QUEUE="$RUN_DIR/findings_queue.md"
 LLM_CMD="${AI_CODESCAN_LLM_CMD:-}"
 PROMPT="$SKILL_DIR/prompts/analyzer.md"
 SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:-$RUN_DIR/../../source}"
+AICS_LLM_CONTEXT="${AI_CODESCAN_LLM_CONTEXT:-}"
+export AICS_LLM_CONTEXT
+# shellcheck source=/dev/null
+source "$(dirname "$SKILL_DIR")/item_cache.sh"
 
-[[ -f "$QUEUE" ]] || { echo "no $QUEUE" >&2; exit 1; }
+[[ -f "$QUEUE" ]] || {
+  echo "no $QUEUE" >&2
+  exit 1
+}
 mkdir -p "$RUN_DIR/findings" "$RUN_DIR/.done-analyze"
 
 invoke_llm() {
@@ -23,24 +30,26 @@ invoke_llm() {
   # stdin is consumed by the first attempt, so buffer the prompt to replay it.
   local prompt_file attempt delay rc
   prompt_file="$(mktemp)"
-  cat - > "$prompt_file"
+  cat - >"$prompt_file"
   delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
   rc=1
   for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
     if [[ -n "$LLM_CMD" ]]; then
-      "$LLM_CMD" < "$prompt_file" && rc=0
+      "$LLM_CMD" <"$prompt_file" && rc=0
     else
       claude -p "$(cat "$prompt_file")" && rc=0
     fi
     [[ "$rc" -eq 0 ]] && break
     printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
     sleep "$delay"
-    delay=$(( delay * 2 ))
+    delay=$((delay * 2))
   done
   rm -f "$prompt_file"
   return "$rc"
 }
 
+# Markdown backticks are literal prompt syntax.
+# shellcheck disable=SC2016
 render_prompt() {
   local nomination="$1"
   local evidence_file="$2"
@@ -85,6 +94,7 @@ done_count=$(find "$RUN_DIR/.done-analyze" -maxdepth 1 -type f ! -name '*.stdout
 echo "[analyze] queue: $total nominations ($done_count already done)" >&2
 
 idx=0
+failures=0
 while IFS= read -r line; do
   if [[ ! "$line" =~ ^-\ \[\ \]\ (N-[A-Za-z0-9_-]+)\ \|\ ([^|]+)\ \|\ ([^|]+)\ \| ]]; then
     continue
@@ -92,10 +102,6 @@ while IFS= read -r line; do
   idx=$((idx + 1))
   nom_id="${BASH_REMATCH[1]}"
   done="$RUN_DIR/.done-analyze/${nom_id}"
-  if [[ -f "$done" ]]; then
-    echo "[analyze] $idx/$total $nom_id … skip (already done)" >&2
-    continue
-  fi
   finding_id="F-${nom_id#N-}"
   finding_path="$RUN_DIR/findings/${finding_id}.md"
   evidence_file="$RUN_DIR/bundles/${nom_id}.json"
@@ -103,24 +109,41 @@ while IFS= read -r line; do
     evidence_file="$RUN_DIR/slices/${nom_id}.json"
   fi
   if [[ ! -f "$evidence_file" ]]; then
-    echo "[analyze] $idx/$total $nom_id … skip (no evidence bundle)" >&2
+    echo "[analyze] $idx/$total $nom_id … FAIL (no evidence bundle)" >&2
+    failures=$((failures + 1))
     continue
   fi
+  item_fingerprint="$(aics_item_fingerprint "$line" "$PROMPT" "$evidence_file")"
+  marker_fingerprint=""
+  if [[ -f "$done" ]]; then
+    marker_fingerprint="$(cat "$done")"
+  fi
+  if [[ -f "$finding_path" && "$marker_fingerprint" == "$item_fingerprint" ]]; then
+    echo "[analyze] $idx/$total $nom_id … skip (unchanged review input)" >&2
+    continue
+  fi
+  rm -f "$done" "$finding_path"
   printf '[analyze] %d/%d %s … ' "$idx" "$total" "$nom_id" >&2
   iter_log="$RUN_DIR/.done-analyze/${nom_id}.stdout"
   start_ts=$(date +%s)
-  if ! render_prompt "$line" "$evidence_file" "$finding_id" | invoke_llm > "$iter_log"; then
+  if ! render_prompt "$line" "$evidence_file" "$finding_id" | invoke_llm >"$iter_log"; then
     echo "FAIL (llm error)" >&2
+    failures=$((failures + 1))
     continue
   fi
   if ! write_finding_from_stdout "$iter_log" "$finding_path"; then
-    elapsed=$(( $(date +%s) - start_ts ))
+    elapsed=$(($(date +%s) - start_ts))
     echo "FAIL no block (${elapsed}s)" >&2
+    failures=$((failures + 1))
     continue
   fi
   status=$(grep -E '^status:' "$finding_path" | head -1 | awk '{print $2}')
-  elapsed=$(( $(date +%s) - start_ts ))
+  elapsed=$(($(date +%s) - start_ts))
   echo "ok → ${status:-unknown} (${elapsed}s)" >&2
-  touch "$done"
-done < "$QUEUE"
+  printf '%s\n' "$item_fingerprint" >"$done"
+done <"$QUEUE"
+if [[ "$failures" -ne 0 ]]; then
+  echo "[analyze] incomplete: $failures required nomination(s) failed" >&2
+  exit 1
+fi
 echo "[analyze] done" >&2

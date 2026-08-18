@@ -14,6 +14,7 @@ from typing import Any
 import duckdb
 
 from ai_codescan.evidence import build_evidence_bundle, write_evidence_bundle
+from ai_codescan.review_cache import read_review_cache_key
 from ai_codescan.scoring import (
     attach_scores,
     persist_candidate_scores,
@@ -413,7 +414,8 @@ def _marker_matches(review_state_dir: Path, candidate_id: str, fingerprint: str)
     marker = review_state_dir / ".done-miss-review" / candidate_id
     review_path = review_state_dir / "miss_reviews" / f"{candidate_id}.json"
     try:
-        if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != fingerprint:
+        cache_key = read_review_cache_key(marker)
+        if cache_key is None or cache_key.evidence_fingerprint != fingerprint:
             return False
         review = json.loads(review_path.read_text(encoding="utf-8"))
         return (
@@ -532,6 +534,7 @@ def write_miss_candidates(
             candidate_id = str(review_candidate.get("id") or "")
             output_candidate = {
                 **review_candidate,
+                "review_evidence_fingerprint": candidate_fingerprints.get(candidate_id, ""),
                 "review_fingerprint": candidate_fingerprints.get(candidate_id, ""),
             }
             if bundles_dir is not None and candidate_id in bundle_candidate_ids:

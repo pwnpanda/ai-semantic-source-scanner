@@ -12,7 +12,9 @@ from typer.testing import CliRunner
 import ai_codescan.miss_finder as miss_finder_module
 from ai_codescan.cli import app
 from ai_codescan.index.duckdb_schema import apply_schema
+from ai_codescan.llm import LLMConfig
 from ai_codescan.miss_finder import build_miss_candidates, write_miss_candidates
+from ai_codescan.review_cache import build_review_cache_key
 from ai_codescan.semantic_hotspots import SemanticHotspot
 
 runner = CliRunner()
@@ -485,7 +487,14 @@ def test_write_miss_candidates_purges_stale_review_feedback_and_scores(tmp_path:
     }
 
     current = next(candidate for candidate in candidates if candidate["id"] == candidate_id)
-    (done_dir / candidate_id).write_text(current["review_fingerprint"], encoding="utf-8")
+    cache_key = build_review_cache_key(
+        str(current["review_evidence_fingerprint"]),
+        LLMConfig(provider="claude"),
+    )
+    (done_dir / candidate_id).write_text(
+        json.dumps(cache_key.to_jsonable()),
+        encoding="utf-8",
+    )
     review_dir = tmp_path / "miss_reviews"
     review_dir.mkdir()
     (review_dir / f"{candidate_id}.json").write_text(
