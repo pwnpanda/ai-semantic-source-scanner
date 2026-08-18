@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from ai_codescan.model_proposals import proposals_from_verdicts, write_model_pro
 from ai_codescan.nominator import write_llm_cmd_script
 from ai_codescan.proposal_triage import triage_and_route
 from ai_codescan.review_verdicts import persist_miss_reviews
+from ai_codescan.scoring import select_review_candidates
 
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "miss_reviewer"
 
@@ -88,34 +90,14 @@ def parse_miss_review_output(stdout: str) -> MissReview | None:
     )
 
 
-def proposal_stub_from_review(review: MissReview) -> dict[str, Any] | None:
-    if review.classification not in {"new-finding", "needs-model-extension"}:
-        return None
-    return {
-        "candidate_id": review.candidate_id,
-        "classification": review.classification,
-        "confidence": review.confidence,
-        "rationale": review.rationale,
-        "evidence": review.evidence,
-        "proposal": review.proposal,
-    }
-
-
 def stage_miss_review_queue(
     candidates: list[dict[str, Any]],
     *,
     queue_path: Path,
     max_candidates: int,
 ) -> list[dict[str, Any]]:
-    """Write the top ``max_candidates`` miss candidates to the review queue."""
-    ranked = sorted(
-        enumerate(candidates),
-        key=lambda item: (
-            -float(item[1].get("score") or 0.0),
-            item[0],
-        ),
-    )
-    selected = [candidate for _index, candidate in ranked[:max_candidates]]
+    """Write a score-ranked, concern-diverse miss-review queue."""
+    selected = select_review_candidates(candidates, max_candidates=max_candidates)
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     with queue_path.open("w", encoding="utf-8") as f:
         for candidate in selected:
@@ -127,19 +109,17 @@ def stage_miss_review_queue(
 def ingest_miss_reviews(
     *,
     review_dir: Path,
-    proposals_dir: Path,
     findings_dir: Path | None = None,
+    candidate_ids: frozenset[str] | None = None,
 ) -> list[MissReview]:
-    """Read raw sentinel JSONs from ``review_dir`` and stage model proposals.
+    """Read raw sentinel JSONs from ``review_dir``.
 
     Returns the parsed :class:`MissReview` objects in candidate-id sort order.
-    Proposals (`new-finding` / `needs-model-extension`) are written under
-    ``proposals_dir`` so the existing model-proposals CLI can list them.
+    Findings are rendered for reviews that require follow-up.
     """
     if not review_dir.is_dir():
         return []
     reviews: list[MissReview] = []
-    proposals_dir.mkdir(parents=True, exist_ok=True)
     if findings_dir:
         findings_dir.mkdir(parents=True, exist_ok=True)
 
@@ -149,17 +129,11 @@ def ingest_miss_reviews(
         review = parse_miss_review_output(wrapped)
         if review is None:
             continue
+        if candidate_ids is not None and review.candidate_id not in candidate_ids:
+            continue
         reviews.append(review)
 
-        # 1. Model extension proposals.
-        stub = proposal_stub_from_review(review)
-        if stub is not None:
-            (proposals_dir / f"{review.candidate_id}.json").write_text(
-                json.dumps(stub, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-
-        # 2. Findings for reporting/gating.
+        # Findings for reporting/gating.
         if findings_dir and review.classification in {"new-finding", "needs-model-extension"}:
             if review.candidate_id.startswith("B-miss-"):
                 finding_id = f"F-miss-{review.candidate_id[len('B-miss-') :]}"
@@ -181,6 +155,191 @@ def ingest_miss_reviews(
             )
 
     return reviews
+
+
+def _stale_candidate_ids(
+    done_dir: Path,
+    review_dir: Path,
+    candidate_fingerprints: dict[str, str],
+) -> frozenset[str]:
+    stale_candidate_ids: set[str] = set()
+    for candidate_id, fingerprint in candidate_fingerprints.items():
+        marker = done_dir / candidate_id
+        review_path = review_dir / f"{candidate_id}.json"
+        if not marker.is_file() or not review_path.is_file():
+            stale_candidate_ids.add(candidate_id)
+            continue
+        try:
+            marker_fingerprint = marker.read_text(encoding="utf-8", errors="replace").strip()
+            raw = review_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            stale_candidate_ids.add(candidate_id)
+            continue
+        if marker_fingerprint != fingerprint:
+            stale_candidate_ids.add(candidate_id)
+            continue
+        wrapped = f"<<<AI_CODESCAN_MISS_REVIEW>>>\n{raw}\n<<<AI_CODESCAN_MISS_REVIEW:END>>>"
+        review = parse_miss_review_output(wrapped)
+        if review is None or review.candidate_id != candidate_id:
+            stale_candidate_ids.add(candidate_id)
+    return frozenset(stale_candidate_ids)
+
+
+def _is_obsolete_candidate(
+    candidate_id: str,
+    *,
+    current_candidate_ids: frozenset[str],
+    stale_candidate_ids: frozenset[str],
+) -> bool:
+    return candidate_id not in current_candidate_ids or candidate_id in stale_candidate_ids
+
+
+def _remove_obsolete_proposals(
+    proposals_dir: Path,
+    *,
+    current_candidate_ids: frozenset[str],
+    stale_candidate_ids: frozenset[str],
+) -> None:
+    for proposal_path in proposals_dir.glob("*.json"):
+        candidate_id = proposal_path.stem if proposal_path.stem.startswith("B-miss-") else ""
+        if candidate_id and _is_obsolete_candidate(
+            candidate_id,
+            current_candidate_ids=current_candidate_ids,
+            stale_candidate_ids=stale_candidate_ids,
+        ):
+            proposal_path.unlink(missing_ok=True)
+            continue
+        try:
+            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            if proposal_path.name.startswith("proposal-"):
+                proposal_path.unlink(missing_ok=True)
+            continue
+        if not isinstance(proposal, dict):
+            continue
+        candidate_id = str(proposal.get("candidate_id") or proposal.get("nomination_id") or "")
+        if candidate_id.startswith("B-miss-") and _is_obsolete_candidate(
+            candidate_id,
+            current_candidate_ids=current_candidate_ids,
+            stale_candidate_ids=stale_candidate_ids,
+        ):
+            proposal_path.unlink(missing_ok=True)
+
+
+def _remove_obsolete_miss_artifacts(
+    *,
+    repo_dir: Path,
+    run_dir: Path,
+    candidate_fingerprints: dict[str, str],
+) -> None:
+    """Remove generated artifacts that cannot describe the current queue."""
+    current_candidate_ids = frozenset(candidate_fingerprints)
+    done_dir = repo_dir / ".done-miss-review"
+    review_dir = repo_dir / "miss_reviews"
+    stale_candidate_ids = _stale_candidate_ids(
+        done_dir,
+        review_dir,
+        candidate_fingerprints,
+    )
+    for review_path in review_dir.glob("B-miss-*.json"):
+        if _is_obsolete_candidate(
+            review_path.stem,
+            current_candidate_ids=current_candidate_ids,
+            stale_candidate_ids=stale_candidate_ids,
+        ):
+            review_path.unlink(missing_ok=True)
+
+    for done_path in done_dir.glob("B-miss-*"):
+        candidate_id = done_path.name.removesuffix(".stdout")
+        if _is_obsolete_candidate(
+            candidate_id,
+            current_candidate_ids=current_candidate_ids,
+            stale_candidate_ids=stale_candidate_ids,
+        ):
+            done_path.unlink(missing_ok=True)
+
+    findings_dir = run_dir / "findings"
+    for finding_path in findings_dir.glob("F-miss-*.md"):
+        candidate_id = f"B-miss-{finding_path.stem.removeprefix('F-miss-')}"
+        if _is_obsolete_candidate(
+            candidate_id,
+            current_candidate_ids=current_candidate_ids,
+            stale_candidate_ids=stale_candidate_ids,
+        ):
+            finding_path.unlink(missing_ok=True)
+
+    _remove_obsolete_proposals(
+        run_dir / "model_proposals",
+        current_candidate_ids=current_candidate_ids,
+        stale_candidate_ids=stale_candidate_ids,
+    )
+
+
+def _remove_outputs_for_candidates(
+    *,
+    findings_dir: Path,
+    proposals_dir: Path,
+    candidate_ids: frozenset[str],
+) -> None:
+    """Clear derived outputs before recreating them from current reviews."""
+    for candidate_id in candidate_ids:
+        finding_id = candidate_id.removeprefix("B-miss-")
+        (findings_dir / f"F-miss-{finding_id}.md").unlink(missing_ok=True)
+    for proposal_path in proposals_dir.glob("*.json"):
+        if proposal_path.stem in candidate_ids:
+            proposal_path.unlink(missing_ok=True)
+            continue
+        try:
+            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(proposal, dict):
+            continue
+        source_id = str(proposal.get("candidate_id") or proposal.get("nomination_id") or "")
+        if source_id in candidate_ids:
+            proposal_path.unlink(missing_ok=True)
+
+
+def _candidate_review_fingerprint(candidate: dict[str, Any], *, repo_dir: Path) -> str:
+    """Return the stored fingerprint or the shell review loop's legacy digest."""
+    stored = str(candidate.get("review_fingerprint") or "")
+    if stored:
+        return stored
+    candidate_bytes = json.dumps(candidate, sort_keys=True).encode("utf-8")
+    digest = hashlib.sha256(candidate_bytes)
+    bundle_value = str(candidate.get("bundle_json") or "")
+    bundle_path = (
+        Path(bundle_value)
+        if bundle_value
+        else repo_dir / "miss_bundles" / (f"{candidate.get('id', '')}.json")
+    )
+    if bundle_path.is_file():
+        digest.update(bundle_path.read_bytes())
+    return digest.hexdigest()
+
+
+def _execute_review_loop(
+    *,
+    repo_dir: Path,
+    queue_path: Path,
+    review_dir: Path,
+    llm: LLMConfig,
+) -> None:
+    cmd_script = write_llm_cmd_script(repo_dir / ".llm-cmd-miss-review.sh", llm)
+    env = os.environ.copy()
+    env["AI_CODESCAN_RUN_DIR"] = str(repo_dir)
+    env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
+    env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
+    env["AI_CODESCAN_SOURCE_ROOT"] = str(repo_dir / "source")
+    env["AI_CODESCAN_MISS_QUEUE"] = str(queue_path)
+    env["AI_CODESCAN_MISS_REVIEW_DIR"] = str(review_dir)
+    env["AI_CODESCAN_MISS_BUNDLES_DIR"] = str(repo_dir / "miss_bundles")
+    env["CLAUDE_NO_AUTO_REGISTER"] = "1"
+    subprocess.run(  # noqa: S603 - argv-only, no shell
+        ["bash", str(SKILL_DIR / "scripts" / "loop.sh")],  # noqa: S607
+        env=env,
+        check=True,
+    )
 
 
 def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer's shape
@@ -213,6 +372,19 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
     staged = stage_miss_review_queue(
         candidates, queue_path=queue_path, max_candidates=max_candidates
     )
+    candidate_fingerprints: dict[str, str] = {}
+    for candidate in candidates:
+        candidate_id = str(candidate.get("id") or "")
+        if candidate_id:
+            candidate_fingerprints[candidate_id] = _candidate_review_fingerprint(
+                candidate,
+                repo_dir=repo_dir,
+            )
+    _remove_obsolete_miss_artifacts(
+        repo_dir=repo_dir,
+        run_dir=run_dir,
+        candidate_fingerprints=candidate_fingerprints,
+    )
     effective = llm or LLMConfig(provider="claude")
     if not is_available(effective.provider):
         return {
@@ -221,27 +393,25 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
             "executed": False,
             "reviews": 0,
         }
-    cmd_script = write_llm_cmd_script(repo_dir / ".llm-cmd-miss-review.sh", effective)
-    env = os.environ.copy()
-    env["AI_CODESCAN_RUN_DIR"] = str(repo_dir)
-    env["AI_CODESCAN_SKILL_DIR"] = str(SKILL_DIR)
-    env["AI_CODESCAN_LLM_CMD"] = str(cmd_script)
-    env["AI_CODESCAN_SOURCE_ROOT"] = str(repo_dir / "source")
-    env["AI_CODESCAN_MISS_QUEUE"] = str(queue_path)
-    env["AI_CODESCAN_MISS_REVIEW_DIR"] = str(review_dir)
-    env["AI_CODESCAN_MISS_BUNDLES_DIR"] = str(repo_dir / "miss_bundles")
-    env["CLAUDE_NO_AUTO_REGISTER"] = "1"
-    subprocess.run(  # noqa: S603 - argv-only, no shell
-        ["bash", str(SKILL_DIR / "scripts" / "loop.sh")],  # noqa: S607
-        env=env,
-        check=True,
+    _execute_review_loop(
+        repo_dir=repo_dir,
+        queue_path=queue_path,
+        review_dir=review_dir,
+        llm=effective,
+    )
+    staged_candidate_ids = frozenset(
+        candidate_id for candidate in staged if (candidate_id := str(candidate.get("id") or ""))
+    )
+    _remove_outputs_for_candidates(
+        findings_dir=findings_dir,
+        proposals_dir=proposals_dir,
+        candidate_ids=staged_candidate_ids,
     )
     reviews = ingest_miss_reviews(
         review_dir=review_dir,
-        proposals_dir=proposals_dir,
         findings_dir=findings_dir,
+        candidate_ids=staged_candidate_ids,
     )
-
     conn = duckdb.connect(str(db_path))
     routing = {"routed_to_pack": 0, "routed_to_joern": 0, "pending_custom_rule": 0}
     try:
@@ -251,7 +421,12 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
         # community-pack enablement (auto-applied) or a pending custom rule
         # (user runs `model-proposals apply` later). See
         # `ai_codescan.proposal_triage` for the mapping.
-        proposals = proposals_from_verdicts(conn)
+        reviewed_candidate_ids = frozenset(review.candidate_id for review in reviews)
+        proposals = proposals_from_verdicts(
+            conn,
+            nomination_ids=reviewed_candidate_ids,
+            proposal_details={review.candidate_id: review.proposal for review in reviews},
+        )
         if proposals:
             write_model_proposals(proposals, proposals_dir=proposals_dir)
             routing = triage_and_route(proposals, conn=conn, repo_dir=repo_dir)

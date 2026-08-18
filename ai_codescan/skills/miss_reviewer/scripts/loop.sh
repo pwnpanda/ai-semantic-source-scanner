@@ -17,7 +17,10 @@ LLM_CMD="${AI_CODESCAN_LLM_CMD:-}"
 PROMPT="$SKILL_DIR/prompts/reviewer.md"
 SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:-$RUN_DIR/../source}"
 
-[[ -f "$QUEUE" ]] || { echo "no miss-review queue at $QUEUE" >&2; exit 1; }
+[[ -f "$QUEUE" ]] || {
+  echo "no miss-review queue at $QUEUE" >&2
+  exit 1
+}
 mkdir -p "$REVIEW_DIR" "$RUN_DIR/.done-miss-review"
 
 invoke_llm() {
@@ -29,19 +32,19 @@ invoke_llm() {
   # stdin is consumed by the first attempt, so buffer the prompt to replay it.
   local prompt_file attempt delay rc
   prompt_file="$(mktemp)"
-  cat - > "$prompt_file"
+  cat - >"$prompt_file"
   delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
   rc=1
   for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
     if [[ -n "$LLM_CMD" ]]; then
-      "$LLM_CMD" < "$prompt_file" && rc=0
+      "$LLM_CMD" <"$prompt_file" && rc=0
     else
       claude -p "$(cat "$prompt_file")" && rc=0
     fi
     [[ "$rc" -eq 0 ]] && break
     printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
     sleep "$delay"
-    delay=$(( delay * 2 ))
+    delay=$((delay * 2))
   done
   rm -f "$prompt_file"
   return "$rc"
@@ -52,7 +55,11 @@ render_prompt() {
   local bundle_path="$2"
   cat "$PROMPT"
   printf '\n\n---\n\n## This iteration\n\n'
+  # Markdown backticks are intentional prompt syntax, not shell expansion.
+  # shellcheck disable=SC2016
   printf 'Source snapshot root: `%s`\n\n' "$SOURCE_ROOT"
+  # Markdown fences are intentional prompt syntax, not shell expansion.
+  # shellcheck disable=SC2016
   printf '## Embedded miss candidate\n\n```json\n%s\n```\n\n' "$candidate_json"
   if [[ -n "$bundle_path" && -f "$bundle_path" ]]; then
     printf '## Embedded evidence bundle JSON\n\n```json\n'
@@ -97,30 +104,50 @@ while IFS= read -r line; do
     continue
   fi
   done_marker="$RUN_DIR/.done-miss-review/${candidate_id}"
-  if [[ -f "$done_marker" ]]; then
-    echo "[miss-review] $idx/$total $candidate_id … skip (already done)" >&2
-    continue
-  fi
   bundle_path=$(printf '%s' "$line" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('bundle_json',''))" 2>/dev/null || true)
   if [[ -z "$bundle_path" || ! -f "$bundle_path" ]]; then
     bundle_path="$BUNDLES_DIR/${candidate_id}.json"
   fi
+  review_path="$REVIEW_DIR/${candidate_id}.json"
+  candidate_fingerprint=$(printf '%s' "$line" | python3 -c '
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+raw = sys.stdin.buffer.read()
+candidate = json.loads(raw)
+cached = candidate.get("review_fingerprint", "")
+if cached:
+    print(cached)
+    raise SystemExit
+digest = hashlib.sha256(raw)
+bundle = Path(sys.argv[1])
+if bundle.is_file():
+    digest.update(bundle.read_bytes())
+print(digest.hexdigest())
+' "$bundle_path")
+  if [[ -f "$done_marker" && -f "$review_path" && "$(cat "$done_marker")" == "$candidate_fingerprint" ]]; then
+    echo "[miss-review] $idx/$total $candidate_id … skip (unchanged evidence)" >&2
+    continue
+  fi
+  # Never ingest a stale verdict when refreshing this candidate fails.
+  rm -f "$review_path"
   printf '[miss-review] %d/%d %s … ' "$idx" "$total" "$candidate_id" >&2
   iter_log="$RUN_DIR/.done-miss-review/${candidate_id}.stdout"
   start_ts=$(date +%s)
-  if ! render_prompt "$line" "$bundle_path" | invoke_llm > "$iter_log"; then
+  if ! render_prompt "$line" "$bundle_path" | invoke_llm >"$iter_log"; then
     echo "FAIL (llm error)" >&2
     continue
   fi
-  review_path="$REVIEW_DIR/${candidate_id}.json"
   if ! write_review_from_stdout "$iter_log" "$review_path"; then
-    elapsed=$(( $(date +%s) - start_ts ))
+    elapsed=$(($(date +%s) - start_ts))
     echo "FAIL no review block (${elapsed}s)" >&2
     continue
   fi
-  elapsed=$(( $(date +%s) - start_ts ))
+  elapsed=$(($(date +%s) - start_ts))
   classification=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('classification',''))" "$review_path" 2>/dev/null || echo unknown)
   echo "ok → ${classification} (${elapsed}s)" >&2
-  touch "$done_marker"
-done < "$QUEUE"
+  printf '%s\n' "$candidate_fingerprint" >"$done_marker"
+done <"$QUEUE"
 echo "[miss-review] done" >&2

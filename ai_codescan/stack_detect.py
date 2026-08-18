@@ -25,33 +25,17 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-_SKIP_DIRS = frozenset(
-    {
-        "node_modules",
-        ".git",
-        ".pnpm",
-        ".yarn",
-        "dist",
-        "build",
-        ".next",
-        ".venv",
-        "venv",
-        "env",
-        "__pycache__",
-        ".tox",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".pytest_cache",
-        "site-packages",
-        "target",  # Maven build output
-        ".gradle",  # Gradle cache
-        ".idea",  # JetBrains caches
-        "out",  # IntelliJ build dir
-        "bin",  # .NET build output
-        "obj",  # .NET intermediate output
-        ".vs",  # Visual Studio caches
-    }
-)
+from ai_codescan.manifest import IGNORED_SOURCE_DIRS
+
+_SKIP_DIRS = IGNORED_SOURCE_DIRS | {
+    ".next",
+    ".pnpm",
+    ".vs",
+    ".yarn",
+    "bin",  # .NET build output
+    "env",
+    "obj",  # .NET intermediate output
+}
 
 
 class ProjectKind(StrEnum):

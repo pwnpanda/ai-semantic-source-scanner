@@ -70,6 +70,11 @@ ldap-injection:
   codeql_tags: [security/cwe/cwe-090]
   group: injection
 
+xpath-injection:
+  cwes: [CWE-643]
+  codeql_tags: [security/cwe/cwe-643]
+  group: injection
+
 crlf-injection:
   aliases: [header-injection]
   cwes: [CWE-93]
@@ -274,7 +279,19 @@ client-side-redirect:
 
 groups:
   injection:
-    [xss, sqli, nosqli, cmdi, code-injection, ssti, prompt-injection, xxe, ldap-injection, crlf-injection]
+    [
+      xss,
+      sqli,
+      nosqli,
+      cmdi,
+      code-injection,
+      ssti,
+      prompt-injection,
+      xxe,
+      ldap-injection,
+      xpath-injection,
+      crlf-injection,
+    ]
   file: [path-traversal, lfi, rfi]
   authz: [idor, bfla, incorrect-authorization-state, protection-mechanism-bypass, mass-assignment]
   authn: [auth-bypass, identity-spoofing, jwt-misuse]

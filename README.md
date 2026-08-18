@@ -122,9 +122,13 @@ uv run ai-codescan run /tmp/express \
   --yes
 ```
 
-`run` defaults to `--engine hybrid`, so it runs CodeQL + Semgrep + Joern when
+`run` and `scan` default to `--engine hybrid`, so they run CodeQL + Semgrep + Joern when
 Joern is on PATH, dedupes the flows, then drives the LLM stages. Reports land in
 `./report/YYYY-MM-DD--<severity>--<vuln-class>--<component>.md`.
+
+Scan trusted source only. Some SCIP and CodeQL indexers execute target build tooling outside a
+sandbox during `prep`. Copy-based snapshots omit symlinks, local dependency trees, and generated
+build output.
 
 ---
 
@@ -231,7 +235,7 @@ uv run ai-codescan cache rm <repo-id>
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--engine {codeql,llm-heavy,hybrid}` | `hybrid` for `run`; `codeql` for standalone `prep` | Pick the static analysis backbone |
+| `--engine {codeql,llm-heavy,hybrid}` | `hybrid` for `run`/`scan`; `codeql` for standalone `prep` | Pick the static analysis backbone |
 | `--target-bug-class <list>` | all | Comma-separated; e.g. `injection,xss,idor` or `@injection` |
 | `--llm-provider {claude,gemini,codex}` | `claude` | LLM CLI to drive each phase |
 | `--llm-model <name>` | provider default | e.g. `opus`, `gemini-2.5-pro`, `o3` |

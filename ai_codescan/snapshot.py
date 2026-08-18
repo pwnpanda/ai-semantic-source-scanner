@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from ai_codescan.manifest import build_manifest, read_manifest, write_manifest
+from ai_codescan.manifest import IGNORED_SOURCE_DIRS, build_manifest, read_manifest, write_manifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,16 +89,24 @@ def _cp_snapshot(target: Path, cache_dir: Path) -> Path:
     snapshot_dir = cache_dir / "source"
     if snapshot_dir.exists():
         shutil.rmtree(snapshot_dir, onexc=force_remove)
-    shutil.copytree(target, snapshot_dir, symlinks=False, ignore_dangling_symlinks=True)
+    shutil.copytree(target, snapshot_dir, symlinks=True, ignore=_ignored_snapshot_entries)
     return snapshot_dir
 
 
-def _manifest_already_matches(cache_dir: Path, snapshot_dir: Path) -> bool:
-    """For non-git targets: return True if the snapshot content already matches."""
+def _ignored_snapshot_entries(directory: str, entries: list[str]) -> list[str]:
+    """Exclude dependency/build trees and links from copy-based snapshots."""
+    root = Path(directory)
+    return [
+        entry for entry in entries if entry in IGNORED_SOURCE_DIRS or (root / entry).is_symlink()
+    ]
+
+
+def _manifest_already_matches(cache_dir: Path, source_root: Path) -> bool:
+    """For non-git targets: return True if the target content still matches."""
     manifest_path = cache_dir / "manifest.jsonl"
-    if not manifest_path.is_file() or not snapshot_dir.exists():
+    if not manifest_path.is_file() or not source_root.exists():
         return False
-    return read_manifest(manifest_path) == build_manifest(snapshot_dir)
+    return read_manifest(manifest_path) == build_manifest(source_root)
 
 
 def _git_worktree_snapshot(target: Path, cache_dir: Path, commit: str) -> Path:
@@ -179,7 +187,7 @@ def take_snapshot(
         method: Literal["git-worktree", "cp"] = "git-worktree"
         commit_sha: str | None = sha
     else:
-        if _manifest_already_matches(cache_dir, snapshot_dir):
+        if _manifest_already_matches(cache_dir, target):
             return SnapshotResult(
                 snapshot_dir=snapshot_dir,
                 manifest_path=manifest_path,

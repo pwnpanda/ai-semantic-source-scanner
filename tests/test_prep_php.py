@@ -16,11 +16,34 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from ai_codescan.prep import run_prep
+from ai_codescan.prep import _files_for_project, run_prep
+from ai_codescan.stack_detect import Project, ProjectKind
 
 
 def _has_node() -> bool:
     return shutil.which("node") is not None
+
+
+def test_php_file_collection_skips_dependencies_and_wordpress_content(tmp_path: Path) -> None:
+    app = tmp_path / "index.php"
+    app.write_text("<?php echo 'app';\n", encoding="utf-8")
+    for ignored in ("vendor/package", "wp-content/uploads", "wp-content/cache"):
+        directory = tmp_path / ignored
+        directory.mkdir(parents=True)
+        (directory / "ignored.php").write_text("<?php echo 'ignored';\n", encoding="utf-8")
+    project = Project(
+        name="wordpress",
+        kind=ProjectKind.PHP,
+        base_path=Path("."),
+        languages={"php"},
+    )
+
+    _ts, _html, _py, _java, _go, _ruby, php, _cs, _kt, _bash, _yaml = _files_for_project(
+        tmp_path,
+        project,
+    )
+
+    assert php == [app]
 
 
 @pytest.mark.skipif(not _has_node(), reason="node runtime required for AST extraction")

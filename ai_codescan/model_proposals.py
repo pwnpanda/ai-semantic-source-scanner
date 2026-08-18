@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -65,28 +66,37 @@ def _bug_class_for_cwe(cwe: str) -> str:
         "CWE-78": "cmdi",
         "CWE-79": "xss",
         "CWE-89": "sqli",
+        "CWE-90": "ldap-injection",
         "CWE-93": "crlf-injection",
         "CWE-287": "missing-authn",
         "CWE-290": "identity-spoofing",
         "CWE-409": "uncontrolled-resource-consumption",
         "CWE-532": "sensitive-logging",
+        "CWE-601": "open-redirect",
         "CWE-611": "xxe",
         "CWE-639": "bola",
+        "CWE-643": "xpath-injection",
         "CWE-693": "protection-mechanism-bypass",
         "CWE-798": "hardcoded-credentials",
         "CWE-862": "bfla",
         "CWE-863": "incorrect-authorization-state",
         "CWE-915": "mass-assignment",
         "CWE-918": "ssrf",
+        "CWE-943": "nosqli",
+        "CWE-1321": "prototype-pollution",
+        "CWE-1333": "redos",
+        "CWE-1336": "ssti",
     }.get(cwe, "unknown")
 
 
-def proposals_from_verdicts(
+def proposals_from_verdicts(  # noqa: PLR0913 - optional keyword-only proposal shaping
     conn: duckdb.DuckDBPyConnection,
     *,
     language: str = "",
     framework: str = "",
     target_engine: str = "heuristic",
+    nomination_ids: frozenset[str] | None = None,
+    proposal_details: Mapping[str, Mapping[str, object]] | None = None,
 ) -> list[ModelProposal]:
     has_table = conn.execute(
         "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'review_verdicts'"
@@ -103,26 +113,33 @@ def proposals_from_verdicts(
     ).fetchall()
     proposals: list[ModelProposal] = []
     for nomination_id, finding_id, verdict, cwe, title, source_path in rows:
+        nomination_id_s = str(nomination_id or "")
+        if nomination_ids is not None and nomination_id_s not in nomination_ids:
+            continue
+        details = (proposal_details or {}).get(nomination_id_s, {})
         cwe_s = str(cwe or "")
         proposals.append(
             ModelProposal(
                 proposal_id=_proposal_id(str(nomination_id), str(finding_id), cwe_s),
-                nomination_id=str(nomination_id or ""),
+                nomination_id=nomination_id_s,
                 finding_id=str(finding_id or ""),
                 verdict=str(verdict or ""),
                 cwe=cwe_s,
-                language=language,
-                framework=framework,
+                language=str(details.get("language") or language),
+                framework=str(details.get("framework") or framework),
                 bug_class=_bug_class_for_cwe(cwe_s),
-                source_pattern="",
-                sink_pattern="",
-                sanitizer_pattern="",
-                vulnerable_example="",
-                safe_example="",
-                target_engine=target_engine,
-                eval_target="",
+                source_pattern=str(details.get("source_pattern") or ""),
+                sink_pattern=str(details.get("sink_pattern") or ""),
+                sanitizer_pattern=str(details.get("sanitizer_pattern") or ""),
+                vulnerable_example=str(details.get("vulnerable_example") or ""),
+                safe_example=str(details.get("safe_example") or ""),
+                target_engine=str(details.get("target_engine") or target_engine),
+                eval_target=str(details.get("eval_target") or ""),
                 rationale=str(title or "LLM review marked this as a model-extension gap."),
                 source_path=str(source_path or ""),
+                eval_positive=str(details.get("eval_positive") or ""),
+                eval_negative=str(details.get("eval_negative") or ""),
+                receiver_regex=str(details.get("receiver_regex") or ""),
             )
         )
     return proposals

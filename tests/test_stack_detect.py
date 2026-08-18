@@ -335,9 +335,16 @@ def test_go_nested_module_inside_outer_skipped(tmp_path: Path) -> None:
     inner = outer / "vendor" / "example.com" / "inner"
     inner.mkdir(parents=True)
     (inner / "go.mod").write_text("module example.com/inner\n\ngo 1.22\n")
-    # vendor/ isn't in our skip list; rely on outermost-only selection.
     projects = detect_projects(outer)
     assert [p.name for p in projects] == ["outer"]
+
+
+def test_detection_ignores_dependency_only_vendor_tree(tmp_path: Path) -> None:
+    vendor_module = tmp_path / "vendor" / "example.com" / "dependency"
+    vendor_module.mkdir(parents=True)
+    (vendor_module / "go.mod").write_text("module example.com/dependency\n", encoding="utf-8")
+
+    assert detect_projects(tmp_path) == []
 
 
 # ---------------------------------------------------------------------------

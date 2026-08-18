@@ -235,6 +235,15 @@ def _candidate_step_locs(
     return step_locs
 
 
+def _candidate_redacted_lines(candidate: dict[str, Any]) -> frozenset[int]:
+    raw_lines = candidate.get("redacted_lines") or []
+    if not isinstance(raw_lines, (list, tuple)):
+        return frozenset()
+    return frozenset(
+        line for raw_line in raw_lines if (line := _int_or_none(raw_line)) is not None and line > 0
+    )
+
+
 def _review_questions(candidate: dict[str, Any], *, stream: str) -> list[str]:
     questions = [
         "Is attacker-controlled input reachable at the source?",
@@ -346,17 +355,22 @@ def build_evidence_bundle(
     excerpts: list[EvidenceExcerpt] = []
     seen: set[tuple[str, int]] = set()
     secret_lines = _secret_lines_by_file(candidate)
+    candidate_file = str(candidate.get("file") or "")
+    candidate_redactions = _candidate_redacted_lines(candidate)
     for file, line in step_locs:
         key = (file, line)
         if key in seen:
             continue
         seen.add(key)
+        redacted_lines = secret_lines.get(file, frozenset())
+        if file == candidate_file:
+            redacted_lines |= candidate_redactions
         excerpts.append(
             _read_excerpt(
                 Path(file),
                 line,
                 context_lines=effective_context_lines,
-                redacted_lines=secret_lines.get(file, frozenset()),
+                redacted_lines=redacted_lines,
             )
         )
 

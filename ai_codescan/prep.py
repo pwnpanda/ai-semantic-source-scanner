@@ -19,6 +19,7 @@ from ai_codescan.index.duckdb_ingest import ingest as duckdb_ingest
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.index.scip import build_scip_index
 from ai_codescan.ingest.sarif import ingest_sarif
+from ai_codescan.manifest import IGNORED_SOURCE_DIRS
 from ai_codescan.repo_md import render_repo_md
 from ai_codescan.sidecars import emit_sidecars
 from ai_codescan.snapshot import SnapshotResult, take_snapshot
@@ -31,65 +32,91 @@ log = logging.getLogger(__name__)
 _SCIP_SINGLE_LINE_RANGE_LENGTH = 3
 _SCIP_MULTI_LINE_RANGE_LENGTH = 4
 
-_PYTHON_SKIP_PARTS: frozenset[str] = frozenset(
-    {
-        "node_modules",
-        ".venv",
-        "venv",
-        "env",
-        "__pycache__",
-        ".tox",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".pytest_cache",
-        "site-packages",
-    }
+_PYTHON_SKIP_PARTS = IGNORED_SOURCE_DIRS | {"env"}
+
+_JAVA_SKIP_PARTS = IGNORED_SOURCE_DIRS
+
+_GO_SKIP_PARTS = IGNORED_SOURCE_DIRS
+
+_RUBY_SKIP_PARTS = IGNORED_SOURCE_DIRS | {"tmp", "log"}
+
+_PHP_SKIP_PARTS = IGNORED_SOURCE_DIRS | {
+    "storage",  # Laravel storage/
+}
+_PHP_SKIP_SUBPATHS = frozenset({("wp-content", "uploads"), ("wp-content", "cache")})
+
+_CSHARP_SKIP_PARTS = IGNORED_SOURCE_DIRS | {
+    "bin",  # .NET build output
+    "obj",  # .NET intermediate output
+    ".vs",
+}
+
+_CONFIG_SKIP_PARTS = IGNORED_SOURCE_DIRS
+
+_SOURCE_INDEX_TABLES = (
+    "storage_taint",
+    "storage_reads",
+    "storage_writes",
+    "storage_locations",
+    "flow_metadata",
+    "flows",
+    "taint_sources",
+    "taint_sinks",
+    "entrypoints",
+    "xrefs",
+    "symbols",
+    "files",
+    "candidate_scores",
 )
 
-_JAVA_SKIP_PARTS: frozenset[str] = frozenset(
-    {
-        "target",  # Maven build output
-        "build",  # Gradle build output (also a generic name; rare collision)
-        ".gradle",
-        "out",
-        ".idea",
-    }
-)
 
-_GO_SKIP_PARTS: frozenset[str] = frozenset(
-    {
-        "vendor",  # ``go mod vendor`` output
-        "node_modules",  # rare but possible if a Go repo also vendors JS
-    }
-)
+def _has_skipped_part(path: Path, *, base: Path, skipped: frozenset[str]) -> bool:
+    return any(part in skipped for part in path.relative_to(base).parts)
 
-_RUBY_SKIP_PARTS: frozenset[str] = frozenset(
-    {
-        "vendor",  # bundler vendored gems
-        "node_modules",
-        "tmp",  # Rails tmp/
-        "log",  # Rails log/
-    }
-)
 
-_PHP_SKIP_PARTS: frozenset[str] = frozenset(
-    {
-        "vendor",  # Composer ``vendor/`` is the canonical install dir
-        "node_modules",
-        "wp-content/uploads",  # WP user uploads
-        "wp-content/cache",
-        "storage",  # Laravel storage/
-    }
-)
+def _has_skipped_subpath(
+    path: Path,
+    *,
+    base: Path,
+    skipped: frozenset[tuple[str, ...]],
+) -> bool:
+    parts = path.relative_to(base).parts
+    return any(
+        tuple(parts[index : index + len(candidate)]) == candidate
+        for candidate in skipped
+        for index in range(len(parts) - len(candidate) + 1)
+    )
 
-_CSHARP_SKIP_PARTS: frozenset[str] = frozenset(
-    {
-        "bin",  # .NET build output
-        "obj",  # .NET intermediate output
-        "node_modules",
-        ".vs",
-    }
-)
+
+def _source_files(
+    base: Path,
+    *,
+    suffixes: set[str],
+    skipped: frozenset[str],
+) -> list[Path]:
+    return [
+        path
+        for path in base.rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and path.suffix in suffixes
+        and not _has_skipped_part(path, base=base, skipped=skipped)
+    ]
+
+
+def _clear_source_index(conn: duckdb.DuckDBPyConnection) -> None:
+    """Clear derived source state before rebuilding a changed snapshot."""
+    for table in _SOURCE_INDEX_TABLES:
+        conn.execute(f"DELETE FROM {table}")  # noqa: S608 - names are a fixed internal tuple
+
+
+def _clear_generated_sidecars(sidecars_root: Path) -> None:
+    """Remove generated sidecars that may refer to deleted source files."""
+    if not sidecars_root.is_dir():
+        return
+    for pattern in ("*.enrich.jsonl", "*.enrich.jsonl.tmp"):
+        for sidecar in sidecars_root.rglob(pattern):
+            sidecar.unlink(missing_ok=True)
 
 
 def _files_for_project(
@@ -119,77 +146,25 @@ def _files_for_project(
     the primary source language.
     """
     base = snapshot_root / project.base_path
-    ts = [
-        p
-        for p in base.rglob("*")
-        if p.is_file()
-        and p.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
-        and "node_modules" not in p.parts
-    ]
-    html = [
-        p
-        for p in base.rglob("*")
-        if p.is_file() and p.suffix in {".html", ".htm"} and "node_modules" not in p.parts
-    ]
-    python = [
-        p
-        for p in base.rglob("*")
-        if p.is_file()
-        and p.suffix in {".py", ".pyi"}
-        and not any(part in _PYTHON_SKIP_PARTS for part in p.parts)
-    ]
-    java = [
-        p
-        for p in base.rglob("*")
-        if p.is_file()
-        and p.suffix == ".java"
-        and not any(part in _JAVA_SKIP_PARTS for part in p.parts)
-    ]
-    kotlin = [
-        p
-        for p in base.rglob("*")
-        if p.is_file()
-        and p.suffix in {".kt", ".kts"}
-        and not any(part in _JAVA_SKIP_PARTS for part in p.parts)
-    ]
-    go = [
-        p
-        for p in base.rglob("*")
-        if p.is_file() and p.suffix == ".go" and not any(part in _GO_SKIP_PARTS for part in p.parts)
-    ]
-    ruby = [
-        p
-        for p in base.rglob("*")
-        if p.is_file()
-        and p.suffix in {".rb", ".rake"}
-        # Match skip parts on the path relative to ``base`` so absolute
-        # prefixes like ``/tmp/`` don't trip the Rails-``tmp/`` skip.
-        and not any(part in _RUBY_SKIP_PARTS for part in p.relative_to(base).parts)
-    ]
+    ts = _source_files(
+        base,
+        suffixes={".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"},
+        skipped=IGNORED_SOURCE_DIRS,
+    )
+    html = _source_files(base, suffixes={".html", ".htm"}, skipped=_CONFIG_SKIP_PARTS)
+    python = _source_files(base, suffixes={".py", ".pyi"}, skipped=_PYTHON_SKIP_PARTS)
+    java = _source_files(base, suffixes={".java"}, skipped=_JAVA_SKIP_PARTS)
+    kotlin = _source_files(base, suffixes={".kt", ".kts"}, skipped=_JAVA_SKIP_PARTS)
+    go = _source_files(base, suffixes={".go"}, skipped=_GO_SKIP_PARTS)
+    ruby = _source_files(base, suffixes={".rb", ".rake"}, skipped=_RUBY_SKIP_PARTS)
     php = [
-        p
-        for p in base.rglob("*")
-        if p.is_file()
-        and p.suffix in {".php", ".phtml"}
-        and not any(part in _PHP_SKIP_PARTS for part in p.relative_to(base).parts)
+        path
+        for path in _source_files(base, suffixes={".php", ".phtml"}, skipped=_PHP_SKIP_PARTS)
+        if not _has_skipped_subpath(path, base=base, skipped=_PHP_SKIP_SUBPATHS)
     ]
-    csharp = [
-        p
-        for p in base.rglob("*")
-        if p.is_file()
-        and p.suffix == ".cs"
-        and not any(part in _CSHARP_SKIP_PARTS for part in p.relative_to(base).parts)
-    ]
-    bash = [
-        p
-        for p in base.rglob("*")
-        if p.is_file() and p.suffix in {".sh", ".bash"} and "node_modules" not in p.parts
-    ]
-    yaml_files = [
-        p
-        for p in base.rglob("*")
-        if p.is_file() and p.suffix in {".yml", ".yaml"} and "node_modules" not in p.parts
-    ]
+    csharp = _source_files(base, suffixes={".cs"}, skipped=_CSHARP_SKIP_PARTS)
+    bash = _source_files(base, suffixes={".sh", ".bash"}, skipped=IGNORED_SOURCE_DIRS)
+    yaml_files = _source_files(base, suffixes={".yml", ".yaml"}, skipped=_CONFIG_SKIP_PARTS)
     return ts, html, python, java, go, ruby, php, csharp, kotlin, bash, yaml_files
 
 
@@ -251,6 +226,27 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
     if yaml_files:
         jobs.append(AstJob(kind="yaml", project_root=base, files=yaml_files))
     return jobs
+
+
+def _deduplicate_ast_jobs(
+    jobs: list[AstJob],
+    indexed_files: set[tuple[str, Path]],
+) -> list[AstJob]:
+    """Keep each language/file pair in only one project job."""
+    unique_jobs: list[AstJob] = []
+    for job in jobs:
+        unique_files = [path for path in job.files if (job.kind, path) not in indexed_files]
+        indexed_files.update((job.kind, path) for path in unique_files)
+        if unique_files:
+            unique_jobs.append(
+                AstJob(
+                    kind=job.kind,
+                    project_root=job.project_root,
+                    files=unique_files,
+                    tsconfig=job.tsconfig,
+                )
+            )
+    return unique_jobs
 
 
 def _scip_language_for_project(project: Project) -> str | None:
@@ -457,10 +453,15 @@ def run_prep(  # noqa: PLR0913 - keyword-only orchestration knobs
         if not quiet:
             log.info("skipping AST/SCIP/CodeQL stages — cached results reused")
     else:
+        _clear_source_index(conn)
         scip_lookup = _build_scip_lookup(snap.snapshot_dir, projects, repo_dir)
 
+        indexed_ast_files: set[tuple[str, Path]] = set()
         for project in projects:
-            jobs = _ast_jobs_for_project(snap.snapshot_dir, project)
+            jobs = _deduplicate_ast_jobs(
+                _ast_jobs_for_project(snap.snapshot_dir, project),
+                indexed_ast_files,
+            )
             if not jobs:
                 continue
             files: list[dict] = []
@@ -508,7 +509,10 @@ def run_prep(  # noqa: PLR0913 - keyword-only orchestration knobs
         encoding="utf-8",
     )
 
-    emit_sidecars(conn, snapshot_root=snap.snapshot_dir, sidecars_root=repo_dir / "sidecars")
+    sidecars_root = repo_dir / "sidecars"
+    if not incremental:
+        _clear_generated_sidecars(sidecars_root)
+    emit_sidecars(conn, snapshot_root=snap.snapshot_dir, sidecars_root=sidecars_root)
 
     conn.close()
     return snap, db_path

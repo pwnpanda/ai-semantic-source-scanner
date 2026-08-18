@@ -265,15 +265,221 @@ def test_write_miss_candidates_writes_exploratory_bundles(tmp_path: Path) -> Non
         [source.as_posix()],
     )
 
+    bundles_dir = tmp_path / "miss_bundles"
+    bundles_dir.mkdir()
+    orphan_json = bundles_dir / "B-miss-orphan.json"
+    orphan_markdown = bundles_dir / "B-miss-orphan.md"
+    unrelated = bundles_dir / "reviewer-notes.md"
+    orphan_json.write_text('{"secret":"stale"}', encoding="utf-8")
+    orphan_markdown.write_text("stale secret", encoding="utf-8")
+    unrelated.write_text("keep", encoding="utf-8")
+
     candidates = write_miss_candidates(
         conn,
         out_path=tmp_path / "miss_candidates.jsonl",
-        bundles_dir=tmp_path / "miss_bundles",
+        bundles_dir=bundles_dir,
     )
 
     assert candidates[0]["bundle_json"]
     assert Path(candidates[0]["bundle_json"]).is_file()
     assert Path(candidates[0]["bundle_md"]).is_file()
+    assert not orphan_json.exists()
+    assert not orphan_markdown.exists()
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+def test_write_miss_candidates_redacts_all_credentials_in_shared_context(tmp_path: Path) -> None:
+    conn = _connect(tmp_path)
+    source = tmp_path / "application.yml"
+    source.write_text(
+        """kafka:
+  schema-registry:
+    user-info: first-user:first-secret
+    backup-user-info: ignored
+    user-info: second-user:second-secret
+""",
+        encoding="utf-8",
+    )
+    conn.execute(
+        "INSERT INTO files VALUES (?, 'sha256', 'yaml', 'project', ?)",
+        [source.as_posix(), source.stat().st_size],
+    )
+    bundles_dir = tmp_path / "miss_bundles"
+
+    candidates = write_miss_candidates(
+        conn,
+        out_path=tmp_path / "miss_candidates.jsonl",
+        bundles_dir=bundles_dir,
+    )
+
+    assert len(candidates) == 2
+    rendered = "\n".join(path.read_text(encoding="utf-8") for path in bundles_dir.iterdir())
+    assert "first-secret" not in rendered
+    assert "second-secret" not in rendered
+    assert rendered.count("<redacted source line>") >= 2
+
+
+def test_write_miss_candidates_bounds_bundles_to_review_queue(tmp_path: Path) -> None:
+    conn = _connect(tmp_path)
+    source = tmp_path / "AdminController.kt"
+    source.write_text("fun deleteUser() = Unit\n", encoding="utf-8")
+    conn.execute(
+        "INSERT INTO entrypoints VALUES (NULL, 'http_route', "
+        "'DeleteMapping /admin/users/{id}', ?, 1)",
+        [source.as_posix()],
+    )
+    bundles_dir = tmp_path / "miss_bundles"
+
+    candidates = write_miss_candidates(
+        conn,
+        out_path=tmp_path / "miss_candidates.jsonl",
+        bundles_dir=bundles_dir,
+        max_bundles=1,
+    )
+
+    assert len(candidates) >= 2
+    assert sum("bundle_json" in candidate for candidate in candidates) == 1
+    assert len(list(bundles_dir.glob("B-miss-*.json"))) == 1
+    assert len(list(bundles_dir.glob("B-miss-*.md"))) == 1
+    assert all(candidate["review_fingerprint"] for candidate in candidates)
+
+
+def test_write_miss_candidates_removes_stale_bundle_for_unstaged_current_id(
+    tmp_path: Path,
+) -> None:
+    conn = _connect(tmp_path)
+    source = tmp_path / "api.ts"
+    source.write_text("app.get('/orders/:order_id', handler)\n", encoding="utf-8")
+    conn.execute(
+        "INSERT INTO entrypoints VALUES (NULL, 'http_route', 'app.get /orders/{order_id}', ?, 1)",
+        [source.as_posix()],
+    )
+    candidate_id = str(build_miss_candidates(conn)[0]["id"])
+    bundles_dir = tmp_path / "miss_bundles"
+    bundles_dir.mkdir()
+    stale_json = bundles_dir / f"{candidate_id}.json"
+    stale_markdown = bundles_dir / f"{candidate_id}.md"
+    stale_json.write_text('{"credential":"pre-redaction-value"}', encoding="utf-8")
+    stale_markdown.write_text("pre-redaction-value", encoding="utf-8")
+
+    candidates = write_miss_candidates(
+        conn,
+        out_path=tmp_path / "miss_candidates.jsonl",
+        bundles_dir=bundles_dir,
+        max_bundles=0,
+    )
+
+    assert candidates
+    assert not stale_json.exists()
+    assert not stale_markdown.exists()
+
+
+def test_write_miss_candidates_purges_stale_review_feedback_and_scores(tmp_path: Path) -> None:
+    conn = _connect(tmp_path)
+    source = tmp_path / "api.ts"
+    source.write_text("app.get('/orders/:order_id', handler)\n", encoding="utf-8")
+    conn.execute(
+        "INSERT INTO entrypoints VALUES (NULL, 'http_route', 'app.get /orders/{order_id}', ?, 1)",
+        [source.as_posix()],
+    )
+    candidate_id = str(build_miss_candidates(conn)[0]["id"])
+    conn.execute(
+        """
+        INSERT INTO review_verdicts
+          (
+            nomination_id, finding_id, flow_id, candidate_id, verdict, status,
+            confidence, cwe, title, evidence_json, reviewer, source_path
+          )
+        VALUES (?, ?, '', ?, 'false-positive', 'rejected', 'high', 'CWE-639',
+                'stale verdict', '[]', 'miss_reviewer', '')
+        """,
+        [candidate_id, candidate_id, candidate_id],
+    )
+    conn.execute(
+        """
+        CREATE TABLE adversarial_challenges (
+          finding_id VARCHAR,
+          original_verdict VARCHAR,
+          original_reviewer VARCHAR,
+          challenger_provider VARCHAR,
+          result VARCHAR,
+          rationale VARCHAR,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (finding_id, challenger_provider)
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO adversarial_challenges VALUES "
+        "(?, 'false-positive', 'miss_reviewer', 'codex', 'confirmed', 'stale', DEFAULT)",
+        [candidate_id],
+    )
+    conn.execute(
+        "INSERT INTO candidate_scores "
+        "(candidate_id, stream, score, label, processing_bucket, factors_json, scorer) "
+        "VALUES "
+        "('B-miss-obsolete', 'B', 1.0, 'high', 'report', '[]', 'old'), "
+        "('B-wide-current', 'B', 0.5, 'medium', 'llm-review', '[]', 'nominator')"
+    )
+    done_dir = tmp_path / ".done-miss-review"
+    done_dir.mkdir()
+    (done_dir / candidate_id).write_text("old-fingerprint", encoding="utf-8")
+
+    candidates = write_miss_candidates(conn, out_path=tmp_path / "miss_candidates.jsonl")
+
+    review_count = conn.execute(
+        "SELECT COUNT(*) FROM review_verdicts WHERE reviewer = 'miss_reviewer'"
+    ).fetchone()
+    challenge_count = conn.execute("SELECT COUNT(*) FROM adversarial_challenges").fetchone()
+    score_ids = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT candidate_id FROM candidate_scores WHERE stream = 'B'"
+        ).fetchall()
+    }
+    assert review_count == (0,)
+    assert challenge_count == (0,)
+    assert score_ids == {
+        "B-wide-current",
+        *(str(candidate["id"]) for candidate in candidates),
+    }
+
+    current = next(candidate for candidate in candidates if candidate["id"] == candidate_id)
+    (done_dir / candidate_id).write_text(current["review_fingerprint"], encoding="utf-8")
+    review_dir = tmp_path / "miss_reviews"
+    review_dir.mkdir()
+    (review_dir / f"{candidate_id}.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "classification": "false-positive",
+                "confidence": "high",
+                "rationale": "current verdict",
+                "evidence": [],
+                "proposal": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    conn.execute(
+        """
+        INSERT INTO review_verdicts
+          (
+            nomination_id, finding_id, flow_id, candidate_id, verdict, status,
+            confidence, cwe, title, evidence_json, reviewer, source_path
+          )
+        VALUES (?, ?, '', ?, 'false-positive', 'rejected', 'high', 'CWE-639',
+                'current verdict', '[]', 'miss_reviewer', '')
+        """,
+        [candidate_id, candidate_id, candidate_id],
+    )
+
+    write_miss_candidates(conn, out_path=tmp_path / "miss_candidates.jsonl")
+
+    preserved_count = conn.execute(
+        "SELECT COUNT(*) FROM review_verdicts WHERE reviewer = 'miss_reviewer'"
+    ).fetchone()
+    assert preserved_count == (1,)
 
 
 def test_miss_finder_cli_writes_default_output(tmp_path: Path) -> None:

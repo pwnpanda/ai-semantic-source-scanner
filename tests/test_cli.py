@@ -44,6 +44,7 @@ def test_prep_help_shows_flags() -> None:
     out = _help_text(result.stdout)
     assert "--cache-dir" in out
     assert "--commit" in out
+    assert "trusted source" in out
 
 
 def test_eval_help_shows_run_command() -> None:
@@ -181,6 +182,10 @@ def test_analyze_auto_invokes_miss_review_by_default(
     run_dir = repo / "runs" / "test-run"
     run_dir.mkdir(parents=True)
     (run_dir / "nominations.md").write_text("# Nominations\n", encoding="utf-8")
+    (repo / "miss_candidates.jsonl").write_text(
+        '{"id":"stale-candidate"}\n',
+        encoding="utf-8",
+    )
 
     result = runner.invoke(
         app,
@@ -189,8 +194,9 @@ def test_analyze_auto_invokes_miss_review_by_default(
 
     assert result.exit_code == 0, result.output
     assert "[miss-review]" in result.output
-    # Miss-finder auto-ran → miss_candidates.jsonl exists
+    # Miss-finder regenerated the queue instead of reusing the stale cache.
     assert (repo / "miss_candidates.jsonl").is_file()
+    assert "stale-candidate" not in (repo / "miss_candidates.jsonl").read_text(encoding="utf-8")
 
 
 def test_analyze_skip_miss_review_flag_skips_auto_invoke(
@@ -809,6 +815,7 @@ def test_scan_skip_hitl_runs_stages_in_order(tmp_path: Path, monkeypatch) -> Non
         "gate-3",
         "report",
     ]
+    assert calls[0][-2:] == ["--engine", "hybrid"]
     # Gates auto-accept under --skip-hitl.
     assert calls[2][-2:] == ["gate-1", "--yes"]
     assert calls[4][-2:] == ["gate-2", "--yes"]

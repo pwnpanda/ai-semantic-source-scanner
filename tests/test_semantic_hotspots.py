@@ -9,7 +9,10 @@ from time import perf_counter
 
 import duckdb
 import pytest
+from typer.testing import CliRunner
 
+from ai_codescan.cli import app
+from ai_codescan.config import compute_repo_id
 from ai_codescan.eval import load_eval_cases, run_ai_codescan_case
 from ai_codescan.miss_finder import (
     _stable_candidate_id,
@@ -36,6 +39,8 @@ EXPECTED_VECTORS = {
     "injection/content-disposition-filename",
     "secrets/yaml-user-info-literal",
 }
+
+runner = CliRunner()
 
 
 def _has_node() -> bool:
@@ -134,6 +139,65 @@ def test_semantic_hotspots_are_ranked_before_contextual_route_smells(tmp_path: P
         candidate["signal_strength"] in {"strong", "deterministic"}
         for candidate in written[:first_contextual]
     )
+
+
+@pytest.mark.skipif(not _has_node(), reason="node runtime required for Kotlin AST extraction")
+def test_yaml_credential_is_redacted_from_evidence_bundles(tmp_path: Path) -> None:
+    cache_root = tmp_path / "redaction-cache"
+    _snapshot, db_path = run_prep(
+        POSITIVE,
+        cache_root=cache_root,
+        engine="none",
+        bug_classes=[],
+        quiet=True,
+    )
+    bundles_dir = tmp_path / "bundles"
+    conn = duckdb.connect(str(db_path))
+    try:
+        write_miss_candidates(
+            conn,
+            out_path=tmp_path / "candidates.jsonl",
+            bundles_dir=bundles_dir,
+        )
+    finally:
+        conn.close()
+
+    rendered_bundles = "\n".join(path.read_text(encoding="utf-8") for path in bundles_dir.iterdir())
+    assert "synthetic-password" not in rendered_bundles
+    assert "<redacted source line>" in rendered_bundles
+
+
+@pytest.mark.skipif(not _has_node(), reason="node runtime required for Kotlin AST extraction")
+def test_analyze_command_stages_semantic_hotspots_in_normal_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_root = tmp_path / "workflow-cache"
+    _snapshot, _db_path = run_prep(
+        POSITIVE,
+        cache_root=cache_root,
+        engine="none",
+        bug_classes=[],
+        quiet=True,
+    )
+    repo_id = compute_repo_id(POSITIVE)
+    run_dir = cache_root / repo_id / "runs" / "test-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "nominations.md").write_text("# Nominations\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", "/nonexistent")
+
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache_root), "analyze", "--repo-id", repo_id],
+    )
+
+    assert result.exit_code == 0, result.output
+    candidates_path = cache_root / repo_id / "miss_candidates.jsonl"
+    candidates = [
+        json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines()
+    ]
+    vectors = {str(candidate["vector"]) for candidate in candidates}
+    assert vectors >= EXPECTED_VECTORS
 
 
 @pytest.mark.skipif(not _has_node(), reason="node runtime required for Kotlin AST extraction")

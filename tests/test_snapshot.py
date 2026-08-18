@@ -105,6 +105,25 @@ def test_snapshot_cp_for_non_git_target(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_snapshot_cp_excludes_local_dependencies_and_symlinks(tmp_path: Path) -> None:
+    target = tmp_path / "src"
+    target.mkdir()
+    (target / "app.js").write_text("export const live = true;\n", encoding="utf-8")
+    dependency = target / "node_modules" / "package"
+    dependency.mkdir(parents=True)
+    (dependency / "index.js").write_text("export const vendored = true;\n", encoding="utf-8")
+    external = tmp_path / "external.yml"
+    external.write_text("password: external-secret\n", encoding="utf-8")
+    (target / "linked.yml").symlink_to(external)
+
+    result = take_snapshot(target, cache_dir=tmp_path / "cache")
+
+    assert (result.snapshot_dir / "app.js").is_file()
+    assert not (result.snapshot_dir / "node_modules").exists()
+    assert not (result.snapshot_dir / "linked.yml").exists()
+
+
+@pytest.mark.integration
 def test_snapshot_marks_files_read_only(tmp_path: Path) -> None:
     target = tmp_path / "src"
     target.mkdir()
@@ -129,6 +148,25 @@ def test_snapshot_cp_idempotent_when_manifest_matches(tmp_path: Path) -> None:
 
     assert first.skipped is False
     assert second.skipped is True
+
+
+@pytest.mark.integration
+def test_snapshot_cp_refreshes_when_target_changes(tmp_path: Path) -> None:
+    target = tmp_path / "src"
+    target.mkdir()
+    stale = target / "stale.yml"
+    stale.write_text("on: push\n", encoding="utf-8")
+    cache = tmp_path / "cache"
+
+    first = take_snapshot(target, cache_dir=cache)
+    stale.unlink()
+    (target / "current.yml").write_text("on: pull_request\n", encoding="utf-8")
+    second = take_snapshot(target, cache_dir=cache)
+
+    assert first.skipped is False
+    assert second.skipped is False
+    assert not (second.snapshot_dir / "stale.yml").exists()
+    assert (second.snapshot_dir / "current.yml").is_file()
 
 
 def test_force_remove_clears_a_read_only_snapshot_tree(tmp_path: Path) -> None:

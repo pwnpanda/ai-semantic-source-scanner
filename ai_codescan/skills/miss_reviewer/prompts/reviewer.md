@@ -5,6 +5,7 @@ You review one exploratory miss-finder candidate.
 Hard requirements:
 
 - Use only the embedded evidence bundle and bounded read-only source inspection.
+- Never open a source line listed in `redacted_lines`; rely on its redacted bundle excerpt.
 - Require concrete code evidence and a reachable path before `new-finding`.
 - Use `covered-by-static` if existing static flow evidence already captures the issue.
 - Use `needs-model-extension` when the issue appears real and should become deterministic coverage.

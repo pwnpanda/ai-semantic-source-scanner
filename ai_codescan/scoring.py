@@ -99,6 +99,34 @@ _SEMANTIC_SIGNAL_WEIGHTS = {
 }
 
 
+def select_review_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    """Select a score-ranked queue while retaining issue-family diversity."""
+    if max_candidates <= 0:
+        return []
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (-float(item[1].get("score") or 0.0), item[0]),
+    )
+    selected: list[dict[str, Any]] = []
+    selected_indices: set[int] = set()
+    selected_vectors: set[str] = set()
+    for index, candidate in ranked:
+        vector = str(candidate.get("vector") or candidate.get("concern") or "")
+        if vector in selected_vectors:
+            continue
+        selected.append(candidate)
+        selected_indices.add(index)
+        selected_vectors.add(vector)
+        if len(selected) == max_candidates:
+            return selected
+    selected.extend(candidate for index, candidate in ranked if index not in selected_indices)
+    return selected[:max_candidates]
+
+
 @dataclass(frozen=True, slots=True)
 class ScoreFactor:
     name: str

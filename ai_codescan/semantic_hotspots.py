@@ -288,6 +288,7 @@ class SemanticHotspot:
     signal_strength: SignalStrength = "strong"
     requires_llm_validation: bool = True
     related_lines: tuple[int, ...] = ()
+    redacted_lines: tuple[int, ...] = ()
 
 
 def _first_line(
@@ -1143,6 +1144,7 @@ def _literal_user_info_hotspots(
                         evidence="user-info: <redacted literal>",
                         signal_strength="deterministic",
                         requires_llm_validation=False,
+                        redacted_lines=(line_no,),
                     )
                 )
         container = _YAML_CONTAINER_RE.match(line_text)

@@ -28,6 +28,8 @@ and sometimes `related_lines`:
   but deployment reachability and impact may still be conditional.
 - A `strong` semantic pattern is a nomination, not a finding. Trace the full
   business operation before classifying it.
+- Never open a source line listed in `redacted_lines`; rely on the redacted
+  excerpt already present in the evidence bundle.
 - Never reproduce a credential literal. Refer to its file and line with the
   value redacted.
 

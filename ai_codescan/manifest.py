@@ -9,7 +9,29 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 _HASH_BUF = 65_536  # 64 KiB
-_DOT_DIR_SKIP = frozenset({".git", ".hg", ".svn", "node_modules", ".venv", "__pycache__"})
+IGNORED_SOURCE_DIRS = frozenset(
+    {
+        ".git",
+        ".gradle",
+        ".hg",
+        ".idea",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "out",
+        "site-packages",
+        "target",
+        "vendor",
+        "venv",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,16 +64,16 @@ def _hash_file(path: Path) -> str:
 def build_manifest(root: Path) -> list[ManifestEntry]:
     """Walk ``root`` and return one ``ManifestEntry`` per regular file.
 
-    Skips dotted directories like ``.git`` and known noise dirs like
-    ``node_modules``. Hashes are SHA-256; paths are stored POSIX-style
-    relative to ``root``.
+    Skips version-control metadata, local dependency trees, and generated
+    build output. Hashes are SHA-256; paths are stored POSIX-style relative
+    to ``root``.
     """
     entries: list[ManifestEntry] = []
     root = root.resolve()
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
-        if any(part in _DOT_DIR_SKIP for part in path.relative_to(root).parts):
+        if any(part in IGNORED_SOURCE_DIRS for part in path.relative_to(root).parts):
             continue
         rel = path.relative_to(root).as_posix()
         stat = path.stat()

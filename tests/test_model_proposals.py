@@ -88,6 +88,134 @@ def test_proposals_from_needs_model_extension_verdicts(tmp_path: Path) -> None:
     assert proposals[0].language == "csharp"
 
 
+def test_proposals_from_verdicts_filters_out_stale_nominations(tmp_path: Path) -> None:
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    for nomination_id in ("B-miss-current", "B-miss-stale"):
+        conn.execute(
+            """
+            INSERT INTO review_verdicts
+              (
+                nomination_id, finding_id, flow_id, candidate_id, verdict, status,
+                confidence, cwe, title, evidence_json, reviewer, source_path
+              )
+            VALUES
+              (?, ?, '', ?, 'needs-model-extension', 'unverified',
+               'medium', 'CWE-639', 'model gap', '[]', 'miss_reviewer', ?)
+            """,
+            [
+                nomination_id,
+                nomination_id.replace("B-", "F-"),
+                nomination_id,
+                f"findings/{nomination_id}.md",
+            ],
+        )
+
+    proposals = proposals_from_verdicts(
+        conn,
+        nomination_ids=frozenset({"B-miss-current"}),
+    )
+
+    assert [proposal.nomination_id for proposal in proposals] == ["B-miss-current"]
+
+
+def test_proposals_from_verdicts_preserves_review_proposal_details(tmp_path: Path) -> None:
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO review_verdicts
+          (
+            nomination_id, finding_id, flow_id, candidate_id, verdict, status,
+            confidence, cwe, title, evidence_json, reviewer, source_path
+          )
+        VALUES
+          (
+            'B-miss-current', 'F-miss-current', '', 'B-miss-current',
+            'needs-model-extension', 'unverified', 'medium', 'CWE-639',
+            'model gap', '[]', 'miss_reviewer', 'findings/F-miss-current.md'
+          )
+        """
+    )
+
+    [proposal] = proposals_from_verdicts(
+        conn,
+        nomination_ids=frozenset({"B-miss-current"}),
+        proposal_details={
+            "B-miss-current": {
+                "language": "kotlin",
+                "framework": "spring",
+                "source_pattern": "route parameter",
+                "sink_pattern": "repository lookup",
+                "sanitizer_pattern": "ownership check",
+                "vulnerable_example": "lookup(id)",
+                "safe_example": "lookupOwned(id, principal)",
+                "target_engine": "joern",
+                "eval_target": "eval-targets/kotlin-bola",
+                "eval_positive": "eval-targets/kotlin-bola",
+                "eval_negative": "eval-targets/kotlin-bola-safe",
+                "receiver_regex": "Repository",
+            }
+        },
+    )
+
+    assert proposal.language == "kotlin"
+    assert proposal.framework == "spring"
+    assert proposal.source_pattern == "route parameter"
+    assert proposal.sink_pattern == "repository lookup"
+    assert proposal.sanitizer_pattern == "ownership check"
+    assert proposal.vulnerable_example == "lookup(id)"
+    assert proposal.safe_example == "lookupOwned(id, principal)"
+    assert proposal.target_engine == "joern"
+    assert proposal.eval_target == "eval-targets/kotlin-bola"
+    assert proposal.eval_positive == "eval-targets/kotlin-bola"
+    assert proposal.eval_negative == "eval-targets/kotlin-bola-safe"
+    assert proposal.receiver_regex == "Repository"
+
+
+@pytest.mark.parametrize(
+    ("cwe", "expected_bug_class"),
+    [
+        ("CWE-90", "ldap-injection"),
+        ("CWE-93", "crlf-injection"),
+        ("CWE-532", "sensitive-logging"),
+        ("CWE-601", "open-redirect"),
+        ("CWE-611", "xxe"),
+        ("CWE-643", "xpath-injection"),
+        ("CWE-943", "nosqli"),
+        ("CWE-1321", "prototype-pollution"),
+        ("CWE-1333", "redos"),
+        ("CWE-1336", "ssti"),
+    ],
+)
+def test_proposals_map_new_engine_cwes_to_taxonomy(
+    tmp_path: Path,
+    cwe: str,
+    expected_bug_class: str,
+) -> None:
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO review_verdicts
+          (
+            nomination_id, finding_id, flow_id, candidate_id, verdict, status,
+            confidence, cwe, title, evidence_json, reviewer, source_path
+          )
+        VALUES
+          (
+            'N-new', 'F-new', '', 'N-new', 'needs-model-extension', 'unverified',
+            'medium', ?, 'model gap', '[]', 'miss_reviewer', 'findings/F-new.md'
+          )
+        """,
+        [cwe],
+    )
+
+    proposals = proposals_from_verdicts(conn)
+
+    assert proposals[0].bug_class == expected_bug_class
+
+
 def test_write_list_and_accept_model_proposal(tmp_path: Path) -> None:
     proposals_dir = tmp_path / "model_proposals"
     [path] = write_model_proposals([_proposal()], proposals_dir=proposals_dir)

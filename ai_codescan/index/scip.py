@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_codescan.manifest import IGNORED_SOURCE_DIRS
 from ai_codescan.third_party import scip_pb2
 
 
@@ -112,6 +115,51 @@ def _build_scip_python(project_root: Path, *, scip_path: Path, project_id: str) 
     shutil.move(str(produced), str(scip_path))
 
 
+def _make_owner_writable(root: Path) -> None:
+    """Make a copied build workspace writable without following symlinks."""
+    root.chmod(root.stat().st_mode | stat.S_IWUSR)
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            continue
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+
+
+def _ignore_scip_java_workspace_entries(directory: str, entries: list[str]) -> set[str]:
+    """Omit dependency trees, generated output, and links from a build workspace."""
+    parent = Path(directory)
+    return {
+        entry for entry in entries if entry in IGNORED_SOURCE_DIRS or (parent / entry).is_symlink()
+    }
+
+
+def _copy_scip_java_workspace(project_root: Path, *, destination: Path) -> Path:
+    workspace = destination / "project"
+    shutil.copytree(
+        project_root,
+        workspace,
+        ignore=_ignore_scip_java_workspace_entries,
+    )
+    _make_owner_writable(workspace)
+    return workspace
+
+
+def _run_scip_java(workspace: Path, *, scip_path: Path) -> None:
+    subprocess.run(  # noqa: S603 - literal argv, no shell
+        ["scip-java", "index", "--output", str(scip_path)],  # noqa: S607
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+    )
+    if scip_path.is_file():
+        return
+    produced = workspace / "index.scip"
+    if not produced.is_file():
+        raise RuntimeError(
+            f"scip-java did not produce a SCIP index at {scip_path} (also checked {produced})"
+        )
+    shutil.move(str(produced), str(scip_path))
+
+
 def _build_scip_java(project_root: Path, *, scip_path: Path) -> None:
     """Run ``scip-java index`` and move the produced index to ``scip_path``.
 
@@ -134,23 +182,14 @@ def _build_scip_java(project_root: Path, *, scip_path: Path) -> None:
             "scip-java is not on PATH; install via "
             "coursier install scip-java (https://sourcegraph.github.io/scip-java/)"
         )
-    # S603/S607: literal argv with "scip-java" resolved on PATH; no shell.
-    subprocess.run(  # noqa: S603
-        ["scip-java", "index", "--output", str(scip_path)],  # noqa: S607
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-    )
-    # ``scip-java index --output`` honours the flag for newer releases;
-    # older versions ignore it and emit ``index.scip`` in cwd. Be
-    # tolerant: rename the cwd-version into place if --output was a no-op.
-    if not scip_path.is_file():
-        produced = project_root / "index.scip"
-        if not produced.is_file():
-            raise RuntimeError(
-                f"scip-java did not produce a SCIP index at {scip_path} (also checked {produced})"
-            )
-        shutil.move(str(produced), str(scip_path))
+    scip_path.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="scip-java-",
+        dir=scip_path.parent,
+        ignore_cleanup_errors=True,
+    ) as temp_dir:
+        workspace = _copy_scip_java_workspace(project_root, destination=Path(temp_dir))
+        _run_scip_java(workspace, scip_path=scip_path)
 
 
 def _build_scip_go(project_root: Path, *, scip_path: Path) -> None:

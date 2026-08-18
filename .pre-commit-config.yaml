@@ -15,9 +15,10 @@ repos:
         name: ruff check
         language: system
         entry: uv run ruff check
+        args: [--force-exclude]
         types: [python]
-        # ``ai_codescan/third_party/`` is generated protobuf code that
-        # mirrors upstream output; never lint or reformat it.
+        # Ruff's project configuration excludes generated protobuf and
+        # deliberately vulnerable eval fixtures. Honor it for explicit paths.
         exclude: ^ai_codescan/third_party/
         require_serial: false
 
@@ -25,6 +26,7 @@ repos:
         name: ruff format
         language: system
         entry: uv run ruff format
+        args: [--force-exclude]
         types: [python]
         exclude: ^ai_codescan/third_party/
         require_serial: false
@@ -32,7 +34,7 @@ repos:
       - id: ty-check
         name: ty check
         language: system
-        entry: uv run ty check ai_codescan/
+        entry: uv run ty check --error-on-warning ai_codescan/
         # ``ty check`` resolves the whole project; running it per-file is
         # slower than running it once on the package root.
         pass_filenames: false

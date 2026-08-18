@@ -25,6 +25,7 @@ secscan = "ai_codescan.cli:secscan_main"
 [tool.uv.build-backend]
 module-name = "ai_codescan"
 module-root = ""
+source-exclude = ["node_modules"]
 
 [dependency-groups]
 dev = [

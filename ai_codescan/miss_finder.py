@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from bisect import bisect_left
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +14,12 @@ from typing import Any
 import duckdb
 
 from ai_codescan.evidence import build_evidence_bundle, write_evidence_bundle
-from ai_codescan.scoring import attach_scores, persist_candidate_scores, score_candidates
+from ai_codescan.scoring import (
+    attach_scores,
+    persist_candidate_scores,
+    score_candidates,
+    select_review_candidates,
+)
 from ai_codescan.semantic_hotspots import SemanticHotspot, discover_semantic_hotspots
 
 _RESOURCE_ID_RE = re.compile(
@@ -36,6 +43,7 @@ _AUTHZ_RE = re.compile(
 )
 _MIN_FLOW_STEP_PARTS = 2
 _FLOW_COVERAGE_LINE_WINDOW = 5
+_AUTHZ_LINE_WINDOW = 80
 _MAX_DISPLAY_TEXT = 500
 _VECTOR_CWE = {
     "authz/bola": "CWE-639",
@@ -45,6 +53,19 @@ _VECTOR_CWE = {
 _HIGH_CONFIDENCE_FLOW_VALUES = {"definite", "high"}
 _ID_HASH_LEN = 12
 _CACHE_REPO_COMPONENT_RE = re.compile(r".+-[0-9a-f]{8}$", re.IGNORECASE)
+_REVIEW_FINGERPRINT_VERSION = "miss-review-input-v3"
+_MISS_REVIEW_CLASSIFICATIONS = frozenset(
+    {
+        "new-finding",
+        "covered-by-static",
+        "false-positive",
+        "needs-model-extension",
+        "needs-human-context",
+    }
+)
+_REVIEW_PROMPT_PATH = (
+    Path(__file__).resolve().parent / "skills" / "miss_reviewer" / "prompts" / "reviewer.md"
+)
 
 
 def _canonical_candidate_file(file: str) -> str:
@@ -94,11 +115,13 @@ class MissCandidate:
     signal_strength: str = "contextual"
     requires_llm_validation: bool = True
     related_lines: tuple[int, ...] = ()
+    redacted_lines: tuple[int, ...] = ()
 
     def to_jsonable(self) -> dict[str, Any]:
         record = asdict(self)
         record["overlap_with_deterministic"] = list(self.overlap_with_deterministic)
         record["related_lines"] = list(self.related_lines)
+        record["redacted_lines"] = list(self.redacted_lines)
         return record
 
 
@@ -120,33 +143,24 @@ def _compact_text(value: str, *, max_chars: int = _MAX_DISPLAY_TEXT) -> str:
     return f"{compact[: max_chars - 3]}..."
 
 
-def _nearby_authz_signal(conn: duckdb.DuckDBPyConnection, *, file: str, line: int) -> bool:
-    rows = conn.execute(
-        """
-        SELECT display_name
-        FROM symbols
-        WHERE file = ?
-          AND ABS(range_start - ?) <= 80
-        """,
-        [file, line],
-    ).fetchall()
-    if any(_AUTHZ_RE.search(str(name or "")) for (name,) in rows):
-        return True
-    xrefs = conn.execute(
-        """
-        SELECT kind
-        FROM xrefs
-        WHERE file = ?
-          AND ABS(line - ?) <= 80
-        """,
-        [file, line],
-    ).fetchall()
-    return any(_AUTHZ_RE.search(str(kind or "")) for (kind,) in xrefs)
+def _authz_lines_by_file(conn: duckdb.DuckDBPyConnection) -> dict[str, list[int]]:
+    lines_by_file: dict[str, list[int]] = defaultdict(list)
+    symbol_rows = conn.execute("SELECT file, range_start, display_name FROM symbols").fetchall()
+    for file, line, name in symbol_rows:
+        if file and line is not None and _AUTHZ_RE.search(str(name or "")):
+            lines_by_file[str(file)].append(int(line))
+    xref_rows = conn.execute("SELECT file, line, kind FROM xrefs").fetchall()
+    for file, line, kind in xref_rows:
+        if file and line is not None and _AUTHZ_RE.search(str(kind or "")):
+            lines_by_file[str(file)].append(int(line))
+    return {file: sorted(lines) for file, lines in lines_by_file.items()}
 
 
-def _covered_cwes_by_flow(conn: duckdb.DuckDBPyConnection, *, file: str, line: int) -> set[str]:
+def _flow_coverage_by_file(
+    conn: duckdb.DuckDBPyConnection,
+) -> dict[str, list[tuple[int, str]]]:
     rows = conn.execute("SELECT cwe, confidence, steps_json FROM flows").fetchall()
-    covered: set[str] = set()
+    coverage_by_file: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for cwe, confidence, steps_json in rows:
         if str(confidence or "").lower() not in _HIGH_CONFIDENCE_FLOW_VALUES:
             continue
@@ -162,13 +176,28 @@ def _covered_cwes_by_flow(conn: duckdb.DuckDBPyConnection, *, file: str, line: i
                 step_line = int(step[1] or 0)
             except (TypeError, ValueError):
                 continue
-            if step_file == file and abs(step_line - line) <= _FLOW_COVERAGE_LINE_WINDOW:
-                covered.add(str(cwe or ""))
-    return covered
+            coverage_by_file[step_file].append((step_line, str(cwe or "")))
+    return {file: sorted(coverage) for file, coverage in coverage_by_file.items()}
+
+
+def _has_line_near(lines: list[int], target: int, *, window: int) -> bool:
+    index = bisect_left(lines, target - window)
+    return index < len(lines) and lines[index] <= target + window
+
+
+def _covered_cwes_near(coverage: list[tuple[int, str]], line: int) -> frozenset[str]:
+    index = bisect_left(coverage, (line - _FLOW_COVERAGE_LINE_WINDOW, ""))
+    covered: set[str] = set()
+    while index < len(coverage) and coverage[index][0] <= line + _FLOW_COVERAGE_LINE_WINDOW:
+        covered.add(coverage[index][1])
+        index += 1
+    return frozenset(covered)
 
 
 def build_risk_map(conn: duckdb.DuckDBPyConnection) -> list[RiskMapEntry]:
     """Build per-entrypoint semantic risk context for miss-finder rules."""
+    authz_lines = _authz_lines_by_file(conn)
+    flow_coverage = _flow_coverage_by_file(conn)
     rows = conn.execute(
         """
         SELECT symbol_id, kind, signature, file, line
@@ -190,8 +219,12 @@ def build_risk_map(conn: duckdb.DuckDBPyConnection) -> list[RiskMapEntry]:
                 file=file_s,
                 line=line,
                 haystack=haystack,
-                has_authz=_nearby_authz_signal(conn, file=file_s, line=line),
-                covered_cwes=frozenset(_covered_cwes_by_flow(conn, file=file_s, line=line)),
+                has_authz=_has_line_near(
+                    authz_lines.get(file_s, []),
+                    line,
+                    window=_AUTHZ_LINE_WINDOW,
+                ),
+                covered_cwes=_covered_cwes_near(flow_coverage.get(file_s, []), line),
             )
         )
     return entries
@@ -313,8 +346,121 @@ def _append_semantic_hotspot(
             signal_strength=hotspot.signal_strength,
             requires_llm_validation=hotspot.requires_llm_validation,
             related_lines=hotspot.related_lines,
+            redacted_lines=hotspot.redacted_lines,
         )
     )
+
+
+def _clear_generated_bundles(bundles_dir: Path) -> None:
+    """Remove generated bundles before replacing them with current evidence."""
+    if not bundles_dir.is_dir():
+        return
+    for suffix in ("json", "md"):
+        for bundle_path in bundles_dir.glob(f"B-miss-*.{suffix}"):
+            bundle_path.unlink(missing_ok=True)
+
+
+def _review_input_fingerprint(
+    candidate: dict[str, Any],
+    *,
+    prompt_sha256: str,
+    source_sha256: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "candidate": candidate,
+            "prompt_sha256": prompt_sha256,
+            "source_sha256": source_sha256,
+            "version": _REVIEW_FINGERPRINT_VERSION,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _redactions_by_file(candidates: list[dict[str, Any]]) -> dict[str, list[int]]:
+    """Return every source line that must be hidden in bundles for each file."""
+    by_file: dict[str, set[int]] = {}
+    for candidate in candidates:
+        file = str(candidate.get("file") or "")
+        if not file:
+            continue
+        lines = candidate.get("redacted_lines") or []
+        if not isinstance(lines, (list, tuple)):
+            continue
+        by_file.setdefault(file, set()).update(
+            line for raw_line in lines if (line := _positive_int(raw_line)) is not None
+        )
+    return {file: sorted(lines) for file, lines in by_file.items()}
+
+
+def _positive_int(value: object) -> int | None:
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _table_exists(conn: duckdb.DuckDBPyConnection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+        [table],
+    ).fetchone()
+    return row is not None and int(row[0]) > 0
+
+
+def _marker_matches(review_state_dir: Path, candidate_id: str, fingerprint: str) -> bool:
+    marker = review_state_dir / ".done-miss-review" / candidate_id
+    review_path = review_state_dir / "miss_reviews" / f"{candidate_id}.json"
+    try:
+        if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != fingerprint:
+            return False
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+        return (
+            isinstance(review, dict)
+            and str(review.get("candidate_id") or "") == candidate_id
+            and str(review.get("classification") or "") in _MISS_REVIEW_CLASSIFICATIONS
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def _purge_stale_miss_feedback(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    candidate_fingerprints: dict[str, str],
+    review_state_dir: Path,
+) -> None:
+    """Discard persisted review signals that no longer match current source."""
+    if not _table_exists(conn, "review_verdicts"):
+        return
+    rows = conn.execute(
+        """
+        SELECT COALESCE(NULLIF(candidate_id, ''), nomination_id)
+        FROM review_verdicts
+        WHERE reviewer = 'miss_reviewer'
+        """
+    ).fetchall()
+    stale_ids = {
+        str(candidate_id or "")
+        for (candidate_id,) in rows
+        if not (fingerprint := candidate_fingerprints.get(str(candidate_id or "")))
+        or not _marker_matches(review_state_dir, str(candidate_id or ""), fingerprint)
+    }
+    if not stale_ids:
+        return
+    parameters = [(candidate_id,) for candidate_id in stale_ids]
+    conn.executemany(
+        "DELETE FROM review_verdicts WHERE reviewer = 'miss_reviewer' AND candidate_id = ?",
+        parameters,
+    )
+    if _table_exists(conn, "adversarial_challenges"):
+        conn.executemany(
+            "DELETE FROM adversarial_challenges WHERE finding_id = ?",
+            parameters,
+        )
 
 
 def write_miss_candidates(
@@ -322,9 +468,39 @@ def write_miss_candidates(
     *,
     out_path: Path,
     bundles_dir: Path | None = None,
+    max_bundles: int | None = None,
+    review_state_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     candidates = build_miss_candidates(conn)
+    redactions_by_file = _redactions_by_file(candidates)
+    candidates = [
+        {
+            **candidate,
+            "redacted_lines": redactions_by_file.get(str(candidate.get("file") or ""), []),
+        }
+        for candidate in candidates
+    ]
+    prompt_sha256 = hashlib.sha256(_REVIEW_PROMPT_PATH.read_bytes()).hexdigest()
+    source_digests = {
+        str(path): str(sha256 or "")
+        for path, sha256 in conn.execute("SELECT path, sha256 FROM files").fetchall()
+    }
+    candidate_fingerprints = {
+        str(candidate.get("id") or ""): _review_input_fingerprint(
+            candidate,
+            prompt_sha256=prompt_sha256,
+            source_sha256=source_digests.get(str(candidate.get("file") or ""), ""),
+        )
+        for candidate in candidates
+        if candidate.get("id")
+    }
+    _purge_stale_miss_feedback(
+        conn,
+        candidate_fingerprints=candidate_fingerprints,
+        review_state_dir=review_state_dir or out_path.parent,
+    )
     scores = score_candidates(conn, candidates)
+    conn.execute("DELETE FROM candidate_scores WHERE candidate_id LIKE 'B-miss-%'")
     persist_candidate_scores(conn, scores)
     enriched = attach_scores(candidates, scores)
     enriched.sort(
@@ -333,16 +509,29 @@ def write_miss_candidates(
             str(candidate.get("id") or ""),
         )
     )
+    candidates_with_bundles = (
+        enriched
+        if max_bundles is None
+        else select_review_candidates(enriched, max_candidates=max_bundles)
+    )
+    bundle_candidate_ids = {str(candidate.get("id") or "") for candidate in candidates_with_bundles}
+    if bundles_dir is not None:
+        _clear_generated_bundles(bundles_dir)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     written_candidates: list[dict[str, Any]] = []
     with out_path.open("w", encoding="utf-8") as f:
         for candidate in enriched:
-            output_candidate = candidate
-            if bundles_dir is not None:
-                bundle = build_evidence_bundle(conn, candidate)
+            review_candidate = candidate
+            candidate_id = str(review_candidate.get("id") or "")
+            output_candidate = {
+                **review_candidate,
+                "review_fingerprint": candidate_fingerprints.get(candidate_id, ""),
+            }
+            if bundles_dir is not None and candidate_id in bundle_candidate_ids:
+                bundle = build_evidence_bundle(conn, review_candidate)
                 bundle_json, bundle_md = write_evidence_bundle(bundle, bundles_dir=bundles_dir)
                 output_candidate = {
-                    **candidate,
+                    **output_candidate,
                     "bundle_json": str(bundle_json),
                     "bundle_md": str(bundle_md),
                 }

@@ -146,7 +146,7 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
         str,
         typer.Option(
             "--engine",
-            help="Static engine to run (Phase 1: only 'codeql' is supported).",
+            help="Static prep engine: hybrid (recommended), codeql, or llm-heavy.",
         ),
     ] = "codeql",
     target_bug_class: Annotated[
@@ -164,7 +164,11 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
         ),
     ] = False,
 ) -> None:
-    """Snapshot, detect, AST, SCIP, then run the chosen engine(s) and ingest into DuckDB."""
+    """Snapshot, detect, AST, SCIP, then run engines and ingest into DuckDB.
+
+    Scan trusted source only: some SCIP and CodeQL indexers execute the
+    target project's build tooling outside a sandbox.
+    """
     if engine not in {"codeql", "llm-heavy", "hybrid"}:
         typer.echo(
             f"--engine {engine} is not supported. "
@@ -589,6 +593,7 @@ def miss_finder(
             conn,
             out_path=out_path,
             bundles_dir=bundle_output_dir,
+            review_state_dir=repo_dir,
         )
     finally:
         conn.close()
@@ -1884,19 +1889,21 @@ def analyze(  # noqa: PLR0913 - Typer command options are intentionally explicit
     if skip_miss_review or deterministic_only:
         return
     candidates_path = repo_dir / "miss_candidates.jsonl"
-    if not candidates_path.is_file():
-        # User didn't run miss-finder; generate the candidates now so the
-        # one-command workflow doesn't ask the user to do prep steps.
-        typer.echo("[miss-review] auto-generating miss candidates first")
-        conn = duckdb.connect(str(db_path))
-        try:
-            write_miss_candidates(
-                conn,
-                out_path=candidates_path,
-                bundles_dir=repo_dir / "miss_bundles",
-            )
-        finally:
-            conn.close()
+    # Always rebuild from the current index. Reusing an old JSONL after a new
+    # prep silently hides newly introduced source shapes and newly installed
+    # miss-finder rules.
+    typer.echo("[miss-review] refreshing miss candidates from the current index")
+    conn = duckdb.connect(str(db_path))
+    try:
+        write_miss_candidates(
+            conn,
+            out_path=candidates_path,
+            bundles_dir=repo_dir / "miss_bundles",
+            max_bundles=miss_review_max_candidates,
+            review_state_dir=repo_dir,
+        )
+    finally:
+        conn.close()
     from ai_codescan.miss_review import run_miss_review  # noqa: PLC0415
 
     result = run_miss_review(
@@ -2150,6 +2157,13 @@ def scan(  # noqa: PLR0913 - Typer command surface is intentionally explicit
     ] = False,
     llm_provider: Annotated[str, typer.Option("--llm-provider")] = "claude",
     llm_model: Annotated[str, typer.Option("--llm-model")] = "",
+    engine: Annotated[
+        str,
+        typer.Option(
+            "--engine",
+            help="Static prep engine: hybrid (recommended), codeql, or llm-heavy.",
+        ),
+    ] = "hybrid",
     report_dir: Annotated[
         Path | None,
         typer.Option("--report-dir", help="Where to write the HTML report (default: ./report/)."),
@@ -2193,7 +2207,7 @@ def scan(  # noqa: PLR0913 - Typer command surface is intentionally explicit
         typer.echo(f"{msg} — non-fatal, continuing", err=True)
         return False
 
-    _stage("prep", str(target))
+    _stage("prep", str(target), "--engine", engine)
     _stage("nominate", *llm_args)
     if skip_hitl:
         _stage("gate-1", "--yes")
