@@ -20,6 +20,10 @@
  *   - open redirect (CWE-601): req.* → res.redirect / sendRedirect / etc.
  *   - SSTI (CWE-1336): req.* → render_template_string (template arg)
  *   - email/CRLF injection (CWE-93): req.* → mailer.send / SMTP fields
+ *   - CSPT (CWE-22, cspt): client-side path-section URL concat (Phase 19)
+ *   - XXE (CWE-611): req.* → XML parse entry points (Phase 20)
+ *   - prototype pollution (CWE-1321): req.body → deep-merge helpers
+ *   - response splitting (CWE-93, header.write): req.* → setHeader/addHeader
  *
  * Strategy: Joern's interprocedural data-flow engine via reachableByFlows.
  * For each sink call, we ask the engine "is any source reachable to this
@@ -86,7 +90,14 @@ import java.security.MessageDigest
           ("CWE-22",  "fs.read",       "(?i)readText"),
           ("CWE-502", "deser.unsafe",  "(?i)readObject"),
           // Open redirect — Spring on Kotlin reuses Java's HttpServletResponse.
-          ("CWE-601", "open.redirect", "(?i)^sendRedirect$")
+          ("CWE-601", "open.redirect", "(?i)^sendRedirect$"),
+          // Phase 20 — XXE + response splitting; Kotlin reuses the Java stack.
+          ("CWE-611", "xml.parse",     "(?i)^(parse|unmarshal|read)$"),
+          ("CWE-93",  "header.write",  "(?i)^(setHeader|addHeader|addCookie)$"),
+          // Phase 21 — logging / LDAP / XPath; same JVM libraries as Java.
+          ("CWE-532", "log.sensitive", "(?i)^(trace|debug|info|warn|error|fatal|severe)$"),
+          ("CWE-90",  "ldap.query",    "(?i)^search$"),
+          ("CWE-643", "xpath.query",   "(?i)^(selectNodes|selectSingleNode)$")
         )
       )
     case "csharp" | "csharpsrc" =>
@@ -122,7 +133,18 @@ import java.security.MessageDigest
           // Open redirect — MVC ``Redirect`` / ``RedirectToAction`` / ``RedirectToRoute``.
           ("CWE-601", "open.redirect", "(?i)^Redirect$"),
           ("CWE-601", "open.redirect", "(?i)^RedirectToAction$"),
-          ("CWE-601", "open.redirect", "(?i)^RedirectToRoute$")
+          ("CWE-601", "open.redirect", "(?i)^RedirectToRoute$"),
+          // Phase 20 — XXE. ``XmlDocument.LoadXml`` resolves entities on
+          // .NET Framework by default (``XmlResolver`` non-null); modern
+          // .NET Core defaults are safe, so the reviewer confirms the TFM.
+          ("CWE-611", "xml.parse",     "(?i)^(LoadXml|XmlTextReader|XPathDocument)$"),
+          // Phase 20 — response splitting via header write.
+          ("CWE-93",  "header.write",  "(?i)^(AppendHeader|AddHeader)$"),
+          // Phase 21 — logging / LDAP / XPath / ReDoS.
+          ("CWE-532", "log.sensitive", "(?i)^(LogTrace|LogDebug|LogInformation|LogWarning|LogError|LogCritical)$"),
+          ("CWE-90",  "ldap.query",    "(?i)^(FindOne|FindAll)$"),
+          ("CWE-643", "xpath.query",   "(?i)^(SelectNodes|SelectSingleNode)$"),
+          ("CWE-1333", "redos",        "(?i)^(Regex|IsMatch)$")
         )
       )
     case "php" =>
@@ -154,7 +176,20 @@ import java.security.MessageDigest
           ("CWE-94",  "code.exec",     "(?i)eval"),
           ("CWE-94",  "code.exec",     "(?i)assert"),
           ("CWE-94",  "code.exec",     "(?i)create_function"),
-          ("CWE-918", "ssrf",          "(?i)curl_exec")
+          ("CWE-918", "ssrf",          "(?i)curl_exec"),
+          // Phase 20 — XXE. libxml2 < 2.9 resolved entities by default and
+          // ``LIBXML_NOENT`` re-enables it explicitly; both remain common.
+          ("CWE-611", "xml.parse",     "(?i)^(simplexml_load_string|simplexml_load_file|loadXML|loadHTML)$"),
+          // Phase 20 — response splitting: PHP ``header()`` writes a raw
+          // header line. PHP has rejected CRLF in header() since 5.1.2, so
+          // the practical impact is usually limited — still flagged.
+          ("CWE-93",  "header.write",  "(?i)^header$"),
+          // Phase 21 — email header injection. PHP's ``mail()`` takes the
+          // additional-headers parameter verbatim; CRLF there injects Bcc.
+          ("CWE-93",  "email.send",    "(?i)^mail$"),
+          // Phase 21 — LDAP + XPath injection.
+          ("CWE-90",  "ldap.query",    "(?i)^(ldap_search|ldap_list|ldap_read)$"),
+          ("CWE-643", "xpath.query",   "(?i)^(xpath|evaluate)$")
         )
       )
     case "ruby" | "rubysrc" =>
@@ -189,7 +224,20 @@ import java.security.MessageDigest
           ("CWE-94",  "code.exec",     "(?i)instance_eval"),
           ("CWE-94",  "code.exec",     "(?i)class_eval"),
           // Open redirect — Rails ``redirect_to`` with a user-controlled URL.
-          ("CWE-601", "open.redirect", "(?i)^redirect_to$")
+          ("CWE-601", "open.redirect", "(?i)^redirect_to$"),
+          // Phase 20 — XXE. Nokogiri is safe by default; ``noent`` opts back
+          // in. REXML historically resolved entities (also a billion-laughs
+          // DoS surface).
+          ("CWE-611", "xml.parse",     "(?i)^(XML|parse|noent)$"),
+          // Phase 20 — response splitting via a raw header assignment.
+          ("CWE-93",  "header.write",  "(?i)^(set_header|headers)$"),
+          // Phase 21 — SSTI. ``ERB.new(user).result`` and
+          // ``render inline:`` both evaluate embedded Ruby — RCE.
+          ("CWE-1336", "ssti",         "(?i)^(erb|result|result_with_hash)$"),
+          // Phase 21 — email header injection (ActionMailer / the mail gem).
+          ("CWE-93",  "email.send",    "(?i)^(deliver|deliver_now|deliver_later)$"),
+          // Phase 21 — sensitive data in logs.
+          ("CWE-532", "log.sensitive", "(?i)^(debug|info|warn|error|fatal)$")
         )
       )
     case "go" | "golang" =>
@@ -229,7 +277,20 @@ import java.security.MessageDigest
           ("CWE-918", "ssrf",          "(?i)\\bDo$"),
           // Open redirect — ``http.Redirect(w, r, url, code)`` from net/http.
           // The bare ``^Redirect$`` is specific enough for Go's HTTP idioms.
-          ("CWE-601", "open.redirect", "(?i)^Redirect$")
+          ("CWE-601", "open.redirect", "(?i)^Redirect$"),
+          // Phase 20 — response splitting. ``w.Header().Set(k, v)`` /
+          // ``.Add(k, v)`` write raw header values. Go's net/http sanitises
+          // CRLF on write, so this is mostly a proxy-layer concern — flagged
+          // for reviewer judgement rather than treated as certain.
+          ("CWE-93",  "header.write",  "(?i)^(Set|Add)$"),
+          // Phase 21 — email header injection via net/smtp.
+          ("CWE-93",  "email.send",    "(?i)^SendMail$"),
+          // Phase 21 — SSTI. ``text/template`` and ``html/template`` treat
+          // ``Parse``'s argument as the template body.
+          ("CWE-1336", "ssti",         "(?i)^(Parse|ParseGlob|Must)$"),
+          // Phase 21 — ReDoS. Go's RE2 has no catastrophic backtracking, so
+          // this is a resource-bound concern only; low weight by design.
+          ("CWE-1333", "redos",        "(?i)^(MustCompile|CompilePOSIX)$")
         )
       )
     case "java" =>
@@ -274,7 +335,29 @@ import java.security.MessageDigest
           ("CWE-918", "ssrf",          "(?i)(openConnection|openStream)"),
           // Open redirect — Servlet ``HttpServletResponse.sendRedirect`` is
           // the canonical Java sink.
-          ("CWE-601", "open.redirect", "(?i)^sendRedirect$")
+          ("CWE-601", "open.redirect", "(?i)^sendRedirect$"),
+          // Phase 20 — XXE. The Java XML stack is unsafe by DEFAULT: a
+          // ``DocumentBuilderFactory`` / ``SAXParserFactory`` that has not had
+          // ``setFeature(disallow-doctype-decl, true)`` applied will resolve
+          // external entities. We flag the parse call and let the mitigations
+          // layer / reviewer confirm whether hardening was applied.
+          ("CWE-611", "xml.parse",     "(?i)^(parse|unmarshal|read)$"),
+          ("CWE-611", "xml.parse",     "(?i)^(newDocumentBuilder|newSAXParser|createXMLStreamReader)$"),
+          // Phase 20 — HTTP response splitting. CRLF in an attacker-controlled
+          // header value splits the response. ``addCookie`` is included
+          // because the cookie value lands in a Set-Cookie header.
+          ("CWE-93",  "header.write",  "(?i)^(setHeader|addHeader|addCookie)$"),
+          // Phase 21 — sensitive data in logs (SLF4J / Log4j / java.util.logging).
+          ("CWE-532", "log.sensitive", "(?i)^(trace|debug|info|warn|error|fatal|severe)$"),
+          // Phase 21 — SSTI. Velocity ``evaluate``/``mergeTemplate`` and
+          // FreeMarker ``process`` interpret their input as a template;
+          // attacker-controlled templates reach RCE on both engines.
+          ("CWE-1336", "ssti",         "(?i)^(evaluate|mergeTemplate|process|getTemplate)$"),
+          // Phase 21 — XPath injection (javax.xml.xpath).
+          ("CWE-643", "xpath.query",   "(?i)^(evaluateExpression|compileExpression|selectNodes|selectSingleNode)$"),
+          // Phase 21 — LDAP injection. ``DirContext.search`` with a filter
+          // built from user input subverts the filter logic.
+          ("CWE-90",  "ldap.query",    "(?i)^(search|searchControls)$")
         )
       )
     case "python" =>
@@ -316,7 +399,36 @@ import java.security.MessageDigest
           ("CWE-601", "open.redirect", "(?i)^(redirect|RedirectResponse|HttpResponseRedirect)$"),
           // Email / SMTP header injection — ``smtplib.SMTP.send_message`` and
           // ``send_mail`` (Django) are the dominant Python mail sinks.
-          ("CWE-93",  "email.send",    "(?i)^(send_message|send_mail|sendmail)$")
+          ("CWE-93",  "email.send",    "(?i)^(send_message|send_mail|sendmail)$"),
+          // Phase 20 — XXE. ``lxml.etree`` resolves external entities unless
+          // an explicit hardened ``XMLParser(resolve_entities=False)`` is
+          // passed; stdlib ``xml.sax`` / ``xml.dom.minidom`` are likewise
+          // unsafe pre-3.7.1 defaults. ``fromstring``/``parse`` are the two
+          // entry shapes. Note ``parse`` also matches other libraries — the
+          // reviewer confirms the receiver is an XML parser.
+          ("CWE-611", "xml.parse",     "(?i)^(fromstring|parseString|parse)$"),
+          ("CWE-611", "xml.parse",     "(?i)^(XMLParser|XMLPullParser)$"),
+          // Phase 21 — sensitive data in logs. Mirrors the JS log.sensitive
+          // sink set; the *source* side (auth headers, tokens, passwords) is
+          // what makes a hit interesting, so the bare logger method names are
+          // acceptable here.
+          ("CWE-532", "log.sensitive", "(?i)^(debug|info|warning|warn|error|critical|exception)$"),
+          // Phase 21 — NoSQL operator injection (pymongo / motor). Bare
+          // ``find`` is excluded: ``str.find`` is ubiquitous in Python.
+          ("CWE-943", "nosql.query",   "(?i)^(find_one|find_one_and_update|find_one_and_delete|aggregate|map_reduce|distinct)$"),
+          // Phase 21 — LDAP injection (python-ldap / ldap3). Filter strings
+          // built from user input allow filter-logic subversion.
+          ("CWE-90",  "ldap.query",    "(?i)^(search_s|search_ext_s|search_st)$"),
+          // Phase 21 — XPath injection (lxml / ElementTree).
+          ("CWE-643", "xpath.query",   "(?i)^(xpath|iterfind)$"),
+          // Phase 21 — ReDoS via an attacker-supplied pattern. ONLY
+          // ``re.compile`` is modelled: its arguments are (pattern, flags),
+          // so a tainted argument really is the pattern. ``re.search`` /
+          // ``sub`` / ``findall`` take (pattern, STRING) and the string is
+          // attacker-controlled in almost every correct program — modelling
+          // them would fire on nearly every Python file that greps user input
+          // and would bury the real hits.
+          ("CWE-1333", "redos",        "(?i)^compile$")
         )
       )
     case "javascript" | "typescript" | "jssrc" | _ =>
@@ -397,7 +509,41 @@ import java.security.MessageDigest
           // common SaaS variants. CRLF in attacker-controlled to/subject
           // fields lets them inject Bcc, alter envelopes, or splice the body.
           ("CWE-93",  "email.send",    "(?i)^sendMail$"),
-          ("CWE-93",  "email.send",    "(?i)^sendEmail$")
+          ("CWE-93",  "email.send",    "(?i)^sendEmail$"),
+          // Phase 20 — HTTP response splitting / header injection. Express
+          // ``res.setHeader`` / ``res.header`` / ``res.append`` all write a
+          // raw header value. Node core rejects CRLF in header values since
+          // v8, so the modern impact is usually header *injection* into
+          // proxies rather than full response splitting — still worth a flag.
+          ("CWE-93",  "header.write",  "(?i)^(setHeader|append)$"),
+          // Phase 20 — prototype pollution. Deep-merge / deep-set helpers
+          // copy attacker keys (``__proto__`` / ``constructor.prototype``)
+          // onto Object.prototype when handed an unsanitised request body.
+          // ``merge`` / ``extend`` / ``set`` are lodash + jQuery + the
+          // ``deepmerge`` npm package; the receiver is unconstrained on
+          // purpose (a hand-rolled ``merge(target, req.body)`` is the most
+          // common real-world shape).
+          // ``set``/``setWith`` are filtered by ``protoPolluteReceiver`` below
+          // so we don't collide with the Firestore ``doc().set()`` sink.
+          ("CWE-1321", "proto.pollute", "(?i)^(merge|mergeWith|defaultsDeep|extend|deepmerge)$"),
+          ("CWE-1321", "proto.pollute", "(?i)^(set|setWith)$"),
+          // Phase 21 — NoSQL (operator) injection. Passing ``req.body``
+          // straight to a Mongo query lets the attacker supply operators
+          // (``{"$ne": null}``, ``{"$where": "..."}``) instead of a value.
+          // Deliberately Mongo-specific names only: bare ``find`` is
+          // Array.prototype.find in most JS files and would drown the class
+          // in noise. ``$where``/``$function`` payloads reach these same
+          // calls, so the coverage is not lost.
+          ("CWE-943", "nosql.query",   "(?i)^(findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace)$"),
+          ("CWE-943", "nosql.query",   "(?i)^(updateMany|deleteMany|countDocuments|aggregate|mapReduce|distinct)$"),
+          // Phase 21 — client/server SSTI. Handlebars ``compile`` and lodash
+          // ``template`` interpret their argument as a template; an
+          // attacker-controlled template string is RCE (server) or XSS
+          // (browser).
+          ("CWE-1336", "ssti",         "(?i)^(compile|template)$"),
+          // Phase 21 — ReDoS. ``new RegExp(userInput)`` lets the attacker
+          // pick a catastrophically backtracking pattern.
+          ("CWE-1333", "redos",        "(?i)^RegExp$")
         )
       )
   }
@@ -556,6 +702,23 @@ import java.security.MessageDigest
   val ssrfReceiver =
     """(?is).*\b(?:axios|http|https|client|got|node-fetch|undici|needle|superagent)\.(?:get|post|put|delete|patch|head|options|request)\b.*""".r
   val ssrfBareNames = Set("fetch", "request")
+  // Phase 20: prototype-pollution receiver gate. ``set``/``setWith`` are
+  // ambiguous — Firestore's ``doc(id).set(body)`` is a mass-assignment sink
+  // (CWE-915), not prototype pollution. Requiring a lodash/underscore-shaped
+  // receiver keeps the CWE-1321 class honest. The deep-merge names
+  // (``merge``/``defaultsDeep``/``deepmerge``/...) are specific enough that
+  // they are NOT filtered — a hand-rolled ``merge(target, req.body)`` is the
+  // most common real-world prototype-pollution shape and has no receiver.
+  val protoPolluteAmbiguousNames = Set("set", "setwith")
+  val protoPolluteReceiver =
+    """(?is).*\b(?:_|lodash|underscore|objectPath|dotProp|dot-prop)\.\s*set(?:With)?\b.*""".r
+  // Phase 21: Firestore receiver gate. ``set``/``update``/``create`` are far
+  // too generic on their own — Phase 20 verification caught
+  // ``Object.create(null)`` being reported as a Firestore mass-assignment
+  // sink. Require a Firestore-shaped receiver: a ``doc(...)``/``collection(...)``
+  // chain, or a db/firestore-ish identifier.
+  val firestoreReceiver =
+    """(?is).*(?:\.doc\s*\(|\.collection\s*\(|\bdb\.|\bfirestore\b|\bdocRef\b|\bcollectionRef\b).*""".r
   // Python SSRF: bare ``urlopen`` is specific enough on its own; the bare
   // method names (get/post/etc.) need receiver filtering to avoid matching
   // e.g. ``dict.get`` / ``Session.get`` outside HTTP-client contexts. The
@@ -679,6 +842,29 @@ import java.security.MessageDigest
         } else {
           val code = if (c.code != null) c.code else ""
           xssReceiver.matches(code)
+        }
+      }
+    } else if (
+      (cwe == "CWE-915" || cwe == "CWE-639") && language.toLowerCase == "javascript"
+    ) {
+      // Firestore mass-assignment / IDOR sinks: require a Firestore-shaped
+      // receiver so plain ``Object.create``/``Map.set``/``obj.update`` don't
+      // masquerade as document writes (found in Phase 20 verification).
+      sinks.filter { c =>
+        val code = if (c.code != null) c.code else ""
+        firestoreReceiver.matches(code)
+      }
+    } else if (cwe == "CWE-1321" && language.toLowerCase == "javascript") {
+      // Prototype pollution: the deep-merge names pass through; only the
+      // ambiguous ``set``/``setWith`` need a lodash-shaped receiver so we
+      // don't re-report Firestore's ``doc(id).set(body)`` (CWE-915).
+      sinks.filter { c =>
+        val name = if (c.name != null) c.name.toLowerCase else ""
+        if (!protoPolluteAmbiguousNames.contains(name)) {
+          true
+        } else {
+          val code = if (c.code != null) c.code else ""
+          protoPolluteReceiver.matches(code)
         }
       }
     } else if (cwe == "CWE-918" && language.toLowerCase == "javascript") {

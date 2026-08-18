@@ -1,0 +1,4 @@
+kafka:
+  schema-registry:
+    basic.auth.credentials.source: USER_INFO
+    user-info: ${SCHEMA_REGISTRY_USER_INFO}

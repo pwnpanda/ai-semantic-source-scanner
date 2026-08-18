@@ -134,6 +134,20 @@ bfla:
   group: authz
   needs_semantic: true
 
+incorrect-authorization-state:
+  aliases: [stale-approval]
+  cwes: [CWE-863]
+  codeql_tags: [security/cwe/cwe-863]
+  group: authz
+  needs_semantic: true
+
+protection-mechanism-bypass:
+  aliases: [validation-bypass]
+  cwes: [CWE-693]
+  codeql_tags: [security/cwe/cwe-693]
+  group: authz
+  needs_semantic: true
+
 mass-assignment:
   cwes: [CWE-915]
   codeql_tags: [security/cwe/cwe-915]
@@ -183,6 +197,25 @@ auth-bypass:
   cwes: [CWE-287]
   codeql_tags: [security/cwe/cwe-287]
   group: authn
+
+identity-spoofing:
+  aliases: [request-controlled-identity]
+  cwes: [CWE-290]
+  codeql_tags: [security/cwe/cwe-290]
+  group: authn
+  needs_semantic: true
+
+uncontrolled-resource-consumption:
+  aliases: [archive-bomb, decompression-bomb]
+  cwes: [CWE-409]
+  codeql_tags: [security/cwe/cwe-409]
+  group: dos
+
+hardcoded-credentials:
+  aliases: [embedded-credentials]
+  cwes: [CWE-798]
+  codeql_tags: [security/cwe/cwe-798]
+  group: data-exposure
 
 weak-crypto:
   cwes: [CWE-327, CWE-328]
@@ -243,15 +276,15 @@ groups:
   injection:
     [xss, sqli, nosqli, cmdi, code-injection, ssti, prompt-injection, xxe, ldap-injection, crlf-injection]
   file: [path-traversal, lfi, rfi]
-  authz: [idor, bfla, mass-assignment]
-  authn: [auth-bypass, jwt-misuse]
+  authz: [idor, bfla, incorrect-authorization-state, protection-mechanism-bypass, mass-assignment]
+  authn: [auth-bypass, identity-spoofing, jwt-misuse]
   request-forgery: [ssrf, csrf]
   crypto: [weak-crypto, insecure-random]
   web-config: [cors-misconfig, host-header-injection, request-smuggling, cache-poisoning, oauth-misconfig]
   serialization: [unsafe-deserialization]
   javascript: [prototype-pollution, dom-clobbering]
   redirect: [open-redirect, client-side-redirect]
-  dos: [redos]
-  data-exposure: [info-disclosure]
+  dos: [redos, uncontrolled-resource-consumption]
+  data-exposure: [info-disclosure, hardcoded-credentials]
   session: [session-fixation]
   all-injection: ["@injection", "@file", "@serialization"]

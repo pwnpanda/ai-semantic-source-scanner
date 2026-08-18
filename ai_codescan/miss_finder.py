@@ -13,6 +13,7 @@ import duckdb
 
 from ai_codescan.evidence import build_evidence_bundle, write_evidence_bundle
 from ai_codescan.scoring import attach_scores, persist_candidate_scores, score_candidates
+from ai_codescan.semantic_hotspots import SemanticHotspot, discover_semantic_hotspots
 
 _RESOURCE_ID_RE = re.compile(
     r"(?i)(?:^|[^a-z])(?:id|user_id|userid|tenant_id|tenantid|account_id|accountid|"
@@ -75,10 +76,14 @@ class MissCandidate:
     heuristic: str
     evidence: str
     overlap_with_deterministic: tuple[str, ...] = ()
+    signal_strength: str = "contextual"
+    requires_llm_validation: bool = True
+    related_lines: tuple[int, ...] = ()
 
     def to_jsonable(self) -> dict[str, Any]:
         record = asdict(self)
         record["overlap_with_deterministic"] = list(self.overlap_with_deterministic)
+        record["related_lines"] = list(self.related_lines)
         return record
 
 
@@ -253,12 +258,48 @@ def build_miss_candidates(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any
                 ),
                 entry_context=context,
             )
+    for hotspot in discover_semantic_hotspots(conn):
+        _append_semantic_hotspot(candidates, seen, hotspot)
+
     # Overlap with nearby deterministic flows is recorded as the
     # structured `overlap_with_deterministic` field on each candidate
     # (set inside add()). The scorer turns that into an
     # `overlap_with_deterministic` factor; we no longer also mutate the
     # human-readable `evidence` string here (Invariant 3).
     return [candidate.to_jsonable() for candidate in candidates]
+
+
+def _append_semantic_hotspot(
+    candidates: list[MissCandidate],
+    seen: set[tuple[str, str, int, str]],
+    hotspot: SemanticHotspot,
+) -> None:
+    """Append a source-aware hotspot without turning it into a proven finding."""
+    key = (hotspot.file, hotspot.vector, hotspot.line, hotspot.heuristic)
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append(
+        MissCandidate(
+            id=_stable_candidate_id(
+                file=hotspot.file,
+                line=hotspot.line,
+                vector=hotspot.vector,
+            ),
+            stream="B",
+            concern=hotspot.concern,
+            vector=hotspot.vector,
+            cwe=hotspot.cwe,
+            file=hotspot.file,
+            line=hotspot.line,
+            name=hotspot.name,
+            heuristic=hotspot.heuristic,
+            evidence=hotspot.evidence,
+            signal_strength=hotspot.signal_strength,
+            requires_llm_validation=hotspot.requires_llm_validation,
+            related_lines=hotspot.related_lines,
+        )
+    )
 
 
 def write_miss_candidates(
@@ -271,6 +312,12 @@ def write_miss_candidates(
     scores = score_candidates(conn, candidates)
     persist_candidate_scores(conn, scores)
     enriched = attach_scores(candidates, scores)
+    enriched.sort(
+        key=lambda candidate: (
+            -float(candidate.get("score") or 0.0),
+            str(candidate.get("id") or ""),
+        )
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     written_candidates: list[dict[str, Any]] = []
     with out_path.open("w", encoding="utf-8") as f:

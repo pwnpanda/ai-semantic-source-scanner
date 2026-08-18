@@ -475,6 +475,35 @@ Open design tension: audit drops unproven findings; ai-codescan's Recall-First I
 
 Gate: this is a multi-LLM-spend phase — keep adversarial re-runs opt-in (Invariant 4: cost limits are opt-in only).
 
+## Phase 20: XXE + prototype pollution + response splitting (complete)
+
+Three classes the taxonomy already declared but the engine never emitted.
+
+- [x] XXE (CWE-611, `xml.parse`) across Java/Kotlin/Python/PHP/C#/Ruby.
+- [x] Prototype pollution (CWE-1321, `proto.pollute`) — JS deep-merge family unfiltered; `set`/`setWith` gated by `protoPolluteReceiver` to avoid colliding with the Firestore CWE-915 sink.
+- [x] HTTP response splitting (CWE-93, `header.write`) across JS/Java/Kotlin/C#/PHP/Ruby/Go.
+- [x] Scoring weights for all three sink classes.
+- [x] Eval targets: `express-proto-pollution` + `-safe`, `python-flask-xxe` + `-safe`. Eval 40→44 pass / 47.
+
+Remaining classes from the audit — **cleared in Phase 21 below.**
+
+## Phase 21: Remaining audit classes + Firestore precision gate (complete)
+
+- [x] NoSQL operator injection (CWE-943, `nosql.query`) — JS + Python. Bare `find` excluded on purpose (`Array.prototype.find` / `str.find` are ubiquitous); Mongo-specific names carry the same payloads.
+- [x] SSTI for non-Python (CWE-1336) — JS Handlebars/lodash, Java Velocity/FreeMarker, Ruby ERB, Go text/template.
+- [x] LDAP (CWE-90, `ldap.query`) + XPath (CWE-643, `xpath.query`) — Java/Kotlin/Python/PHP/C#.
+- [x] Sensitive logging (CWE-532) extended beyond JS to Python/Java/Kotlin/Ruby/C#.
+- [x] Email header injection (CWE-93) extended to Ruby/PHP/Go.
+- [x] ReDoS (CWE-1333, `redos`) — JS/Python/Go/C#. Python models only `re.compile`; see REVIEW.md for why `search`/`sub`/`findall` are excluded.
+- [x] Firestore receiver gate — fixes `Object.create(null)` being reported as a Firestore write. Verified: mass-assignment target still passes, spurious flows on proto-pollution-safe went 2 → 0.
+- [x] Eval targets `express-nosql-injection` + `-safe`. Eval 44 → 46 pass / 49.
+
+Still open:
+
+- [ ] Format-string (CWE-134): needs receiver-taint support — the vulnerable shape is a tainted *format string*, not a tainted argument. Bare `format` as a sink would be pure noise.
+- [ ] Java `JavaMailSender.send`: bare `send` too generic on the JVM; needs a receiver gate like the Firestore one.
+- [ ] Judgement-call classes pending user direction: insecure randomness (CWE-330/338), CORS misconfiguration. TOCTOU/races judged not statically detectable — skip.
+
 ## Phase 19: CSPT (Client-Side Path Traversal) (complete)
 
 CSPT detection per the user's design call: client-side only, classified as CWE-22 (path traversal — the user's words: "mirrors path traversal closer than SSRF"). Discriminator: user input lands in the URL's path section, BEFORE any `?`/`#`/`&` separator.

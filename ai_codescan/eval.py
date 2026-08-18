@@ -51,7 +51,7 @@ def _as_match_status(value: object) -> MatchStatus:
     return text if _is_match_status(text) else "miss"
 
 
-_SUPPORTED_EVAL_ENGINES = {"hybrid", "hybrid-miss", "joern"}
+_SUPPORTED_EVAL_ENGINES = {"hybrid", "hybrid-miss", "joern", "miss-finder"}
 _MIN_FLOW_STEP_FIELDS = 2
 
 
@@ -384,6 +384,23 @@ def _run_hybrid_case(
     return flows
 
 
+def _run_miss_finder_case(case: EvalCase, *, cache_root: Path) -> list[FlowRecord]:
+    """Exercise semantic candidate generation without external SAST engines."""
+    repo_dir = cache_root / compute_repo_id(case.target)
+    db_path = repo_dir / "index.duckdb"
+    if db_path.exists():
+        db_path.unlink()
+    _snapshot, db_path = run_prep(
+        case.target,
+        cache_root=cache_root,
+        bug_classes=list_classes(),
+        engine="none",
+        quiet=True,
+        force=True,
+    )
+    return miss_candidates_from_db(db_path)
+
+
 def _run_joern_case(case: EvalCase, *, cache_root: Path) -> list[FlowRecord]:
     jsonl = joern.run_joern(
         case.target,
@@ -550,6 +567,8 @@ def run_ai_codescan_case(
                 cache_root=cache_root,
                 include_miss_candidates=selected_engine == "hybrid-miss",
             )
+        elif selected_engine == "miss-finder":
+            flows = _run_miss_finder_case(case, cache_root=cache_root)
         else:
             flows = _run_joern_case(case, cache_root=cache_root)
         result = score_flows(flows, case)

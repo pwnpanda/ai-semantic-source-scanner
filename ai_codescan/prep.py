@@ -114,9 +114,9 @@ def _files_for_project(
     contains ``.kt`` / ``.kts`` files emits both a ``java`` and a
     ``kotlin`` AST job. Bash scripts emit their own AST job whenever the
     project carries ``.sh`` / ``.bash`` files (CI / glue scripts in
-    polyglot repos count too). YAML files emit a ``yaml`` AST job in
-    YAML-kind projects so workflow / k8s / compose entrypoints land in
-    the index.
+    polyglot repos count too). YAML files emit a ``yaml`` AST job in every
+    project so application and deployment configuration stays visible beside
+    the primary source language.
     """
     base = snapshot_root / project.base_path
     ts = [
@@ -244,12 +244,11 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
     # detection covers BASH-kind projects on its own.
     if bash_files:
         jobs.append(AstJob(kind="bash", project_root=base, files=bash_files))
-    # YAML AST job: emit only for YAML-kind projects (GitHub Actions /
-    # k8s / compose / Helm). For polyglot repos with a primary code
-    # project, the workflows live alongside but aren't ingested as YAML
-    # — this avoids double-counting compose / k8s manifests in a Node
-    # repo's index.
-    if yaml_files and project.kind is ProjectKind.YAML:
+    # Configuration remains part of the attack surface in polyglot repos.
+    # In particular, application.yml and deployment manifests can contain
+    # credentials and insecure framework settings that are invisible if YAML
+    # is indexed only when it is the repository's primary project kind.
+    if yaml_files:
         jobs.append(AstJob(kind="yaml", project_root=base, files=yaml_files))
     return jobs
 

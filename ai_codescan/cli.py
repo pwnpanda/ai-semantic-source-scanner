@@ -878,7 +878,10 @@ def eval_run(
         str,
         typer.Option(
             "--engine",
-            help="Override manifest engine for every case: hybrid, hybrid-miss, or joern.",
+            help=(
+                "Override manifest engine for every case: hybrid, hybrid-miss, "
+                "miss-finder, or joern."
+            ),
         ),
     ] = "",
     out: Annotated[

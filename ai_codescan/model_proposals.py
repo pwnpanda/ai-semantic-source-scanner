@@ -66,8 +66,13 @@ def _bug_class_for_cwe(cwe: str) -> str:
         "CWE-79": "xss",
         "CWE-89": "sqli",
         "CWE-287": "missing-authn",
+        "CWE-290": "identity-spoofing",
+        "CWE-409": "uncontrolled-resource-consumption",
         "CWE-639": "bola",
+        "CWE-693": "protection-mechanism-bypass",
+        "CWE-798": "hardcoded-credentials",
         "CWE-862": "bfla",
+        "CWE-863": "incorrect-authorization-state",
         "CWE-915": "mass-assignment",
         "CWE-918": "ssrf",
     }.get(cwe, "unknown")

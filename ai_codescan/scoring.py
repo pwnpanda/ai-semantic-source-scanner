@@ -45,6 +45,26 @@ _DANGEROUS_SINK_CLASSES: dict[str, float] = {
     # Phase 19: client-side path traversal (CWE-22, sink_class cspt). Impact
     # is reaching unintended same-origin endpoints — similar weight to fs.read.
     "cspt": 0.12,
+    # Phase 20: XXE (CWE-611) reaches file disclosure and often SSRF, so it
+    # sits near deser.unsafe rather than the lighter injection classes.
+    "xml.parse": 0.18,
+    # Prototype pollution (CWE-1321) is usually a gadget-chain prerequisite
+    # rather than direct RCE — real but rarely standalone-critical.
+    "proto.pollute": 0.14,
+    # Header write / response splitting (CWE-93). Most modern runtimes strip
+    # CRLF from header values, so the base weight is deliberately low; the
+    # reviewer confirms whether the runtime actually sanitises.
+    "header.write": 0.08,
+    # Phase 21. NoSQL operator injection reaches auth bypass and data
+    # disclosure — comparable to sql.exec.
+    "nosql.query": 0.18,
+    # LDAP / XPath injection subvert query logic (auth bypass, data
+    # disclosure) but rarely reach code execution.
+    "ldap.query": 0.14,
+    "xpath.query": 0.14,
+    # ReDoS is availability-only, and Go's RE2 cannot backtrack at all, so
+    # this stays low and leans on the reviewer.
+    "redos": 0.06,
 }
 
 _LOW_SIGNAL_PARTS = {
@@ -71,6 +91,11 @@ _SAFE_PARAMETERIZATION_HINTS = {
     "bound",
     "safe",
     "literal",
+}
+
+_SEMANTIC_SIGNAL_WEIGHTS = {
+    "strong": 0.12,
+    "deterministic": 0.2,
 }
 
 
@@ -266,6 +291,18 @@ def score_candidate(  # noqa: PLR0912, PLR0915 - factor accumulator is intention
         factors.append(ScoreFactor("heuristic_candidate", 0.08, "candidate came from a heuristic"))
         score += 0.08
 
+    signal_strength = str(candidate.get("signal_strength") or "contextual")
+    if signal_strength in _SEMANTIC_SIGNAL_WEIGHTS:
+        signal_weight = _SEMANTIC_SIGNAL_WEIGHTS[signal_strength]
+        factors.append(
+            ScoreFactor(
+                "semantic_signal",
+                signal_weight,
+                f"source-aware semantic pattern strength is {signal_strength}",
+            )
+        )
+        score += signal_weight
+
     # Recall-First Invariant 6: co-location fallback flows are emitted by
     # Joern when the data-flow engine couldn't link source to sink. They are
     # weaker evidence — proximity, not actual reachability. Demote heavily
@@ -310,6 +347,8 @@ def score_candidate(  # noqa: PLR0912, PLR0915 - factor accumulator is intention
         score -= 0.28
 
     source_loc = str(candidate.get("source_loc") or "")
+    if not source_loc and candidate.get("file") and candidate.get("line"):
+        source_loc = f"{candidate['file']}:{candidate['line']}"
     if source_loc and _has_entrypoint_nearby(conn, source_loc):
         factors.append(
             ScoreFactor("entrypoint_proximity", 0.16, "source is near a detected entrypoint")

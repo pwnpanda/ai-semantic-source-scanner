@@ -715,3 +715,209 @@ cases:
     allowed_false_positives:
       - cwe: CWE-918
         file: index.js
+  - id: express-proto-pollution
+    target: express-proto-pollution
+    language: javascript
+    engine: hybrid
+    # Phase 20 positive — req.body flows into a hand-rolled recursive merge
+    # with no __proto__ filter. Caught by the CWE-1321 `merge` sink (no
+    # receiver filter: a bare merge(target, req.body) is the common shape).
+    expected_findings:
+      - id: EXPRESS-PROTO-POLLUTION-001
+        cwe: CWE-1321
+        file: server.js
+        source_line: 28
+        sink_line: 29
+        source_contains: req.body
+        sink_contains: merge
+        line_tolerance: 3
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-proto-pollution-safe
+    target: express-proto-pollution-safe
+    language: javascript
+    engine: hybrid
+    # Phase 20 NEGATIVE — prototype-ish keys are dropped and the target has a
+    # null prototype. The CWE-1321 candidate may still surface and is allowed
+    # (Invariant 2: mitigations demote, they do not suppress).
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+      - cwe: CWE-1321
+        file: server.js
+  - id: python-flask-xxe
+    target: python-flask-xxe
+    language: python
+    engine: hybrid
+    # Phase 20 positive — request.data flows into lxml etree.fromstring with
+    # resolve_entities=True. Caught by the CWE-611 xml.parse sink.
+    expected_findings:
+      - id: PYTHON-FLASK-XXE-001
+        cwe: CWE-611
+        file: server.py
+        source_line: 21
+        sink_line: 25
+        source_contains: request.data
+        sink_contains: fromstring
+        line_tolerance: 3
+    allowed_false_positives: []
+  - id: python-flask-xxe-safe
+    target: python-flask-xxe-safe
+    language: python
+    engine: hybrid
+    # Phase 20 NEGATIVE — the parser refuses entities, DTD loading and
+    # network access. The CWE-611 candidate may still surface and is allowed
+    # (Invariant 2).
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-611
+        file: server.py
+  - id: express-nosql-injection
+    target: express-nosql-injection
+    language: javascript
+    engine: hybrid
+    # Phase 21 positive — req.body flows into a Mongo findOne, so operator
+    # objects ({"$ne": null}) are interpreted as query operators.
+    expected_findings:
+      - id: EXPRESS-NOSQL-INJECTION-001
+        cwe: CWE-943
+        file: server.js
+        source_line: 17
+        sink_line: 19
+        source_contains: req.body
+        sink_contains: findOne
+        line_tolerance: 3
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+  - id: express-nosql-injection-safe
+    target: express-nosql-injection-safe
+    language: javascript
+    engine: hybrid
+    # Phase 21 NEGATIVE — both fields are String()-coerced before the query.
+    # The CWE-943 candidate may still surface and is allowed (Invariant 2).
+    expected_findings: []
+    allowed_false_positives:
+      - cwe: CWE-352
+        file: server.js
+      - cwe: CWE-943
+        file: server.js
+  - id: kotlin-spring-semantic-hotspots
+    target: kotlin-spring-semantic-hotspots
+    language: kotlin
+    engine: miss-finder
+    # Positive semantic-regression target. These are Stream-B nominations:
+    # the source pattern is reliable, while exploitability still needs the
+    # miss-reviewer's business/deployment-context validation.
+    expected_findings:
+      - id: KOTLIN-APPROVAL-OWNER-001
+        cwe: CWE-862
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 21
+        sink_line: 21
+        sink_contains: ownership guard
+        line_tolerance: 1
+      - id: KOTLIN-STALE-APPROVAL-001
+        cwe: CWE-863
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 26
+        sink_line: 26
+        sink_contains: current digest
+        line_tolerance: 1
+      - id: KOTLIN-SKIP-VALIDATION-001
+        cwe: CWE-693
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 12
+        sink_line: 12
+        sink_contains: skip/bypass
+        line_tolerance: 1
+      - id: KOTLIN-FAIL-OPEN-SPEC-001
+        cwe: CWE-693
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 39
+        sink_line: 39
+        sink_contains: fail closed
+        line_tolerance: 1
+      - id: KOTLIN-IDENTITY-SWITCH-001
+        cwe: CWE-290
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 35
+        sink_line: 35
+        sink_contains: identity
+        line_tolerance: 1
+      - id: KOTLIN-PEER-GUARD-001
+        cwe: CWE-862
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 77
+        sink_line: 77
+        sink_contains: sibling routes
+        line_tolerance: 1
+      - id: KOTLIN-JAXP-IDENTITY-001
+        cwe: CWE-611
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 46
+        sink_line: 46
+        sink_contains: external DTD
+        line_tolerance: 1
+      - id: KOTLIN-SENSITIVE-LOG-001
+        cwe: CWE-532
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 57
+        sink_line: 57
+        sink_contains: whole request
+        line_tolerance: 1
+      - id: KOTLIN-ARCHIVE-EXPANSION-001
+        cwe: CWE-409
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 53
+        sink_line: 53
+        sink_contains: readAllBytes
+        line_tolerance: 1
+      - id: KOTLIN-CONTENT-DISPOSITION-001
+        cwe: CWE-93
+        file: src/main/kotlin/example/SecurityShapes.kt
+        source_line: 62
+        sink_line: 62
+        sink_contains: filename
+        line_tolerance: 1
+      - id: KOTLIN-YAML-USER-INFO-001
+        cwe: CWE-798
+        file: src/main/resources/application.yml
+        source_line: 4
+        sink_line: 4
+        sink_contains: redacted
+        line_tolerance: 0
+    allowed_false_positives:
+      - cwe: CWE-287
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-862
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-693
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-611
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-532
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-93
+        file: src/main/kotlin/example/SecurityShapes.kt
+  - id: kotlin-spring-semantic-hotspots-safe
+    target: kotlin-spring-semantic-hotspots-safe
+    language: kotlin
+    engine: miss-finder
+    expected_findings: []
+    # Deterministic taint tools intentionally keep source/sink shapes visible
+    # when a mitigation exists. The unit regression asserts the new semantic
+    # layer itself emits none of the paired vulnerable vectors.
+    allowed_false_positives:
+      - cwe: CWE-287
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-862
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-611
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-532
+        file: src/main/kotlin/example/SecurityShapes.kt
+      - cwe: CWE-93
+        file: src/main/kotlin/example/SecurityShapes.kt

@@ -15,6 +15,7 @@ from ai_codescan.miss_review import (
     parse_miss_review_output,
     proposal_stub_from_review,
     run_miss_review,
+    stage_miss_review_queue,
 )
 
 
@@ -64,6 +65,22 @@ def test_proposal_stub_only_for_new_findings_and_model_gaps() -> None:
 
     assert review is not None
     assert proposal_stub_from_review(review) is not None
+
+
+def test_stage_miss_review_queue_uses_score_not_input_order(tmp_path: Path) -> None:
+    candidates = [
+        {"id": "low", "score": 0.2},
+        {"id": "high", "score": 0.8},
+        {"id": "medium", "score": 0.5},
+    ]
+
+    selected = stage_miss_review_queue(
+        candidates,
+        queue_path=tmp_path / "queue.jsonl",
+        max_candidates=2,
+    )
+
+    assert [candidate["id"] for candidate in selected] == ["high", "medium"]
 
 
 def _write_candidates(repo_dir: Path) -> Path:

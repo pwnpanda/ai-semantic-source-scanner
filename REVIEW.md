@@ -46,6 +46,89 @@ Both `.github/workflows/test.yml` (the real lint+types+test+coverage workflow) a
   - `codex`:  severity `high`, route `custom-rule`, rewrite `(?i)^(fetch)$`
   Every provider's output parsed cleanly. `build_argv` shapes are correct for all three CLIs.
 
+## Phase 21 — remaining audit classes (the Phase 20 follow-up list)
+
+Clears the "remaining classes from the audit" list that Phase 20 left in TODO.md, plus the precision bug Phase 20 verification surfaced.
+
+### Sinks added
+
+| Class | CWE / sink_class | Languages |
+|---|---|---|
+| NoSQL operator injection | CWE-943 `nosql.query` | JS (Mongo driver/Mongoose), Python (pymongo/motor) |
+| SSTI (non-Python) | CWE-1336 `ssti` | JS (Handlebars `compile`, lodash `template`), Java (Velocity `evaluate`/`mergeTemplate`, FreeMarker `process`), Ruby (ERB `result`), Go (`text/template` `Parse`) |
+| LDAP injection | CWE-90 `ldap.query` | Java, Kotlin, Python (`search_s`), PHP (`ldap_search`), C# |
+| XPath injection | CWE-643 `xpath.query` | Java, Kotlin, Python (`xpath`), PHP, C# |
+| Sensitive logging | CWE-532 `log.sensitive` | Python, Java, Kotlin, Ruby, C# (was JS-only) |
+| Email header injection | CWE-93 `email.send` | Ruby (`deliver_now`), PHP (`mail`), Go (`SendMail`) — was JS/Python-only |
+| ReDoS | CWE-1333 `redos` | JS (`RegExp`), Python (`re.compile`), Go, C# |
+
+Weights: `nosql.query` +0.18 (auth bypass / data disclosure, comparable to `sql.exec`), `ldap.query` / `xpath.query` +0.14 (subvert query logic, rarely RCE), `redos` +0.06 (availability-only).
+
+### Two deliberate narrowings (recall-first has limits)
+
+Both were chosen because the naive pattern would have produced noise on *nearly every file*, which buries real hits rather than surfacing them:
+
+1. **Python ReDoS models only `re.compile`.** `re.search`/`sub`/`findall` take `(pattern, STRING)` and the string is attacker-controlled in almost every *correct* program. Since the flow engine checks all arguments, modelling them would fire on essentially every Python file that greps user input. `re.compile` takes `(pattern, flags)`, so a tainted argument really is the pattern.
+2. **NoSQL excludes bare `find`.** `Array.prototype.find` (JS) and `str.find` (Python) are ubiquitous. The Mongo-specific names (`findOne`, `aggregate`, `updateMany`, …) carry the same `$where`/`$ne` payloads, so the coverage is not actually lost.
+
+### Precision fix — Firestore receiver gate
+
+Phase 20 verification found `Object.create(null)` being reported as a Firestore mass-assignment sink, because `set`/`update`/`create` were matched by bare name. Added `firestoreReceiver` (requires a `.doc(`/`.collection(` chain or a `db.`/`firestore` identifier), wired into `restrictXssSinks` for CWE-915 and CWE-639.
+
+Verified both directions: `express-mass-assignment` still passes (its receiver *is* Firestore-shaped), and `express-proto-pollution-safe` went from 2 spurious CWE-915 flows to **zero**.
+
+### Eval targets
+
+- `express-nosql-injection` — positive: `req.body` → `users.findOne({username, password})`, the classic `{"$ne": null}` auth bypass.
+- `express-nosql-injection-safe` — negative: both fields `String()`-coerced before the query.
+
+### Verification
+
+- **Eval: 46 pass / 3 miss / 49 total** (was 44/3/47). +2 is exactly the new targets — no regressions across the other 47.
+- Positive fires for the right reason: `CWE-943 nosql.query req.body -> findOne`.
+- **Pytest:** exit 0. **Ruff:** clean.
+
+### Still open
+
+- Format-string (CWE-134) deliberately **not** implemented: the vulnerable shape is a tainted *format string* (`user.format(...)`), i.e. taint into the receiver, which the argument-based flow analysis does not model. Adding bare `format` as a sink would fire on every `"...".format(x)` in the codebase for no signal. Needs receiver-taint support first.
+- Java `JavaMailSender.send` still unmodelled — bare `send` is too generic on the JVM and needs a receiver gate like the Firestore one.
+- Judgement-call classes still awaiting direction: insecure randomness (CWE-330/338), CORS misconfiguration.
+
+## Phase 20 — XXE, prototype pollution, HTTP response splitting
+
+Three classes the `bug_classes.yaml` taxonomy already *declared* (`xxe` → CWE-611, `prototype-pollution` → CWE-1321, `crlf-injection` → CWE-93) but the Joern engine never emitted a single sink for. The taxonomy was promising coverage that did not exist.
+
+### Sinks added
+
+| Class | CWE / sink_class | Sinks |
+|---|---|---|
+| XXE | CWE-611 `xml.parse` | Java+Kotlin `parse`/`unmarshal`/`read`, `newDocumentBuilder`/`newSAXParser`; Python `fromstring`/`parseString`/`parse`, `XMLParser`; PHP `simplexml_load_string`/`loadXML`/`loadHTML`; C# `LoadXml`/`XmlTextReader`/`XPathDocument`; Ruby `XML`/`parse`/`noent` |
+| Prototype pollution | CWE-1321 `proto.pollute` | JS `merge`/`mergeWith`/`defaultsDeep`/`extend`/`deepmerge` (unfiltered) + `set`/`setWith` (receiver-gated) |
+| Response splitting | CWE-93 `header.write` | JS `setHeader`/`append`; Java+Kotlin `setHeader`/`addHeader`/`addCookie`; C# `AppendHeader`/`AddHeader`; PHP `header`; Ruby `set_header`/`headers`; Go `Set`/`Add` |
+
+Scoring weights: `xml.parse` +0.18 (file disclosure + SSRF reach, near `deser.unsafe`), `proto.pollute` +0.14 (usually a gadget-chain prerequisite, rarely standalone-critical), `header.write` +0.08 (most modern runtimes strip CRLF from header values — deliberately low, reviewer confirms the runtime).
+
+### The one non-obvious design call
+
+`set`/`setWith` collides with the existing Firestore `doc(id).set(body)` mass-assignment sink (CWE-915). Rather than accept the double-report, I added `protoPolluteReceiver` — a lodash/underscore/object-path-shaped receiver gate wired into `restrictXssSinks`, mirroring the existing `ssrfReceiver` pattern. The deep-merge names are **not** gated: a hand-rolled `merge(target, req.body)` has no receiver at all and is the most common real-world shape, so gating them would have cost more recall than the noise was worth.
+
+### Eval targets
+
+- `express-proto-pollution` — positive: `req.body` → hand-rolled recursive `merge` with no `__proto__` filter.
+- `express-proto-pollution-safe` — negative: forbidden-key set + `Object.create(null)` target.
+- `python-flask-xxe` — positive: `request.data` → `etree.fromstring` with `resolve_entities=True`.
+- `python-flask-xxe-safe` — negative: `resolve_entities=False, load_dtd=False, no_network=True`.
+
+### Verification
+
+- **Eval: 44 pass / 3 miss / 47 total** (was 40/3/43). All four new targets pass; +4 is exactly the new targets, so no regressions. The 3 misses are still the unchanged Phase 12 Joern frontend gaps (PHP/Ruby/Kotlin).
+- Confirmed the positives fire for the *right reason*, not incidentally — the raw Joern JSONL shows `CWE-1321 proto.pollute … -> merge` and `CWE-611 xml.parse … -> fromstring`.
+- **Pytest:** exit 0. **Ruff + ty:** clean.
+
+### Discovered during verification (pre-existing, not introduced here)
+
+`Object.create(null)` in the safe target matches the Firestore `create` sink (`^(set|update|create)$`) and produces a CWE-915 candidate. It surfaces only as a **co-location** flow, which `eval.py` excludes from false-positive counts by design (Invariant 6 — co-location flows are heavily demoted in scoring), so the eval is not silently under-counting. Still, the Firestore sink names are over-broad for non-Firestore code; a receiver gate for them is a reasonable follow-up.
+
 ## Phase 19 — CSPT (Client-Side Path Traversal)
 
 The user clarified: CSPT is client-side only, semantically a path-traversal class (CWE-22), and the discriminator is "user input lands in the URL's path section, before any `?`/`#`/`&`".

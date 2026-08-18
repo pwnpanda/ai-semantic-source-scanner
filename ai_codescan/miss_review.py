@@ -108,7 +108,14 @@ def stage_miss_review_queue(
     max_candidates: int,
 ) -> list[dict[str, Any]]:
     """Write the top ``max_candidates`` miss candidates to the review queue."""
-    selected = candidates[:max_candidates]
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (
+            -float(item[1].get("score") or 0.0),
+            item[0],
+        ),
+    )
+    selected = [candidate for _index, candidate in ranked[:max_candidates]]
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     with queue_path.open("w", encoding="utf-8") as f:
         for candidate in selected:

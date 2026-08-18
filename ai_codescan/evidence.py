@@ -107,6 +107,13 @@ def _parse_loc(loc: str) -> tuple[str, int] | None:
     return (file, line)
 
 
+def _int_or_none(value: object) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _flow_steps(steps_json: str) -> list[tuple[str, int]]:
     try:
         raw_steps = json.loads(steps_json or "[]")
@@ -165,6 +172,46 @@ def _score_factors(candidate: dict[str, Any]) -> list[dict[str, Any]]:
             return []
         return [dict(item) for item in parsed if isinstance(item, dict)]
     return []
+
+
+def _candidate_step_locs(
+    candidate: dict[str, Any],
+    *,
+    source_loc: str,
+    flow_steps: list[tuple[str, int]],
+) -> list[tuple[str, int]]:
+    step_locs = list(flow_steps)
+    if not step_locs and source_loc and (parsed := _parse_loc(source_loc)):
+        step_locs.append(parsed)
+    candidate_file = str(candidate.get("file") or "")
+    if (
+        not step_locs
+        and candidate_file
+        and candidate.get("line")
+        and (line := _int_or_none(candidate["line"]))
+    ):
+        step_locs.append((candidate_file, line))
+    related_lines = candidate.get("related_lines") or []
+    if candidate_file and isinstance(related_lines, list):
+        for related_line in related_lines:
+            if line := _int_or_none(related_line):
+                step_locs.append((candidate_file, line))
+    return step_locs
+
+
+def _review_questions(candidate: dict[str, Any], *, stream: str) -> list[str]:
+    questions = [
+        "Is attacker-controlled input reachable at the source?",
+        "Does the data reach the sink without an effective mitigation?",
+        "Is the vulnerable path reachable from an exposed entrypoint?",
+    ]
+    if stream == "B":
+        questions.append("Is this heuristic candidate a real issue or only a hotspot?")
+    if candidate.get("requires_llm_validation") is False:
+        questions.append(
+            "The source pattern itself is deterministic; what deployment context changes impact?"
+        )
+    return questions
 
 
 def build_evidence_bundle(
@@ -230,15 +277,15 @@ def build_evidence_bundle(
         parameterization = str(parameterization_raw or parameterization)
         step_locs = _flow_steps(str(steps_json or ""))
 
-    if not step_locs and source_loc:
-        parsed = _parse_loc(source_loc)
-        if parsed:
-            step_locs = [parsed]
-    if not step_locs and candidate.get("line") and candidate.get("file"):
-        try:
-            step_locs = [(str(candidate["file"]), int(candidate["line"]))]
-        except (TypeError, ValueError):
-            step_locs = []
+    step_locs = _candidate_step_locs(
+        candidate,
+        source_loc=source_loc,
+        flow_steps=step_locs,
+    )
+
+    effective_context_lines = context_lines
+    if candidate.get("signal_strength") in {"strong", "deterministic"}:
+        effective_context_lines = max(context_lines, 10)
 
     excerpts: list[EvidenceExcerpt] = []
     seen: set[tuple[str, int]] = set()
@@ -247,17 +294,11 @@ def build_evidence_bundle(
         if key in seen:
             continue
         seen.add(key)
-        excerpts.append(_read_excerpt(Path(file), line, context_lines=context_lines))
+        excerpts.append(_read_excerpt(Path(file), line, context_lines=effective_context_lines))
 
     files = {file for file, _line in step_locs}
     lines = {line for _file, line in step_locs}
-    questions = [
-        "Is attacker-controlled input reachable at the source?",
-        "Does the data reach the sink without an effective mitigation?",
-        "Is the vulnerable path reachable from an exposed entrypoint?",
-    ]
-    if stream == "B":
-        questions.append("Is this heuristic candidate a real issue or only a hotspot?")
+    questions = _review_questions(candidate, stream=stream)
 
     return EvidenceBundle(
         bundle_id=f"E-{candidate_id}",
