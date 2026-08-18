@@ -465,6 +465,43 @@ def test_normal_validation_name_is_not_a_bypass_prefix(tmp_path: Path) -> None:
     assert "workflow/validation-bypass" not in _vectors(hotspots)
 
 
+@pytest.mark.parametrize(
+    "feature_check",
+    (
+        "check(featureToggles.isDisabled(FeatureToggle.SIMULATED_SEND_FAILURE))",
+        "check(config.isDisabled(FeatureFlag.SIMULATED_SEND_FAILURE))",
+        """check(releaseFeatureFlags.isDisabled(
+        FeatureToggle.SIMULATED_SEND_FAILURE
+    ))""",
+    ),
+)
+def test_disabled_feature_toggle_is_not_a_validation_bypass(
+    tmp_path: Path,
+    feature_check: str,
+) -> None:
+    hotspots = _scan_source(
+        tmp_path,
+        f"""fun send() {{
+    {feature_check}
+}}
+""",
+    )
+
+    assert "workflow/validation-bypass" not in _vectors(hotspots)
+
+
+def test_feature_toggle_does_not_hide_explicit_validation_bypass(tmp_path: Path) -> None:
+    hotspots = _scan_source(
+        tmp_path,
+        """fun execute(options: Options) {
+    if (featureToggles.isDisabled(FeatureToggle.NEW_VALIDATOR)) skipValidation(options)
+}
+""",
+    )
+
+    assert "workflow/validation-bypass" in _vectors(hotspots)
+
+
 def test_validation_bypass_points_to_operational_use_not_method_parameter(
     tmp_path: Path,
 ) -> None:
@@ -479,6 +516,29 @@ def test_validation_bypass_points_to_operational_use_not_method_parameter(
 
     assert len(matches) == 1
     assert matches[0].line == 2
+
+
+@pytest.mark.parametrize(
+    "default_value",
+    ("false", 'featureFlags.value("new-validator", false)'),
+)
+def test_defaulted_multiline_bypass_parameter_points_to_operational_use(
+    tmp_path: Path,
+    default_value: str,
+) -> None:
+    hotspots = _scan_source(
+        tmp_path,
+        f"""fun execute(
+    skipValidation: Boolean = {default_value},
+) {{
+    service.run(skipValidation = skipValidation)
+}}
+""",
+    )
+    matches = [item for item in hotspots if item.vector == "workflow/validation-bypass"]
+
+    assert len(matches) == 1
+    assert matches[0].line == 4
 
 
 def test_unrelated_null_return_does_not_create_fail_open_policy_candidate(
@@ -828,6 +888,20 @@ def test_nested_redaction_and_static_security_words_are_not_sensitive_logs(
 
     assert "logging/sensitive-object" not in _vectors(nested_redaction)
     assert "logging/sensitive-object" not in _vectors(static_message)
+
+
+def test_log_argument_parser_ignores_parentheses_and_escaped_quotes_in_literals(
+    tmp_path: Path,
+) -> None:
+    hotspots = _scan_source(
+        tmp_path,
+        r"""fun record(clientSecret: String) {
+    logger.info("literal ) and escaped \" quote", clientSecret)
+}
+""",
+    )
+
+    assert "logging/sensitive-object" in _vectors(hotspots)
 
 
 def test_unrelated_read_all_bytes_is_not_archive_expansion(tmp_path: Path) -> None:

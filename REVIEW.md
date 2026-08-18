@@ -59,7 +59,7 @@ Clears the "remaining classes from the audit" list that Phase 20 left in TODO.md
 | LDAP injection | CWE-90 `ldap.query` | Java, Kotlin, Python (`search_s`), PHP (`ldap_search`), C# |
 | XPath injection | CWE-643 `xpath.query` | Java, Kotlin, Python (`xpath`), PHP, C# |
 | Sensitive logging | CWE-532 `log.sensitive` | Python, Java, Kotlin, Ruby, C# (was JS-only) |
-| Email header injection | CWE-93 `email.send` | Ruby (`deliver_now`), PHP (`mail`), Go (`SendMail`) — was JS/Python-only |
+| Email header injection | CWE-93 `email.send` | Java/Kotlin (`JavaMailSender.send`), Ruby (`deliver_now`), PHP (`mail`), Go (`SendMail`) — was JS/Python-only |
 | ReDoS | CWE-1333 `redos` | JS (`RegExp`), Python (`re.compile`), C# |
 
 Weights: `nosql.query` +0.18 (auth bypass / data disclosure, comparable to `sql.exec`), `ldap.query` / `xpath.query` +0.14 (subvert query logic, rarely RCE), `redos` +0.06 (availability-only).
@@ -95,6 +95,9 @@ gaps:
   `ParseFiles`/`ParseGlob`, and unrelated `compile` calls are safe near-misses rather than SSTI
   sinks.
 - Java/Kotlin XPath includes the canonical `evaluate` and `compile` APIs and selects the expression argument. LDAP selects the filter argument.
+- Java/Kotlin email injection accepts Spring `JavaMailSender.send` only when Joern recovers the
+  receiver type and checks only its message argument. A tainted unrelated `MessageBus.send` call
+  and a tainted sender with a fixed message are paired safe near-misses.
 - Ambiguous XML `parse`/`read` and JVM/Python/Ruby logging names require XML-parser and logger
   receivers. JSON/CSV parsers and application `info`/`error` methods are explicit near-misses.
 - Parser factories/configuration (`newDocumentBuilder`, Python `XMLParser`, Ruby `noent`) are not
@@ -129,7 +132,9 @@ Verified both directions: `express-mass-assignment` still passes (its receiver *
 ### Still open
 
 - Format-string (CWE-134) deliberately **not** implemented: the vulnerable shape is a tainted *format string* (`user.format(...)`), i.e. taint into the receiver, which the argument-based flow analysis does not model. Adding bare `format` as a sink would fire on every `"...".format(x)` in the codebase for no signal. Needs receiver-taint support first.
-- Java `JavaMailSender.send` still unmodelled — bare `send` is too generic on the JVM and needs a receiver gate like the Firestore one.
+- Python response-header writes are usually subscript/property assignments, not calls. The current
+  sink-call catalog cannot model them without a dedicated assignment-sink path and paired
+  Flask/Django targets.
 - Judgement-call classes still awaiting direction: insecure randomness (CWE-330/338), CORS misconfiguration.
 
 ## Phase 20 — XXE, prototype pollution, HTTP response splitting

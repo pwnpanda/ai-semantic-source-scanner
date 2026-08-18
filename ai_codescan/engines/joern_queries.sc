@@ -99,7 +99,9 @@ import java.security.MessageDigest
           ("CWE-532", "log.sensitive", "(?i)^(trace|debug|info|warn|error|fatal|severe)$"),
           ("CWE-1336", "ssti",         "(?i)^(evaluate|<init>)$"),
           ("CWE-90",  "ldap.query",    "(?i)^search$"),
-          ("CWE-643", "xpath.query",   "(?i)^(evaluate|compile|evaluateExpression|compileExpression|selectNodes|selectSingleNode)$")
+          ("CWE-643", "xpath.query",   "(?i)^(evaluate|compile|evaluateExpression|compileExpression|selectNodes|selectSingleNode)$"),
+          // Spring JavaMailSender; ``send`` is receiver-gated below.
+          ("CWE-93",  "email.send",    "(?i)^send$")
         )
       )
     case "csharp" | "csharpsrc" =>
@@ -357,7 +359,9 @@ import java.security.MessageDigest
           ("CWE-643", "xpath.query",   "(?i)^(evaluate|compile|evaluateExpression|compileExpression|selectNodes|selectSingleNode)$"),
           // Phase 21 — LDAP injection. ``DirContext.search`` with a filter
           // built from user input subverts the filter logic.
-          ("CWE-90",  "ldap.query",    "(?i)^(search|searchControls)$")
+          ("CWE-90",  "ldap.query",    "(?i)^(search|searchControls)$"),
+          // Spring JavaMailSender; ``send`` is receiver-gated below.
+          ("CWE-93",  "email.send",    "(?i)^send$")
         )
       )
     case "python" =>
@@ -771,6 +775,9 @@ import java.security.MessageDigest
     """(?is).*(?:javax\.xml\.xpath|org\.apache\.xpath|\bXPath\w*(?:\.|\b)|\bxpath\.).*""".r
   val jvmLdapReceiver =
     """(?is).*(?:javax\.naming|ldap|DirContext|LdapContext|\b(?:directory|ldap)\w*\.).*""".r
+  val jvmEmailReceiver =
+    ("""(?is).*(?:org\.springframework\.mail(?:\.javamail)?\.JavaMailSender|""" +
+      """\bJavaMailSender\b).*""").r
   val csharpRegexReceiver = """(?is).*(?:\bRegex\.|\bRegex\.<init>|new\s+Regex\s*\().*""".r
   val csharpXpathReceiver =
     """(?is).*(?:XPath|XmlDocument|XmlNode|XmlElement|\b(?:xpath|navigator)\w*\.).*""".r
@@ -1070,6 +1077,8 @@ import java.security.MessageDigest
       sinks.filter(call => jvmXpathReceiver.matches(callDescriptor(call)))
     } else if (sinkClass == "ldap.query") {
       sinks.filter(call => jvmLdapReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "email.send") {
+      sinks.filter(call => jvmEmailReceiver.matches(callDescriptor(call)))
     } else sinks
   }
 
@@ -1139,6 +1148,10 @@ import java.security.MessageDigest
       dynamicArguments(call, Set(2))
     } else if (sinkClass == "ldap.query" && lang == "php") {
       dynamicArguments(call, Set(3))
+    } else if (sinkClass == "email.send" && (lang == "java" || lang == "kotlin")) {
+      // The receiver selects the mail transport; only the message argument
+      // carries attacker-controlled headers/content.
+      dynamicArguments(call, Set(1))
     } else if (sinkClass == "ssti" && (lang == "java" || lang == "kotlin")) {
       val templateArgs =
         if (name == "evaluate") indexedArguments(call, Set(4))

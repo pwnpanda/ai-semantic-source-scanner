@@ -493,7 +493,7 @@ Remaining classes from the audit — **cleared in Phase 21 below.**
 - [x] SSTI for non-Python (CWE-1336) — JS Handlebars/lodash, Java Velocity/FreeMarker, Ruby ERB, Go text/template.
 - [x] LDAP (CWE-90, `ldap.query`) + XPath (CWE-643, `xpath.query`) — Java/Kotlin/Python/PHP/C#.
 - [x] Sensitive logging (CWE-532) extended beyond JS to Python/Java/Kotlin/Ruby/C#.
-- [x] Email header injection (CWE-93) extended to Ruby/PHP/Go.
+- [x] Email header injection (CWE-93) extended to Java/Kotlin/Ruby/PHP/Go.
 - [x] ReDoS (CWE-1333, `redos`) — JS/Python/C#. Python models only `re.compile`; Go standard `regexp` is excluded because it guarantees linear-time matching.
 - [x] Firestore receiver gate — fixes `Object.create(null)` being reported as a Firestore write. Verified: mass-assignment target still passes, spurious flows on proto-pollution-safe went 2 → 0.
 - [x] Eval targets `express-nosql-injection` + `-safe`. Eval 44 → 46 pass / 49.
@@ -509,7 +509,8 @@ Still open:
   methods. Annotated request parameters are now discovered correctly, but cross-statement Joern
   flows remain a frontend limitation; do not replace them with file-wide co-location matches.
 - [ ] Format-string (CWE-134): needs receiver-taint support — the vulnerable shape is a tainted *format string*, not a tainted argument. Bare `format` as a sink would be pure noise.
-- [ ] Java `JavaMailSender.send`: bare `send` too generic on the JVM; needs a receiver gate like the Firestore one.
+- [x] Java/Kotlin `JavaMailSender.send`: Spring receiver type gate plus paired Java positive/safe
+  eval; unrelated `send` methods remain excluded.
 - [ ] Judgement-call classes pending user direction: insecure randomness (CWE-330/338), CORS misconfiguration. TOCTOU/races judged not statically detectable — skip.
 
 ## Phase 19: CSPT (Client-Side Path Traversal) (complete)
@@ -532,17 +533,19 @@ Plugs three of the four real gaps the vuln-class audit surfaced.
 - [x] `taint-schema` (storage_taint fixpoint) runs as part of `secscan` so Phase 17 stored XSS fires by default. Closes Phase 17 follow-up A.
 - [x] Eval targets: `express-open-redirect` (positive + safe). Updated `python-flask-xss` to expect both CWE-79 and CWE-1336.
 
-Open follow-ups (next pass — sinks are well-defined, additive):
+Follow-ups (completed in Phases 19–22 unless noted):
 
-- [ ] XXE (CWE-611) sinks: `DocumentBuilder.parse` (Java), `lxml.etree.parse` / `xml.sax.parse` (Python), `simplexml_load_string` (PHP), `XmlDocument.LoadXml` (C#).
-- [ ] HTTP response splitting (CWE-93/444): `setHeader` / `addHeader` with CRLF — Java/Python/Go.
-- [ ] Prototype pollution (CWE-1321): JS `lodash.merge` / `_.set` / recursive merge.
-- [ ] NoSQL injection: Mongo operator objects in query filters; use observation-only probes.
-- [ ] LDAP / XPath injection (CWE-90 / CWE-643).
-- [ ] SSTI for non-Python: Java Velocity / FreeMarker, Ruby ERB, JS Handlebars.
-- [ ] Sensitive logging beyond JS (Python/Java/Ruby).
-- [ ] Email sinks beyond JS/Python (Java/Ruby/PHP/Go).
-- [ ] CSPT — design call needed (CSPT vs SSRF discriminator).
+- [x] XXE (CWE-611) sinks across Java/Kotlin/Python/PHP/C#/Ruby.
+- [x] HTTP response-splitting call sinks across JS/Java/Kotlin/C#/PHP/Ruby/Go.
+- [ ] Python response-header writes are commonly subscript/property assignments rather than calls;
+  they need assignment-sink modeling plus paired Flask/Django targets.
+- [x] Prototype pollution (CWE-1321): JS deep-merge and receiver-gated deep-set helpers.
+- [x] NoSQL injection: receiver-gated Mongo query filters in JS and Python.
+- [x] LDAP / XPath injection (CWE-90 / CWE-643).
+- [x] SSTI for non-Python: Java Velocity / FreeMarker, Ruby ERB, JS Handlebars, Go templates.
+- [x] Sensitive logging beyond JS (Python/Java/Kotlin/Ruby/C#).
+- [x] Email sinks beyond JS/Python (Java/Kotlin/Ruby/PHP/Go).
+- [x] CSPT with a structural path-section discriminator (Phase 19).
 
 ## Phase 17: Stored + reflected XSS coverage (complete)
 

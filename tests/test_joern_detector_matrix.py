@@ -41,6 +41,11 @@ _DETECTOR_MATRIX: dict[RuleKey, DetectorRule] = {
         ("setHeader", "addHeader", "addCookie"),
         ("setBody", "addAttribute"),
     ),
+    ("kotlin", "CWE-93", "email.send"): DetectorRule(
+        (r"(?i)^send$",),
+        ("send",),
+        ("sendMail", "publish"),
+    ),
     ("kotlin", "CWE-532", "log.sensitive"): DetectorRule(
         (r"(?i)^(trace|debug|info|warn|error|fatal|severe)$",),
         ("trace", "debug", "info", "warn", "error", "fatal", "severe"),
@@ -190,6 +195,11 @@ _DETECTOR_MATRIX: dict[RuleKey, DetectorRule] = {
         ("setHeader", "addHeader", "addCookie"),
         ("setBody", "addAttribute"),
     ),
+    ("java", "CWE-93", "email.send"): DetectorRule(
+        (r"(?i)^send$",),
+        ("send",),
+        ("sendMail", "publish"),
+    ),
     ("java", "CWE-532", "log.sensitive"): DetectorRule(
         (r"(?i)^(trace|debug|info|warn|error|fatal|severe)$",),
         ("trace", "debug", "info", "warn", "error", "fatal", "severe"),
@@ -305,7 +315,7 @@ _DETECTOR_MATRIX: dict[RuleKey, DetectorRule] = {
 }
 
 _EXPECTED_LANGUAGES_BY_FAMILY = {
-    "email.send": {"go", "php", "ruby"},
+    "email.send": {"go", "java", "kotlin", "php", "ruby"},
     "header.write": {"csharp", "go", "java", "javascript", "kotlin", "php", "ruby"},
     "ldap.query": {"csharp", "java", "kotlin", "php", "python"},
     "log.sensitive": {"csharp", "java", "kotlin", "python", "ruby"},
@@ -534,6 +544,18 @@ def test_firestore_receiver_gate_rejects_unrelated_mutators(code: str) -> None:
             "jvmLdapReceiver",
             ("javax.naming.directory.DirContext.search context.search(base, filter)",),
             ("com.example.SearchService.search service.search(term)",),
+        ),
+        (
+            "jvmEmailReceiver",
+            (
+                "org.springframework.mail.javamail.JavaMailSender.send mailSender.send(message)",
+                "JavaMailSender.send javaMailSender.send(message)",
+            ),
+            (
+                "com.example.MessageBus.send bus.send(message)",
+                "NotificationService.send notifications.send(message)",
+                "com.example.MessageBus.send mailSender.send(message)",
+            ),
         ),
         (
             "csharpRegexReceiver",

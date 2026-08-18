@@ -9,6 +9,8 @@ import javax.naming.directory.SearchControls;
 import javax.xml.xpath.XPath;
 import org.apache.velocity.VelocityContext;
 import org.apache.velocity.app.VelocityEngine;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -23,6 +25,7 @@ final class SecurityShapes {
   private final SearchControls controls;
   private final Writer writer;
   private final Object document;
+  private final JavaMailSender mailSender;
 
   SecurityShapes(
       VelocityEngine velocity,
@@ -31,7 +34,8 @@ final class SecurityShapes {
       DirContext directory,
       SearchControls controls,
       Writer writer,
-      Object document) {
+      Object document,
+      JavaMailSender mailSender) {
     this.velocity = velocity;
     this.freemarker = freemarker;
     this.xpath = xpath;
@@ -39,6 +43,7 @@ final class SecurityShapes {
     this.controls = controls;
     this.writer = writer;
     this.document = document;
+    this.mailSender = mailSender;
   }
 
   @PostMapping("/freemarker")
@@ -63,5 +68,10 @@ final class SecurityShapes {
   @PostMapping("/ldap")
   void ldap(@RequestParam String ldapFilter) throws Exception {
     directory.search("ou=people", "(&(objectClass=person)" + ldapFilter + ")", controls);
+  }
+
+  @PostMapping("/mail")
+  void mail(@RequestBody SimpleMailMessage message) {
+    mailSender.send(message);
   }
 }

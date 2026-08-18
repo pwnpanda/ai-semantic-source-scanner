@@ -88,6 +88,12 @@ _SKIP_VALIDATION_RE = re.compile(
     r"(?:skip|bypass|disable|ignore|omit|suppress|without|unchecked)|"
     r"!\s*[A-Za-z_]\w*\s*\.\s*(?:validate|enforce\w*(?:rule|policy|check))\b"
 )
+_FEATURE_TOGGLE_DISABLE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"(?:[A-Za-z_]\w*)?(?:feature|toggle)\w*\s*\.\s*isDisabled\b|"
+    r"[A-Za-z_]\w*\s*\.\s*isDisabled\s*\([^)]*\b(?:feature|toggle)\w*"
+    r")"
+)
 _DECLARATION_ONLY_RE = re.compile(
     r"(?ix)^\s*(?:(?:data\s+)?class|record|interface)\b|"
     r"^\s*(?:(?:private|protected|public|internal|static|final|const)\s+)*"
@@ -97,7 +103,7 @@ _DECLARATION_ONLY_RE = re.compile(
     r"\s*(?::[^;\n]+|=\s*[^;\n]+|;)\s*$|"
     r"^\s*\w*(?:skip|bypass|disable|ignore|omit|suppress|without|unchecked|"
     r"no(?:Validation|Rule|Check|Policy))\w*"
-    r"\s*:\s*(?:Boolean|bool)\??\s*,?\s*$|"
+    r"\s*:\s*(?:Boolean|bool)\??\s*(?:=\s*.+)?\s*,?\s*$|"
     r"^\s*(?:boolean|Boolean|bool)\s+"
     r"\w*(?:skip|bypass|disable|ignore|omit|suppress|without|unchecked|"
     r"no(?:Validation|Rule|Check|Policy))\w*\s*,?\s*$"
@@ -609,6 +615,11 @@ def _is_bypass_declaration_line(code_line: str) -> bool:
     )
 
 
+def _has_validation_bypass(code_line: str) -> bool:
+    without_feature_toggles = _FEATURE_TOGGLE_DISABLE_RE.sub("", code_line)
+    return _SKIP_VALIDATION_RE.search(without_feature_toggles) is not None
+
+
 def _validation_bypass_hotspots(
     path: Path,
     lines: list[str],
@@ -619,7 +630,7 @@ def _validation_bypass_hotspots(
     regions_by_line = _smallest_regions_by_line(regions, len(lines))
     code_lines = _code_without_literals("\n".join(lines)).splitlines()
     for line_no, (line_text, code_line) in enumerate(zip(lines, code_lines, strict=False), start=1):
-        if not _SKIP_VALIDATION_RE.search(code_line) or _is_bypass_declaration_line(code_line):
+        if not _has_validation_bypass(code_line) or _is_bypass_declaration_line(code_line):
             continue
         if line_text.lstrip().startswith(("//", "/*", "*")):
             continue
@@ -975,6 +986,21 @@ def _without_static_log_text(arguments: str) -> str:
     )
 
 
+def _advance_quoted_argument_state(
+    character: str,
+    *,
+    quote: str,
+    escaped: bool,
+) -> tuple[str, bool]:
+    if escaped:
+        return quote, False
+    if character == "\\":
+        return quote, True
+    if character == quote:
+        return "", False
+    return quote, False
+
+
 def _balanced_log_arguments(text: str, start: int, *, max_chars: int = 2_000) -> str | None:
     depth = 1
     quote = ""
@@ -983,12 +1009,11 @@ def _balanced_log_arguments(text: str, start: int, *, max_chars: int = 2_000) ->
     for index in range(start, end):
         character = text[index]
         if quote:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == quote:
-                quote = ""
+            quote, escaped = _advance_quoted_argument_state(
+                character,
+                quote=quote,
+                escaped=escaped,
+            )
             continue
         if character in {'"', "'"}:
             quote = character

@@ -945,34 +945,42 @@ cases:
       - id: JAVA-FREEMARKER-SSTI-001
         cwe: CWE-1336
         file: src/main/java/example/SecurityShapes.java
-        source_line: 45
-        sink_line: 47
+        source_line: 50
+        sink_line: 52
         source_contains: RequestBody
         sink_contains: <init>
         line_tolerance: 1
       - id: JAVA-VELOCITY-SSTI-001
         cwe: CWE-1336
         file: src/main/java/example/SecurityShapes.java
-        source_line: 53
-        sink_line: 54
+        source_line: 58
+        sink_line: 59
         source_contains: RequestBody
         sink_contains: evaluate
         line_tolerance: 1
       - id: JAVA-XPATH-001
         cwe: CWE-643
         file: src/main/java/example/SecurityShapes.java
-        source_line: 59
-        sink_line: 60
+        source_line: 64
+        sink_line: 65
         source_contains: RequestParam
         sink_contains: evaluate
         line_tolerance: 1
       - id: JAVA-LDAP-001
         cwe: CWE-90
         file: src/main/java/example/SecurityShapes.java
-        source_line: 64
-        sink_line: 65
+        source_line: 69
+        sink_line: 70
         source_contains: RequestParam
         sink_contains: search
+        line_tolerance: 1
+      - id: JAVA-MAIL-HEADER-001
+        cwe: CWE-93
+        file: src/main/java/example/SecurityShapes.java
+        source_line: 74
+        sink_line: 75
+        source_contains: RequestBody
+        sink_contains: send
         line_tolerance: 1
     allowed_false_positives: []
   - id: java-phase21-variants-safe
@@ -980,7 +988,9 @@ cases:
     language: java
     engine: joern
     # Request data is a FreeMarker/Velocity data model, never template source;
-    # XPath and LDAP expressions are compile-time constants.
+    # XPath/LDAP/email inputs are fixed. The tainted MessageBus.send near-miss
+    # verifies receiver gating; the request-bound JavaMailSender verifies that
+    # receiver taint is not mistaken for tainted message headers.
     expected_findings: []
     allowed_false_positives: []
   - id: python-phase21-variants
