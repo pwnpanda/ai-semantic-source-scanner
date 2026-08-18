@@ -64,6 +64,25 @@ def test_build_queue_serialises_as_jsonl(tmp_path: Path) -> None:
     assert parsed == queue
 
 
+def test_build_queue_hashes_unsafe_scip_symbol_ids(tmp_path: Path) -> None:
+    db = tmp_path / "scip.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    symbol_id = "scip:scip-java maven . . pkg/AuthGuard#requireAdmin()."
+    conn.execute(
+        "INSERT INTO symbols VALUES (?, 'sym', 'function', '/abs/Auth.kt', 1, 1, "
+        "NULL, 'requireAdmin')",
+        [symbol_id],
+    )
+
+    queue = build_queue(conn, target_bug_classes=[])
+
+    candidate = next(item for item in queue if item["concern"] == "authz-callsite")
+    assert candidate["id"].startswith("B-auth-h-")
+    assert "/" not in candidate["id"]
+    assert candidate["symbol_id"] == symbol_id
+
+
 def test_run_nominator_stages_scores_and_bundles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

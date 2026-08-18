@@ -106,3 +106,26 @@ def test_nomination_body_is_preserved_when_renumbering(tmp_path: Path) -> None:
     stream_b_at = body.index("## Stream B")
     stream_c_at = body.index("## Stream C")
     assert stream_b_at < body.index("open-redirect") < stream_c_at
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_placeholder_nomination_id_is_assigned(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "inputs").mkdir(parents=True)
+    (run_dir / "queue.jsonl").write_text('{"id": "B-only"}\n', encoding="utf-8")
+    stub = tmp_path / "stub_llm.sh"
+    _write_stub_llm(
+        stub,
+        block=(
+            "<<<AI_CODESCAN_NOMINATION:STREAM=B>>>\n"
+            "- [ ] N-NNN | proj | authz | Auth.kt:7 | rec: low | y/n:\n"
+            "    Summary: a heuristic candidate\n"
+            "<<<AI_CODESCAN_NOMINATION:END>>>"
+        ),
+    )
+
+    result = _run_loop(run_dir, stub)
+
+    assert result.returncode == 0, result.stderr
+    body = (run_dir / "nominations.md").read_text(encoding="utf-8")
+    assert "- [ ] N-001 | proj | authz | Auth.kt:7" in body

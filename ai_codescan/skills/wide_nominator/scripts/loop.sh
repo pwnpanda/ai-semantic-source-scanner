@@ -24,7 +24,7 @@ ENTRY_MD="$RUN_DIR/inputs/entrypoints.md"
 SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:-$RUN_DIR/../../source}"
 
 if [[ ! -f "$NOMS" ]]; then
-  cat > "$NOMS" <<'EOF'
+  cat >"$NOMS" <<'EOF'
 # Nominations
 
 ## Stream A — Pre-traced (CodeQL flows ready for triage)
@@ -50,19 +50,19 @@ invoke_llm() {
   # stdin is consumed by the first attempt, so buffer the prompt to replay it.
   local prompt_file attempt delay rc
   prompt_file="$(mktemp)"
-  cat - > "$prompt_file"
+  cat - >"$prompt_file"
   delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
   rc=1
   for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
     if [[ -n "$LLM_CMD" ]]; then
-      "$LLM_CMD" < "$prompt_file" && rc=0
+      "$LLM_CMD" <"$prompt_file" && rc=0
     else
       claude -p "$(cat "$prompt_file")" && rc=0
     fi
     [[ "$rc" -eq 0 ]] && break
     printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
     sleep "$delay"
-    delay=$(( delay * 2 ))
+    delay=$((delay * 2))
   done
   rm -f "$prompt_file"
   return "$rc"
@@ -73,18 +73,18 @@ render_prompt() {
   cat "$PROMPT"
   printf '\n\n---\n\n## This iteration\n\n'
   printf 'Candidate JSON (classify and nominate this one):\n\n'
-  printf '```json\n%s\n```\n\n' "$candidate"
+  printf "\`\`\`json\n%s\n\`\`\`\n\n" "$candidate"
   printf 'Reference paths (for Read/Grep — do not write):\n\n'
-  printf -- '- Repo overview: `%s`\n' "$REPO_MD"
-  printf -- '- Entrypoints: `%s`\n' "$ENTRY_MD"
-  printf -- '- Source snapshot root: `%s`\n\n' "$SOURCE_ROOT"
+  printf -- "- Repo overview: \`%s\`\n" "$REPO_MD"
+  printf -- "- Entrypoints: \`%s\`\n" "$ENTRY_MD"
+  printf -- "- Source snapshot root: \`%s\`\n\n" "$SOURCE_ROOT"
   if [[ -f "$REPO_MD" ]]; then
-    printf '## Embedded `repo.md`\n\n```markdown\n'
+    printf "## Embedded \`repo.md\`\n\n\`\`\`markdown\n"
     cat "$REPO_MD"
     printf '\n```\n\n'
   fi
   if [[ -f "$ENTRY_MD" ]]; then
-    printf '## Embedded `entrypoints.md`\n\n```markdown\n'
+    printf "## Embedded \`entrypoints.md\`\n\n\`\`\`markdown\n"
     cat "$ENTRY_MD"
     printf '\n```\n'
   fi
@@ -127,10 +127,11 @@ if not hm:
 # N-001. Downstream stages key on the nomination id, so duplicates collapse
 # distinct candidates into one and silently drop the rest. The id is ours to
 # assign: renumber to the next free slot at ingest time.
-_ID_RE = re.compile(r"^- \[[ xX]\]\s*N-(\d+)", re.MULTILINE)
-used = [int(n) for n in _ID_RE.findall(contents)]
+_USED_ID_RE = re.compile(r"^- \[[ xX]\]\s*N-(\d+)", re.MULTILINE)
+_BLOCK_ID_RE = re.compile(r"^- \[[ xX]\]\s*N-(?:\d+|NNN)\b", re.MULTILINE)
+used = [int(n) for n in _USED_ID_RE.findall(contents)]
 next_id = max(used, default=0) + 1
-body, renumbered = _ID_RE.subn(
+body, renumbered = _BLOCK_ID_RE.subn(
     lambda _m: f"- [ ] N-{next_id:03d}", body, count=1
 )
 if not renumbered:
@@ -165,17 +166,17 @@ while IFS= read -r line; do
   printf '[nominate] %d/%d %s … ' "$idx" "$total" "$candidate_id" >&2
   iter_log="$RUN_DIR/.done/${candidate_id}.stdout"
   start_ts=$(date +%s)
-  if ! render_prompt "$line" | invoke_llm > "$iter_log"; then
+  if ! render_prompt "$line" | invoke_llm >"$iter_log"; then
     echo "FAIL (llm error)" >&2
     continue
   fi
   stream=$(append_nomination_from_stdout "$iter_log" 2>&1) || stream=""
-  elapsed=$(( $(date +%s) - start_ts ))
+  elapsed=$(($(date +%s) - start_ts))
   if [[ -z "$stream" || ! "$stream" =~ ^[ABC]$ ]]; then
     echo "FAIL no block (${elapsed}s)" >&2
     continue
   fi
   echo "ok → Stream $stream (${elapsed}s)" >&2
   touch "$done_marker"
-done < "$QUEUE"
+done <"$QUEUE"
 echo "[nominate] done" >&2

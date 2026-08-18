@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -20,6 +22,21 @@ from ai_codescan.scoring import attach_scores, persist_candidate_scores, score_c
 from ai_codescan.taxonomy.loader import BugClass, resolve_classes
 
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "wide_nominator"
+_SAFE_CANDIDATE_COMPONENT = re.compile(r"^[A-Za-z0-9_-]+$")
+_MAX_CANDIDATE_COMPONENT_LENGTH = 80
+_CANDIDATE_COMPONENT_HASH_LENGTH = 16
+
+
+def _candidate_id_component(value: object) -> str:
+    component = str(value)
+    if (
+        component
+        and len(component) <= _MAX_CANDIDATE_COMPONENT_LENGTH
+        and _SAFE_CANDIDATE_COMPONENT.fullmatch(component)
+    ):
+        return component
+    digest = hashlib.sha256(component.encode("utf-8")).hexdigest()
+    return f"h-{digest[:_CANDIDATE_COMPONENT_HASH_LENGTH]}"
 
 
 def _cwes_for_classes(classes: list[BugClass]) -> set[str]:
@@ -135,9 +152,10 @@ def build_queue(
         """
     ).fetchall()
     for sym_id, file, line, name in auth_rows:
+        candidate_component = _candidate_id_component(sym_id)
         queue.append(
             {
-                "id": f"B-auth-{sym_id}",
+                "id": f"B-auth-{candidate_component}",
                 "stream": "B",
                 "concern": "authz-callsite",
                 "symbol_id": sym_id,
