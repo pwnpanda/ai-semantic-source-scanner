@@ -737,6 +737,9 @@ import java.security.MessageDigest
   // is the fallback for frontends with incomplete type recovery.
   val jsSstiReceiver =
     """(?is).*(?:handlebars|lodash|nunjucks|pug|ejs|dot)(?::|\.).*(?:compile|template).*""".r
+  val jsEmailReceiver =
+    ("""(?is).*(?:nodemailer|mailer|mailTransport|emailClient|sendgrid|\bses\w*)\.""" +
+      """(?:sendMail|sendEmail).*""").r
   val jsRegExpConstructor = """(?is).*\b(?:new\s+)?RegExp\s*\(.*""".r
   val jsMongoReceiver =
     """(?is).*(?:mongodb|mongoose|mongojs|monk|\b(?:mongo|collection|coll)\w*\.).*""".r
@@ -953,6 +956,8 @@ import java.security.MessageDigest
       }
     } else if (sinkClass == "ssti") {
       sinks.filter(call => jsSstiReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "email.send") {
+      sinks.filter(call => jsEmailReceiver.matches(callDescriptor(call)))
     } else if (sinkClass == "nosql.query") {
       sinks.filter { call =>
         jsMongoReceiver.matches(callDescriptor(call)) ||

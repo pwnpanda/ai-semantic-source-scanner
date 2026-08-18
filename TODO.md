@@ -499,7 +499,9 @@ Remaining classes from the audit — **cleared in Phase 21 below.**
 - [x] Eval targets `express-nosql-injection` + `-safe`. Eval 44 → 46 pass / 49.
 - [x] Phase 22 generalized regression audit: exact language matrix for all Phase 20/21 sinks,
   direct receiver-gate positives/negatives, and paired JS/Python/Java/C# Joern eval repositories.
-- [x] Phase 22 semantic corrections: canonical Mongo `find`, actual JS/C# constructor call names, receiver/argument-aware non-Python SSTI/XPath/LDAP, Kotlin parameter sources, and removal of the invalid Go ReDoS mapping.
+- [x] Phase 22 semantic corrections: canonical Mongo `find`, actual JS/C# constructor call names,
+  receiver/argument-aware email/SSTI/XPath/LDAP, Kotlin parameter sources, and removal of the
+  invalid Go ReDoS mapping.
 
 Still open:
 

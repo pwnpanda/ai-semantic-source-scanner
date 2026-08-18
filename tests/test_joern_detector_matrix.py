@@ -461,6 +461,17 @@ def test_firestore_receiver_gate_rejects_unrelated_mutators(code: str) -> None:
             ("ajv:compile validator.compile(input)", "WebAssembly:compile(input)"),
         ),
         (
+            "jsEmailReceiver",
+            (
+                "nodemailer.Transport.sendMail mailer.sendMail(message)",
+                "aws.SES.sendEmail sesClient.sendEmail(message)",
+            ),
+            (
+                "NotificationService.sendEmail notifications.sendEmail(message)",
+                "queue.sendMail(message)",
+            ),
+        ),
+        (
             "jsMongoReceiver",
             (
                 "mongodb:collection.find users.find(input)",

@@ -82,6 +82,8 @@ gaps:
 - JS `new RegExp(...)` is lowered to `<operator>.new`; the detector now matches that call and gates it to a RegExp constructor.
 - C# `new Regex(...)` is lowered to `<init>`; static and instance `IsMatch` select only the pattern-bearing argument/receiver.
 - JS/Python Mongo `find` is supported with type/receiver gates.
+- JS email calls require a mailer/SES-shaped receiver; unrelated application `sendEmail` methods
+  are safe near-misses.
 - JS Handlebars/lodash, Java Velocity/FreeMarker, Ruby ERB, and Go template parsing use receiver and argument semantics. FreeMarker `process`, Go `ParseFiles`/`ParseGlob`, and unrelated `compile` calls are safe near-misses rather than SSTI sinks.
 - Java/Kotlin XPath includes the canonical `evaluate` and `compile` APIs and selects the expression argument. LDAP selects the filter argument.
 - Kotlin annotated request parameters join Java parameters in the Joern source set.

@@ -822,34 +822,42 @@ cases:
       - id: JAVASCRIPT-MONGO-FIND-001
         cwe: CWE-943
         file: server.js
-        source_line: 15
-        sink_line: 19
+        source_line: 16
+        sink_line: 21
         source_contains: req.body.filter
         sink_contains: find
         line_tolerance: 1
       - id: JAVASCRIPT-HANDLEBARS-SSTI-001
         cwe: CWE-1336
         file: server.js
-        source_line: 16
-        sink_line: 20
+        source_line: 17
+        sink_line: 22
         source_contains: req.body.template
         sink_contains: compile
         line_tolerance: 1
       - id: JAVASCRIPT-REGEXP-REDOS-001
         cwe: CWE-1333
         file: server.js
-        source_line: 17
-        sink_line: 21
+        source_line: 18
+        sink_line: 23
         source_contains: req.body.pattern
         sink_contains: <operator>.new
         line_tolerance: 1
       - id: JAVASCRIPT-HEADER-WRITE-001
         cwe: CWE-93
         file: server.js
-        source_line: 18
-        sink_line: 22
+        source_line: 19
+        sink_line: 24
         source_contains: req.body.headerValue
         sink_contains: setHeader
+        line_tolerance: 1
+      - id: JAVASCRIPT-EMAIL-HEADER-001
+        cwe: CWE-93
+        file: server.js
+        source_line: 20
+        sink_line: 25
+        source_contains: req.body.mailHeaders
+        sink_contains: sendMail
         line_tolerance: 1
     allowed_false_positives: []
   - id: javascript-phase21-variants-safe
