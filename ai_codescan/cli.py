@@ -1345,8 +1345,7 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
         rules_root=effective_rules_root,
         staged=not promote,
     )
-    if promote:
-        register_rules_root(repo_dir, effective_rules_root)
+    register_rules_root(repo_dir, effective_rules_root)
     db_path = cache_root / repo_id / "index.duckdb"
     if db_path.is_file():
         conn = duckdb.connect(str(db_path))
@@ -1670,6 +1669,13 @@ def nominate(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
         str,
         typer.Option("--llm-model", help="Specific model name passed to the LLM CLI."),
     ] = "",
+    run_id: Annotated[
+        str,
+        typer.Option(
+            "--run-id",
+            help="Stable run id used to resume a matching nomination attempt.",
+        ),
+    ] = "",
 ) -> None:
     """Run the wide-pass nominator skill against the cached repo."""
     cache_root: Path = ctx.obj["cache_root"]
@@ -1692,14 +1698,19 @@ def nominate(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
         bug_classes = list_classes()
 
     llm = _build_llm_config(llm_provider, llm_model)
-    state = load_or_create(
-        repo_dir,
-        engine="codeql",
-        temperature=temperature,
-        target_bug_classes=[c.name for c in bug_classes],
-        llm_provider=llm.provider,
-        llm_model=llm.model,
-    )
+    try:
+        state = load_or_create(
+            repo_dir,
+            engine="codeql",
+            temperature=temperature,
+            target_bug_classes=[c.name for c in bug_classes],
+            run_id=run_id or None,
+            llm_provider=llm.provider,
+            llm_model=llm.model,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
     nominations_path = run_nominator(
         state, repo_dir=repo_dir, bug_classes=bug_classes, db_path=db_path, llm=llm
     )

@@ -178,6 +178,49 @@ def _stage_slices(
     return bundle_sizes
 
 
+def _remove_obsolete_analysis_artifacts(state: RunState, items: list[QueueItem]) -> None:
+    """Delete generated analysis outputs that no longer belong to the staged queue."""
+    nomination_ids = {item.nomination_id for item in items}
+    finding_names = {f"F-{nomination_id.removeprefix('N-')}.md" for nomination_id in nomination_ids}
+    findings_dir = state.run_dir / "findings"
+    for path in findings_dir.glob("F-*.md"):
+        if not path.name.startswith("F-miss-") and path.name not in finding_names:
+            path.unlink(missing_ok=True)
+    done_dir = state.run_dir / ".done-analyze"
+    for path in done_dir.glob("N-*"):
+        nomination_id = path.name.removesuffix(".stdout")
+        if nomination_id not in nomination_ids:
+            path.unlink(missing_ok=True)
+    for directory, patterns in (
+        (state.run_dir / "bundles", ("N-*.json", "N-*.md")),
+        (state.run_dir / "slices", ("N-*.json",)),
+    ):
+        for pattern in patterns:
+            for path in directory.glob(pattern):
+                if path.stem not in nomination_ids:
+                    path.unlink(missing_ok=True)
+
+
+def _clear_analysis_verdicts(conn: duckdb.DuckDBPyConnection) -> None:
+    """Invalidate persisted deep-review rows before a possibly partial rerun."""
+    table = conn.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'review_verdicts'"
+    ).fetchone()
+    if table is not None:
+        conn.execute("DELETE FROM review_verdicts WHERE reviewer = 'deep_analyzer'")
+
+
+def _remove_current_analysis_findings(state: RunState, items: list[QueueItem]) -> None:
+    """Remove prior LLM outputs when the requested review cannot execute."""
+    findings_dir = state.run_dir / "findings"
+    done_dir = state.run_dir / ".done-analyze"
+    for item in items:
+        finding_id = item.nomination_id.removeprefix("N-")
+        (findings_dir / f"F-{finding_id}.md").unlink(missing_ok=True)
+        (done_dir / item.nomination_id).unlink(missing_ok=True)
+        (done_dir / f"{item.nomination_id}.stdout").unlink(missing_ok=True)
+
+
 def run_analyzer(
     state: RunState,
     *,
@@ -194,8 +237,9 @@ def run_analyzer(
 
     accepted = accepted_nominations_to_queue(nominations.read_text(encoding="utf-8"))
 
-    conn = duckdb.connect(str(db_path), read_only=True)
+    conn = duckdb.connect(str(db_path))
     try:
+        _clear_analysis_verdicts(conn)
         review_items = _limit_review_items(
             conn,
             accepted,
@@ -220,9 +264,11 @@ def run_analyzer(
     effective = llm or LLMConfig(provider=state.llm_provider, model=state.llm_model)
     findings_dir = state.run_dir / "findings"
     findings_dir.mkdir(exist_ok=True)
+    _remove_obsolete_analysis_artifacts(state, review_items)
 
     if limits.deterministic_only or not is_available(effective.provider):
         # No CLI on PATH — skill loop is skipped; downstream commands still work.
+        _remove_current_analysis_findings(state, review_items)
         _ = repo_dir  # repo_dir reserved for future passes; suppress unused warning
         return queue_path
 

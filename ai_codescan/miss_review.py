@@ -279,6 +279,44 @@ def _remove_obsolete_miss_artifacts(
     )
 
 
+def _purge_unbacked_miss_verdicts(
+    *,
+    db_path: Path,
+    repo_dir: Path,
+    candidate_cache_keys: dict[str, ReviewCacheKey],
+) -> None:
+    """Delete DB verdicts that lack an exact current review artifact and marker."""
+    if not db_path.is_file():
+        return
+    valid_candidate_ids = set(candidate_cache_keys)
+    valid_candidate_ids.difference_update(
+        _stale_candidate_ids(
+            repo_dir / ".done-miss-review",
+            repo_dir / "miss_reviews",
+            candidate_cache_keys,
+        )
+    )
+    conn = duckdb.connect(str(db_path))
+    try:
+        table = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'review_verdicts'"
+        ).fetchone()
+        if table is None:
+            return
+        rows = conn.execute(
+            "SELECT nomination_id FROM review_verdicts WHERE reviewer = 'miss_reviewer'"
+        ).fetchall()
+        obsolete = [(str(row[0]),) for row in rows if str(row[0]) not in valid_candidate_ids]
+        if obsolete:
+            conn.executemany(
+                "DELETE FROM review_verdicts "
+                "WHERE nomination_id = ? AND reviewer = 'miss_reviewer'",
+                obsolete,
+            )
+    finally:
+        conn.close()
+
+
 def _remove_outputs_for_candidates(
     *,
     findings_dir: Path,
@@ -460,6 +498,11 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
     _remove_obsolete_miss_artifacts(
         repo_dir=repo_dir,
         run_dir=run_dir,
+        candidate_cache_keys=candidate_cache_keys,
+    )
+    _purge_unbacked_miss_verdicts(
+        db_path=db_path,
+        repo_dir=repo_dir,
         candidate_cache_keys=candidate_cache_keys,
     )
     if not is_available(effective.provider):

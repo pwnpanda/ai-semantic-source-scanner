@@ -198,3 +198,34 @@ def test_storage_resolver_marker_binds_model_and_queue_input(tmp_path: Path) -> 
             "confidence": 0.9,
         }
     ]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_storage_resolver_rejects_success_without_structured_proposal(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    resolver_dir = run_dir / "storage_resolver"
+    inputs_dir = run_dir / "inputs"
+    resolver_dir.mkdir(parents=True)
+    inputs_dir.mkdir()
+    (resolver_dir / "queue.jsonl").write_text(
+        json.dumps({"call_id": "S-1", "code_snippet": "cache.set(a)"}) + "\n",
+        encoding="utf-8",
+    )
+    (inputs_dir / "repo.md").write_text("# Repo\n", encoding="utf-8")
+    stub = tmp_path / "empty-success.sh"
+    stub.write_text("#!/usr/bin/env bash\ncat - >/dev/null\nexit 0\n", encoding="utf-8")
+    stub.chmod(0o755)
+
+    result = _run_loop(
+        "storage_taint_resolver",
+        env={
+            "AICS_RUN_DIR": str(run_dir),
+            "AICS_SKILL_DIR": str(SKILLS_ROOT / "storage_taint_resolver"),
+            "AICS_LLM_CMD": str(stub),
+            "AICS_LLM_CONTEXT": "codex:gpt-5.6",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "produced no structured proposal" in result.stderr
+    assert not (resolver_dir / ".done" / "S-1").exists()

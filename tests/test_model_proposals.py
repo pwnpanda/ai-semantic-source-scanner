@@ -749,6 +749,10 @@ def test_model_proposals_cli_link_targets_then_apply(tmp_path: Path) -> None:
     # rule landed in rules.staged/ by default.
     staged = rules_root / "rules.staged"
     assert any(staged.glob("aics-cwe-639-*.yml")), list(staged.iterdir())
+    registry = json.loads(
+        (cache / "repo-1" / "aics-semgrep-rules.json").read_text(encoding="utf-8")
+    )
+    assert registry == {"rules_root": str(rules_root.resolve())}
 
 
 def test_model_proposals_apply_refuses_without_paired_targets(tmp_path: Path) -> None:

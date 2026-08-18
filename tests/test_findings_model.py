@@ -1,5 +1,7 @@
 """Tests for ai_codescan.findings.model."""
 
+import pytest
+
 from ai_codescan.findings.model import Finding, parse_finding, render_finding
 
 
@@ -34,3 +36,12 @@ def test_parse_extracts_status_from_frontmatter() -> None:
     assert f.status == "verified"
     assert f.cwe == "CWE-639"
     assert f.flow_id == ""
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    ["[unterminated", "- list-item", "scalar"],
+)
+def test_parse_rejects_malformed_or_non_mapping_frontmatter(frontmatter: str) -> None:
+    with pytest.raises(ValueError, match="frontmatter"):
+        parse_finding(f"---\n{frontmatter}\n---\n\nBody\n")

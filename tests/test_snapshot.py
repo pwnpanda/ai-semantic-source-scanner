@@ -64,12 +64,34 @@ def test_snapshot_pinned_to_explicit_commit(tmp_path: Path) -> None:
         ["git", "-C", str(target), "commit", "-q", "-m", "second"],
         check=True,
     )
+    (target / "hello.txt").write_text("dirty", encoding="utf-8")
     cache = tmp_path / "cache"
 
     result = take_snapshot(target, cache_dir=cache, commit=first_sha)
 
     assert result.commit_sha == first_sha
     assert (result.snapshot_dir / "hello.txt").read_text() == "hi"
+
+
+@pytest.mark.integration
+def test_snapshot_dirty_git_uses_live_copy(tmp_path: Path) -> None:
+    target = tmp_path / "src"
+    target.mkdir()
+    _init_git_repo(target)
+    changed = target / "hello.txt"
+    changed.write_text("dirty", encoding="utf-8")
+    untracked = target / "New.kt"
+    untracked.write_text("fun live() = true\n", encoding="utf-8")
+    cache = tmp_path / "cache"
+
+    first = take_snapshot(target, cache_dir=cache)
+    second = take_snapshot(target, cache_dir=cache)
+
+    assert first.method == "cp"
+    assert first.commit_sha is None
+    assert (first.snapshot_dir / "hello.txt").read_text(encoding="utf-8") == "dirty"
+    assert (first.snapshot_dir / "New.kt").is_file()
+    assert second.skipped is True
 
 
 @pytest.mark.integration
@@ -167,6 +189,36 @@ def test_snapshot_cp_refreshes_when_target_changes(tmp_path: Path) -> None:
     assert second.skipped is False
     assert not (second.snapshot_dir / "stale.yml").exists()
     assert (second.snapshot_dir / "current.yml").is_file()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("git_target", [False, True])
+@pytest.mark.parametrize("damage", ["deleted", "corrupt"])
+def test_snapshot_does_not_reuse_damaged_cached_source(
+    tmp_path: Path,
+    git_target: bool,
+    damage: str,
+) -> None:
+    target = tmp_path / "src"
+    target.mkdir()
+    if git_target:
+        _init_git_repo(target)
+    else:
+        (target / "hello.txt").write_text("hi", encoding="utf-8")
+    cache = tmp_path / "cache"
+    first = take_snapshot(target, cache_dir=cache)
+
+    if damage == "deleted":
+        shutil.rmtree(first.snapshot_dir, onexc=force_remove)
+    else:
+        cached_file = first.snapshot_dir / "hello.txt"
+        cached_file.chmod(cached_file.stat().st_mode | stat.S_IWUSR)
+        cached_file.write_text("corrupt", encoding="utf-8")
+
+    second = take_snapshot(target, cache_dir=cache)
+
+    assert second.skipped is False
+    assert (second.snapshot_dir / "hello.txt").read_text(encoding="utf-8") == "hi"
 
 
 def test_force_remove_clears_a_read_only_snapshot_tree(tmp_path: Path) -> None:

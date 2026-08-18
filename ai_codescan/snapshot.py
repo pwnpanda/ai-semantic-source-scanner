@@ -1,8 +1,8 @@
 """Repository snapshot management.
 
 Takes a deterministic, read-only snapshot of a target repo into the cache dir.
-Uses ``git worktree`` when possible (cheap, shares objects); falls back to
-``cp -r`` for non-git targets (Task 5).
+Uses ``git worktree`` for clean or explicitly pinned Git targets (cheap,
+shares objects); copies dirty unpinned and non-Git targets.
 """
 
 from __future__ import annotations
@@ -34,6 +34,24 @@ def _is_git_repo(target: Path) -> bool:
     return (target / ".git").exists()
 
 
+def git_worktree_is_dirty(target: Path) -> bool:
+    """Return whether tracked or untracked Git source differs from ``HEAD``."""
+    result = subprocess.run(  # noqa: S603 - argv-only, no shell
+        [  # noqa: S607
+            "git",
+            "-C",
+            str(target),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode != 0 or bool(result.stdout.strip())
+
+
 def _resolve_commit(target: Path, commit: str | None) -> str:
     rev = commit or "HEAD"
     # S603/S607: argv list with literal "git" — caller-controlled target/rev are
@@ -63,7 +81,11 @@ def _existing_snapshot_matches(
     head_marker = cache_dir / ".snapshot-commit"
     if expected_commit is None or not head_marker.is_file():
         return False
-    return head_marker.read_text(encoding="utf-8").strip() == expected_commit
+    try:
+        recorded_commit = head_marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return recorded_commit == expected_commit and _cached_snapshot_matches_manifest(cache_dir)
 
 
 def force_remove(_func, path, _exc) -> None:
@@ -102,12 +124,31 @@ def _ignored_snapshot_entries(directory: str, entries: list[str]) -> list[str]:
     ]
 
 
-def _manifest_already_matches(cache_dir: Path, source_root: Path) -> bool:
-    """For non-git targets: return True if the target content still matches."""
+def _cached_snapshot_matches_manifest(cache_dir: Path) -> bool:
+    """Return whether cached source content matches its durable manifest."""
     manifest_path = cache_dir / "manifest.jsonl"
-    if not manifest_path.is_file() or not source_root.exists():
+    snapshot_dir = cache_dir / "source"
+    if (
+        not manifest_path.is_file()
+        or manifest_path.is_symlink()
+        or not snapshot_dir.is_dir()
+        or snapshot_dir.is_symlink()
+    ):
         return False
-    return read_manifest(manifest_path) == build_manifest(source_root)
+    try:
+        return read_manifest(manifest_path) == build_manifest(snapshot_dir)
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _manifest_already_matches(cache_dir: Path, source_root: Path) -> bool:
+    """For copied targets, require matching live and cached source content."""
+    if not _cached_snapshot_matches_manifest(cache_dir) or not source_root.is_dir():
+        return False
+    try:
+        return read_manifest(cache_dir / "manifest.jsonl") == build_manifest(source_root)
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def _git_worktree_snapshot(target: Path, cache_dir: Path, commit: str) -> Path:
@@ -166,14 +207,17 @@ def take_snapshot(
 ) -> SnapshotResult:
     """Snapshot ``target`` into ``cache_dir``.
 
-    Uses ``git worktree`` when ``target`` is a git repo, ``cp -r`` otherwise.
-    Idempotent: a re-invocation with matching state returns ``skipped=True``.
+    Uses ``git worktree`` for clean or explicitly pinned Git source. Dirty,
+    unpinned Git source uses a copy so the snapshot matches the files the user
+    asked to scan. A re-invocation with matching state returns ``skipped=True``.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir = cache_dir / "source"
     manifest_path = cache_dir / "manifest.jsonl"
 
-    if _is_git_repo(target):
+    is_git_repo = _is_git_repo(target)
+    use_git_worktree = is_git_repo and (bool(commit) or not git_worktree_is_dirty(target))
+    if use_git_worktree:
         sha = _resolve_commit(target, commit)
         if _existing_snapshot_matches(cache_dir, sha):
             return SnapshotResult(
@@ -196,7 +240,22 @@ def take_snapshot(
                 method="cp",
                 skipped=True,
             )
+        if is_git_repo and snapshot_dir.exists():
+            subprocess.run(  # noqa: S603 - argv-only, no shell
+                [  # noqa: S607
+                    "git",
+                    "-C",
+                    str(target),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(snapshot_dir),
+                ],
+                capture_output=True,
+                check=False,
+            )
         snapshot_dir = _cp_snapshot(target, cache_dir)
+        (cache_dir / ".snapshot-commit").unlink(missing_ok=True)
         method = "cp"
         commit_sha = None
 

@@ -20,14 +20,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from ai_codescan.cache_state import scan_db_stage
+from ai_codescan.engines.semgrep import configured_rules_roots
+from ai_codescan.findings.model import parse_finding
+from ai_codescan.findings.queue import parse_queue, render_queue
+from ai_codescan.gate import parse_nominations
 from ai_codescan.manifest import build_manifest
+from ai_codescan.snapshot import git_worktree_is_dirty
 
 PIPELINE_STAGES: tuple[str, ...] = (
     "prep",
@@ -131,7 +138,48 @@ def detect_rate_limit_or_auth(stderr: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-_SCANNER_FILE_SUFFIXES = frozenset({".json", ".md", ".py", ".pyi", ".sc", ".sh", ".yaml", ".yml"})
+_SCANNER_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_SCANNER_FILE_SUFFIXES = frozenset(
+    {
+        ".css",
+        ".html",
+        ".js",
+        ".json",
+        ".md",
+        ".mjs",
+        ".py",
+        ".pyi",
+        ".ql",
+        ".qll",
+        ".sc",
+        ".sh",
+        ".yaml",
+        ".yml",
+    }
+)
+_SCANNER_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "eval-targets",
+        "fixtures",
+        "generated",
+        "node_modules",
+        "out",
+        "site-packages",
+        "target",
+        "tests",
+        "vendor",
+        "venv",
+    }
+)
 _REPO_SCANNER_CONFIG_FILES = (
     "aics-codeql-extension-packs.json",
     "aics-enabled-packs.json",
@@ -162,7 +210,7 @@ def _git_source_revision(target: Path, commit: str) -> str | None:
 
 def _source_fingerprint(target: Path, *, commit: str) -> str:
     revision = _git_source_revision(target, commit)
-    if commit and revision is not None:
+    if revision is not None and (commit or not git_worktree_is_dirty(target)):
         return _digest_payload({"kind": "git", "revision": revision})
     if not target.is_dir():
         return _digest_payload({"kind": "missing", "target": str(target.resolve())})
@@ -196,22 +244,10 @@ def _external_pack_paths(repo_dir: Path) -> list[tuple[str, Path]]:
     return paths
 
 
-def _active_semgrep_roots(repo_dir: Path) -> list[Path]:
-    roots = [repo_dir / ".semgrep"]
-    registry = repo_dir / "aics-semgrep-rules.json"
-    try:
-        payload = json.loads(registry.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return roots
-    if isinstance(payload, dict) and payload.get("rules_root"):
-        roots.append(Path(str(payload["rules_root"])).expanduser())
-    return roots
-
-
 def _hash_active_scanner_inputs(digest: Any, repo_dir: Path) -> None:
     for label, path in _external_pack_paths(repo_dir):
         _update_file_digest(digest, path, label=f"enabled-pack:{label}")
-    for root in _active_semgrep_roots(repo_dir):
+    for root in configured_rules_roots(repo_dir):
         rules_dir = root.resolve() / "rules"
         if not rules_dir.is_dir():
             _update_file_digest(digest, rules_dir, label=f"semgrep-rules:{rules_dir}")
@@ -225,16 +261,20 @@ def _hash_active_scanner_inputs(digest: Any, repo_dir: Path) -> None:
                 )
 
 
-def _scanner_configuration_fingerprint(repo_dir: Path) -> str:
-    package_root = Path(__file__).resolve().parents[1]
-    digest = hashlib.sha256()
+def _hash_scanner_package_assets(digest: Any, package_root: Path) -> None:
+    """Hash shipped scanner code and runtime assets, excluding local byproducts."""
     for path in sorted(package_root.rglob("*")):
+        relative = path.relative_to(package_root)
+        if any(part in _SCANNER_EXCLUDED_DIRS for part in relative.parts):
+            continue
         if not path.is_file() or path.is_symlink() or path.suffix not in _SCANNER_FILE_SUFFIXES:
             continue
-        digest.update(path.relative_to(package_root).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
+        _update_file_digest(digest, path, label=f"package:{relative.as_posix()}")
+
+
+def _scanner_configuration_fingerprint(repo_dir: Path) -> str:
+    digest = hashlib.sha256()
+    _hash_scanner_package_assets(digest, _SCANNER_PACKAGE_ROOT)
     for filename in _REPO_SCANNER_CONFIG_FILES:
         path = repo_dir / filename
         _update_file_digest(digest, path, label=filename)
@@ -376,6 +416,324 @@ def _latest_run_dir(repo_dir: Path) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+_HEX_DIGEST_RE = re.compile(r"[a-f0-9]{64}")
+_SAFE_ITEM_ID_RE = re.compile(r"[A-Za-z0-9_.:-]+")
+_NOMINATION_HEADERS = (
+    "# Nominations",
+    "## Stream A —",
+    "## Stream B —",
+    "## Stream C —",
+)
+_VALIDATION_LOG_HEADER = (
+    "# Validation log\n\n"
+    "| finding | status | exit | signal | timed_out | evidence |\n"
+    "|---|---|---|---|---|---|\n"
+)
+_VALIDATION_ROW_RE = re.compile(r"^\| (?P<id>F-[A-Za-z0-9_-]+) \| .+ \|$")
+_REPORT_RECEIPT = ".orchestrator-report-artifacts.json"
+
+
+def _nominate_run_id(fingerprint: str) -> str:
+    return f"orchestrator-{fingerprint}"
+
+
+def _regular_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
+def _read_text(path: Path) -> str | None:
+    if not _regular_file(path):
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    text = _read_text(path)
+    if text is None:
+        return None
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _digest_marker_matches(path: Path) -> bool:
+    text = _read_text(path)
+    return text is not None and _HEX_DIGEST_RE.fullmatch(text.strip()) is not None
+
+
+def _active_run_dir(repo_dir: Path, state: OrchestratorState) -> Path | None:
+    nominate_fingerprint = state.stage_fingerprints.get("nominate")
+    if nominate_fingerprint:
+        return repo_dir / "runs" / _nominate_run_id(nominate_fingerprint)
+    return _latest_run_dir(repo_dir)
+
+
+def _run_metadata_matches(run_dir: Path, run_id: str, opts: DriveOptions) -> bool:
+    data = _read_json_object(run_dir / "run.json")
+    if data is None:
+        return False
+    return (
+        data.get("run_id") == run_id
+        and str(data.get("llm_provider", "")) == opts.llm_provider
+        and str(data.get("llm_model") or "") == opts.llm_model
+        and str(data.get("phase", "")) in {"nominate", "analyze", "validate"}
+    )
+
+
+def _nomination_queue_ids(run_dir: Path) -> list[str] | None:
+    text = _read_text(run_dir / "queue.jsonl")
+    if text is None:
+        return None
+    candidate_ids: list[str] = []
+    try:
+        records = [json.loads(line) for line in text.splitlines() if line.strip()]
+    except json.JSONDecodeError:
+        return None
+    for record in records:
+        candidate_id = record.get("id") if isinstance(record, dict) else None
+        if not isinstance(candidate_id, str) or not _SAFE_ITEM_ID_RE.fullmatch(candidate_id):
+            return None
+        if candidate_id in candidate_ids:
+            return None
+        candidate_ids.append(candidate_id)
+    return candidate_ids
+
+
+def _nominations_match_queue(run_dir: Path, candidate_ids: list[str]) -> bool:
+    text = _read_text(run_dir / "nominations.md")
+    if text is None or any(header not in text for header in _NOMINATION_HEADERS):
+        return False
+    nominations = parse_nominations(text)
+    nomination_ids = [item.nomination_id for item in nominations]
+    return len(nominations) == len(candidate_ids) and len(set(nomination_ids)) == len(nominations)
+
+
+def _nomination_artifacts_are_durable(
+    opts: DriveOptions,
+    run_dir: Path,
+    *,
+    run_id: str,
+) -> bool:
+    if not run_dir.is_dir() or run_dir.is_symlink():
+        return False
+    if not _run_metadata_matches(run_dir, run_id, opts):
+        return False
+    candidate_ids = _nomination_queue_ids(run_dir)
+    if candidate_ids is None or not _nominations_match_queue(run_dir, candidate_ids):
+        return False
+    context = _read_text(run_dir / ".nominate-context")
+    done_dir = run_dir / ".done"
+    if context is None or _HEX_DIGEST_RE.fullmatch(context.strip()) is None:
+        return False
+    if not done_dir.is_dir() or done_dir.is_symlink():
+        return False
+    return all(_regular_file(done_dir / candidate_id) for candidate_id in candidate_ids)
+
+
+def _analysis_item_is_durable(run_dir: Path, nomination_id: str) -> bool:
+    finding_id = f"F-{nomination_id.removeprefix('N-')}"
+    finding_path = run_dir / "findings" / f"{finding_id}.md"
+    text = _read_text(finding_path)
+    if text is None or not _digest_marker_matches(run_dir / ".done-analyze" / nomination_id):
+        return False
+    try:
+        finding = parse_finding(text)
+    except (TypeError, ValueError):
+        return False
+    return (
+        finding.finding_id == finding_id
+        and finding.nomination_id == nomination_id
+        and bool(finding.title.strip())
+        and bool(finding.body.strip())
+    )
+
+
+def _analysis_artifacts_are_durable(run_dir: Path) -> bool:
+    queue_text = _read_text(run_dir / "findings_queue.md")
+    findings_dir = run_dir / "findings"
+    done_dir = run_dir / ".done-analyze"
+    if queue_text is None or not findings_dir.is_dir() or findings_dir.is_symlink():
+        return False
+    if not done_dir.is_dir() or done_dir.is_symlink():
+        return False
+    items = parse_queue(queue_text)
+    if render_queue(items) != queue_text:
+        return False
+    return all(_analysis_item_is_durable(run_dir, item.nomination_id) for item in items)
+
+
+def _findings_by_id(run_dir: Path) -> dict[str, Any] | None:
+    findings_dir = run_dir / "findings"
+    if not findings_dir.is_dir() or findings_dir.is_symlink():
+        return None
+    findings: dict[str, Any] = {}
+    for path in findings_dir.glob("F-*.md"):
+        text = _read_text(path)
+        if text is None:
+            return None
+        try:
+            finding = parse_finding(text)
+        except (TypeError, ValueError):
+            return None
+        if not finding.finding_id or finding.finding_id != path.stem:
+            return None
+        if finding.finding_id in findings:
+            return None
+        findings[finding.finding_id] = finding
+    return findings
+
+
+def _validation_log_ids(run_dir: Path) -> set[str] | None:
+    text = _read_text(run_dir / "validation_log.md")
+    if text is None or not text.startswith(_VALIDATION_LOG_HEADER):
+        return None
+    finding_ids: set[str] = set()
+    for line in text.removeprefix(_VALIDATION_LOG_HEADER).splitlines():
+        if not line:
+            continue
+        match = _VALIDATION_ROW_RE.fullmatch(line)
+        if match is None or match.group("id") in finding_ids:
+            return None
+        finding_ids.add(match.group("id"))
+    return finding_ids
+
+
+def _validation_item_is_durable(run_dir: Path, finding_id: str) -> bool:
+    if not _digest_marker_matches(run_dir / ".done-validate" / finding_id):
+        return False
+    poc_dir = run_dir / "sandbox" / finding_id
+    if not poc_dir.is_dir() or poc_dir.is_symlink():
+        return False
+    return any(_regular_file(path) and path.stat().st_size > 0 for path in poc_dir.glob("poc.*"))
+
+
+def _validation_artifacts_are_durable(run_dir: Path) -> bool:
+    findings = _findings_by_id(run_dir)
+    logged_ids = _validation_log_ids(run_dir)
+    if findings is None or logged_ids is None or not logged_ids <= findings.keys():
+        return False
+    required_ids = {
+        finding_id for finding_id, finding in findings.items() if finding.status != "rejected"
+    }
+    if not required_ids <= logged_ids:
+        return False
+    return all(_validation_item_is_durable(run_dir, finding_id) for finding_id in logged_ids)
+
+
+def _file_digest(path: Path) -> str | None:
+    if not _regular_file(path):
+        return None
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _verified_finding_ids(run_dir: Path) -> set[str] | None:
+    findings = _findings_by_id(run_dir)
+    if findings is None:
+        return None
+    return {finding_id for finding_id, finding in findings.items() if finding.status == "verified"}
+
+
+def _report_files_for_ids(report_root: Path, finding_ids: set[str]) -> dict[str, Path] | None:
+    if not finding_ids:
+        return {}
+    if not report_root.is_dir() or report_root.is_symlink():
+        return None
+    reports = [path for path in report_root.glob("*.md") if _regular_file(path)]
+    selected: dict[str, Path] = {}
+    for finding_id in finding_ids:
+        marker = f"- finding_id: `{finding_id}`"
+        matches = [path for path in reports if marker in (_read_text(path) or "")]
+        if not matches:
+            return None
+        selected[finding_id] = max(matches, key=lambda path: path.stat().st_mtime_ns)
+    if len(set(selected.values())) != len(selected):
+        return None
+    return selected
+
+
+def _record_report_completion(
+    repo_dir: Path,
+    run_dir: Path,
+    *,
+    fingerprint: str,
+) -> None:
+    receipt_path = repo_dir / _REPORT_RECEIPT
+    finding_ids = _verified_finding_ids(run_dir)
+    report_root = Path.cwd() / "report"
+    files = None if finding_ids is None else _report_files_for_ids(report_root, finding_ids)
+    if finding_ids is None or files is None:
+        receipt_path.unlink(missing_ok=True)
+        return
+    artifacts = {
+        finding_id: {"name": path.name, "sha256": _file_digest(path)}
+        for finding_id, path in files.items()
+    }
+    payload = {
+        "fingerprint": fingerprint,
+        "report_root": str(report_root.resolve()),
+        "artifacts": artifacts,
+    }
+    temporary = receipt_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(receipt_path)
+
+
+def _report_entry_matches(report_root: Path, finding_id: str, value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    entry = cast("dict[str, Any]", value)
+    name = entry.get("name")
+    digest = entry.get("sha256")
+    if not isinstance(name, str) or Path(name).name != name:
+        return False
+    path = report_root / name
+    text = _read_text(path)
+    return (
+        isinstance(digest, str)
+        and _file_digest(path) == digest
+        and text is not None
+        and f"- finding_id: `{finding_id}`" in text
+    )
+
+
+def _report_artifacts_are_durable(
+    repo_dir: Path,
+    run_dir: Path,
+    *,
+    fingerprint: str,
+) -> bool:
+    receipt = _read_json_object(repo_dir / _REPORT_RECEIPT)
+    finding_ids = _verified_finding_ids(run_dir)
+    report_root = Path.cwd() / "report"
+    if receipt is None or finding_ids is None:
+        return False
+    artifacts = receipt.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != finding_ids:
+        return False
+    if receipt.get("fingerprint") != fingerprint:
+        return False
+    if receipt.get("report_root") != str(report_root.resolve()):
+        return False
+    entries_match = all(
+        _report_entry_matches(report_root, finding_id, artifacts[finding_id])
+        for finding_id in finding_ids
+    )
+    if not entries_match:
+        return False
+    artifact_names = {
+        cast("dict[str, Any]", artifact).get("name") for artifact in artifacts.values()
+    }
+    return len(artifact_names) == len(artifacts)
+
+
 def _clear_marker_dir(path: Path) -> None:
     if not path.is_dir():
         return
@@ -386,10 +744,13 @@ def _clear_marker_dir(path: Path) -> None:
 
 def _invalidate_inner_stage_cache(repo_dir: Path, stage: str) -> None:
     """Remove generated completion markers when a stage identity changes."""
+    if stage == "report":
+        (repo_dir / _REPORT_RECEIPT).unlink(missing_ok=True)
     run_dir = _latest_run_dir(repo_dir)
     if run_dir is None:
         return
     marker_names = {
+        "nominate": (".done",),
         "analyze": (".done-analyze",),
         "validate": (".done-validate",),
     }.get(stage, ())
@@ -397,6 +758,69 @@ def _invalidate_inner_stage_cache(repo_dir: Path, stage: str) -> None:
         _clear_marker_dir(run_dir / marker_name)
     if stage == "analyze":
         _clear_marker_dir(repo_dir / ".done-miss-review")
+    if stage == "nominate":
+        (run_dir / ".nominate-context").unlink(missing_ok=True)
+        (run_dir / "nominations.md").unlink(missing_ok=True)
+
+
+def _prep_cache_is_reusable(repo_dir: Path) -> bool:
+    """Accept only an exact durable prep or completed scan generation."""
+    return scan_db_stage(repo_dir / "index.duckdb") in {"prep", "complete"}
+
+
+def _stage_completion_is_reusable(
+    stage: str,
+    opts: DriveOptions,
+    repo_dir: Path,
+    *,
+    state: OrchestratorState,
+    fingerprint: str,
+) -> bool:
+    """Return whether this stage may satisfy a later pipeline invocation."""
+    llm_stages = {"nominate", "analyze", "validate"}
+    if stage in llm_stages and not opts.llm_model:
+        return False
+    if stage == "prep":
+        pinned_llm = opts.engine != "llm-heavy" or bool(opts.llm_model)
+        return pinned_llm and _prep_cache_is_reusable(repo_dir)
+    if stage == "nominate":
+        run_id = _nominate_run_id(fingerprint)
+        return _nomination_artifacts_are_durable(
+            opts,
+            repo_dir / "runs" / run_id,
+            run_id=run_id,
+        )
+    if stage not in {"analyze", "validate", "report"}:
+        return True
+    run_dir = _active_run_dir(repo_dir, state)
+    if run_dir is None:
+        return False
+    if stage == "analyze":
+        reusable = _analysis_artifacts_are_durable(run_dir)
+    elif stage == "validate":
+        reusable = _validation_artifacts_are_durable(run_dir)
+    else:
+        reusable = _report_artifacts_are_durable(
+            repo_dir,
+            run_dir,
+            fingerprint=fingerprint,
+        )
+    return reusable
+
+
+def _invalidate_downstream_state(
+    state: OrchestratorState,
+    *,
+    stage: str,
+    repo_dir: Path,
+) -> None:
+    """Invalidate every stage that may have consumed the rerun stage's output."""
+    stage_index = PIPELINE_STAGES.index(stage)
+    for downstream in PIPELINE_STAGES[stage_index + 1 :]:
+        if downstream in state.completed:
+            state.completed.remove(downstream)
+        state.stage_fingerprints.pop(downstream, None)
+        _invalidate_inner_stage_cache(repo_dir, downstream)
 
 
 _NEVER_BLOCKS_ON_ZERO: frozenset[str] = frozenset({"prep", "gate-1", "gate-2", "gate-3"})
@@ -483,6 +907,7 @@ def _argv_for(  # noqa: PLR0911, PLR0912, PLR0913 - direct mapping; flattening h
     no_sandbox: bool,
     bugbounty: bool,
     engine: str = "hybrid",
+    run_id: str = "",
 ) -> list[str]:
     base = ["ai-codescan", "--cache-dir", str(cache_root)]
     if stage == "prep":
@@ -508,6 +933,8 @@ def _argv_for(  # noqa: PLR0911, PLR0912, PLR0913 - direct mapping; flattening h
         ]
         if llm_model:
             argv += ["--llm-model", llm_model]
+        if run_id:
+            argv += ["--run-id", run_id]
         if target_bug_class:
             argv += ["--target-bug-class", target_bug_class]
         return argv
@@ -590,7 +1017,15 @@ _ABORT = "abort"
 _CONTINUE = "continue"
 
 
-def _build_argv(stage: str, opts: DriveOptions) -> list[str]:
+def _build_argv(
+    stage: str,
+    opts: DriveOptions,
+    *,
+    stage_fingerprint: str = "",
+) -> list[str]:
+    run_id = ""
+    if stage == "nominate" and stage_fingerprint:
+        run_id = _nominate_run_id(stage_fingerprint)
     return _argv_for(
         stage,
         engine=opts.engine,
@@ -605,6 +1040,7 @@ def _build_argv(stage: str, opts: DriveOptions) -> list[str]:
         yes=opts.yes,
         no_sandbox=opts.no_sandbox,
         bugbounty=opts.bugbounty,
+        run_id=run_id,
     )
 
 
@@ -683,6 +1119,80 @@ def _handle_zero_output(  # noqa: PLR0913 - keyword-only fan-in
     return None, _CONTINUE
 
 
+def _prepare_stage_attempt(
+    state: OrchestratorState,
+    opts: DriveOptions,
+    *,
+    stage: str,
+    repo_dir: Path,
+    fingerprints: tuple[str, str],
+) -> str | None:
+    """Return the stage fingerprint, or None when a reusable completion exists."""
+    source_fingerprint, scanner_fingerprint = fingerprints
+    fingerprint = _stage_fingerprint(
+        stage,
+        opts,
+        source_fingerprint=source_fingerprint,
+        scanner_fingerprint=scanner_fingerprint,
+    )
+    previous_fingerprint = state.stage_fingerprints.get(stage)
+    reusable = _stage_completion_is_reusable(
+        stage,
+        opts,
+        repo_dir,
+        state=state,
+        fingerprint=fingerprint,
+    )
+    if stage in state.completed and previous_fingerprint == fingerprint and reusable:
+        sys.stderr.write(f"[orchestrator] skipping {stage} (already complete)\n")
+        return None
+    inputs_changed = previous_fingerprint is not None and previous_fingerprint != fingerprint
+    resuming_attempt = (
+        previous_fingerprint == fingerprint
+        and stage not in state.completed
+        and bool(state.last_error and state.last_error.startswith(f"{stage}:"))
+    )
+    if (stage in state.completed or inputs_changed or not reusable) and not resuming_attempt:
+        _invalidate_inner_stage_cache(repo_dir, stage)
+    _invalidate_downstream_state(state, stage=stage, repo_dir=repo_dir)
+    if stage in state.completed:
+        state.completed.remove(stage)
+        sys.stderr.write(f"[orchestrator] rerunning {stage} (inputs changed)\n")
+    elif inputs_changed:
+        sys.stderr.write(f"[orchestrator] restarting {stage} (attempt inputs changed)\n")
+    state.stage_fingerprints[stage] = fingerprint
+    state.last_error = f"{stage}: in-progress"
+    save_state(opts.cache_root, state)
+    return fingerprint
+
+
+def _mark_stage_complete(
+    state: OrchestratorState,
+    opts: DriveOptions,
+    *,
+    stage: str,
+    repo_dir: Path,
+    fingerprint: str,
+) -> None:
+    run_dir = _active_run_dir(repo_dir, state)
+    if stage == "report" and run_dir is not None:
+        _record_report_completion(repo_dir, run_dir, fingerprint=fingerprint)
+    reusable = _stage_completion_is_reusable(
+        stage,
+        opts,
+        repo_dir,
+        state=state,
+        fingerprint=fingerprint,
+    )
+    if reusable:
+        state.completed.append(stage)
+    else:
+        sys.stderr.write(f"[orchestrator] {stage} completed for this run but is not reusable\n")
+    state.stage_fingerprints[stage] = fingerprint
+    state.last_error = None
+    save_state(opts.cache_root, state)
+
+
 def drive_pipeline(  # noqa: PLR0912 - top-level loop; helpers absorb the rest
     opts: DriveOptions,
     *,
@@ -707,29 +1217,17 @@ def drive_pipeline(  # noqa: PLR0912 - top-level loop; helpers absorb the rest
     scanner_fingerprint = _scanner_configuration_fingerprint(repo_dir)
 
     for stage in opts.phases:
-        fingerprint = _stage_fingerprint(
-            stage,
+        fingerprint = _prepare_stage_attempt(
+            state,
             opts,
-            source_fingerprint=source_fingerprint,
-            scanner_fingerprint=scanner_fingerprint,
+            stage=stage,
+            repo_dir=repo_dir,
+            fingerprints=(source_fingerprint, scanner_fingerprint),
         )
-        previous_fingerprint = state.stage_fingerprints.get(stage)
-        if stage in state.completed and previous_fingerprint == fingerprint:
-            sys.stderr.write(f"[orchestrator] skipping {stage} (already complete)\n")
+        if fingerprint is None:
             continue
-        if stage in state.completed or (
-            previous_fingerprint is not None and previous_fingerprint != fingerprint
-        ):
-            _invalidate_inner_stage_cache(repo_dir, stage)
-        if stage in state.completed:
-            state.completed.remove(stage)
-            sys.stderr.write(f"[orchestrator] rerunning {stage} (inputs changed)\n")
-        elif previous_fingerprint is not None and previous_fingerprint != fingerprint:
-            sys.stderr.write(f"[orchestrator] restarting {stage} (attempt inputs changed)\n")
-        state.stage_fingerprints[stage] = fingerprint
-        save_state(opts.cache_root, state)
         sys.stderr.write(f"\n[orchestrator] === {stage} ===\n")
-        argv = _build_argv(stage, opts)
+        argv = _build_argv(stage, opts, stage_fingerprint=fingerprint)
         outcome = runner(argv)
 
         if outcome.rc != 0:
@@ -743,7 +1241,15 @@ def drive_pipeline(  # noqa: PLR0912 - top-level loop; helpers absorb the rest
                 asker=asker,
             )
             if action == "skip":
-                state.completed.append(stage)
+                reusable = _stage_completion_is_reusable(
+                    stage,
+                    opts,
+                    repo_dir,
+                    state=state,
+                    fingerprint=fingerprint,
+                )
+                if reusable:
+                    state.completed.append(stage)
                 state.stage_fingerprints[stage] = fingerprint
                 state.last_error = f"{stage}: user-skipped after auth/rate-limit"
                 save_state(opts.cache_root, state)
@@ -772,10 +1278,13 @@ def drive_pipeline(  # noqa: PLR0912 - top-level loop; helpers absorb the rest
                 save_state(opts.cache_root, state)
                 return 0
 
-        state.completed.append(stage)
-        state.stage_fingerprints[stage] = fingerprint
-        state.last_error = None
-        save_state(opts.cache_root, state)
+        _mark_stage_complete(
+            state,
+            opts,
+            stage=stage,
+            repo_dir=repo_dir,
+            fingerprint=fingerprint,
+        )
 
     return 0
 

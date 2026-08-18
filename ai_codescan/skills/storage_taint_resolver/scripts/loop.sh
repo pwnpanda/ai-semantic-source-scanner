@@ -18,22 +18,93 @@ if [[ ! -f "$QUEUE" ]]; then
 fi
 
 mkdir -p "$RUN_DIR/storage_resolver/.done"
-touch "$RUN_DIR/storage_resolver/proposals.jsonl"
+PROPOSALS="$RUN_DIR/storage_resolver/proposals.jsonl"
+touch "$PROPOSALS"
+
+remove_candidate_proposals() {
+  local call_id="$1"
+  python3 - "$PROPOSALS" "$call_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+call_id = sys.argv[2]
+kept = []
+for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(item, dict) and str(item.get("call_id") or "") != call_id:
+        kept.append(json.dumps(item, sort_keys=True))
+path.write_text("".join(f"{line}\n" for line in kept), encoding="utf-8")
+PY
+}
+
+candidate_has_proposal() {
+  local call_id="$1"
+  python3 - "$PROPOSALS" "$call_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(item, dict) and str(item.get("call_id") or "") == sys.argv[2]:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+prune_proposals_to_queue() {
+  python3 - "$QUEUE" "$PROPOSALS" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+queue_path = Path(sys.argv[1])
+proposals_path = Path(sys.argv[2])
+queue_ids = []
+for line in queue_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    if line.strip():
+        queue_ids.append(str(json.loads(line).get("call_id") or ""))
+latest = {}
+for line in proposals_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(item, dict) and (call_id := str(item.get("call_id") or "")):
+        latest[call_id] = item
+contents = "".join(
+    json.dumps(latest[call_id], sort_keys=True) + "\n"
+    for call_id in queue_ids
+    if call_id in latest
+)
+proposals_path.write_text(contents, encoding="utf-8")
+PY
+}
 
 invoke_llm() {
   # A provider rate limit exits non-zero. Treating that as a permanent failure
   # for the candidate means one throttle silently burns the rest of the queue,
   # so back off and retry before giving up on a candidate.
   local call_id="$1" candidate="$2"
-  local attempt delay
+  local attempt delay retries
   delay="${AICS_LLM_RETRY_DELAY:-60}"
-  for attempt in $(seq 1 "${AICS_LLM_RETRIES:-5}"); do
+  retries="${AICS_LLM_RETRIES:-5}"
+  for attempt in $(seq 1 "$retries"); do
     if AICS_CANDIDATE="$candidate" \
       AICS_REPO_MD="$RUN_DIR/inputs/repo.md" \
       CALL_ID="$call_id" \
       "$LLM_CMD" <"$PROMPT"; then
       return 0
     fi
+    [[ "$attempt" -eq "$retries" ]] && break
     printf 'llm attempt %d failed for %s; retrying in %ds\n' "$attempt" "$call_id" "$delay" >&2
     sleep "$delay"
     delay=$((delay * 2))
@@ -55,19 +126,27 @@ while IFS= read -r line; do
   if [[ -f "$done_marker" ]]; then
     marker_fingerprint="$(cat "$done_marker")"
   fi
-  if [[ "$marker_fingerprint" == "$item_fingerprint" ]]; then
+  if [[ "$marker_fingerprint" == "$item_fingerprint" ]] &&
+    candidate_has_proposal "$call_id"; then
     continue
   fi
   rm -f "$done_marker"
+  remove_candidate_proposals "$call_id"
   invoke_llm "$call_id" "$line" || {
     echo "warning: candidate $call_id failed" >&2
     rm -f "$done_marker"
     failures=$((failures + 1))
     continue
   }
+  if ! candidate_has_proposal "$call_id"; then
+    echo "warning: candidate $call_id produced no structured proposal" >&2
+    failures=$((failures + 1))
+    continue
+  fi
   printf '%s\n' "$item_fingerprint" >"$done_marker"
 done <"$QUEUE"
 if [[ "$failures" -ne 0 ]]; then
   echo "resolver incomplete: $failures required candidate(s) failed" >&2
   exit 1
 fi
+prune_proposals_to_queue

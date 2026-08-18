@@ -245,7 +245,10 @@ def scan_db_stage(db_path: Path) -> str | None:
     """Return the published cache stage for orchestration/degraded-run handling."""
     if not db_path.is_file() or (db_path.parent / ".prep-incomplete").is_file():
         return None
-    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        conn = duckdb.connect(str(db_path), read_only=True)
+    except duckdb.Error:
+        return None
     try:
         row = conn.execute("SELECT stage FROM scan_cache_state WHERE singleton = 1").fetchone()
         return str(row[0]) if row else None

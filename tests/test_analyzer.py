@@ -336,3 +336,62 @@ def test_run_analyzer_deterministic_only_skips_llm_when_available(
 
     assert queue_path.is_file()
     assert not run_called
+
+
+def test_run_analyzer_removes_stale_outputs_before_unavailable_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_dir = tmp_path / "repo"
+    source = repo_dir / "source"
+    source.mkdir(parents=True)
+    source_file = source / "x.ts"
+    source_file.write_text("const id = req.body.id\nquery(id)\n", encoding="utf-8")
+    db = repo_dir / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    _seed(conn, str(source_file))
+    conn.execute(
+        """
+        INSERT INTO review_verdicts
+          (nomination_id, finding_id, verdict, reviewer)
+        VALUES ('N-old', 'F-old', 'true-positive', 'deep_analyzer')
+        """
+    )
+    conn.close()
+    state = load_or_create(
+        repo_dir,
+        engine="codeql",
+        temperature=0.0,
+        target_bug_classes=["sqli"],
+    )
+    (state.run_dir / "nominations.md").write_text(
+        "# Nominations\n\n## Stream A\n\n"
+        f"- [ ] N-001 | api | sqli | {source_file}:1 | rec: high | y/n: y\n",
+        encoding="utf-8",
+    )
+    findings = state.run_dir / "findings"
+    markers = state.run_dir / ".done-analyze"
+    findings.mkdir()
+    markers.mkdir()
+    for finding_id in ("F-001", "F-old"):
+        (findings / f"{finding_id}.md").write_text("stale\n", encoding="utf-8")
+    (findings / "F-miss-keep.md").write_text("miss\n", encoding="utf-8")
+    for nomination_id in ("N-001", "N-old"):
+        (markers / nomination_id).write_text("old", encoding="utf-8")
+    monkeypatch.setattr("ai_codescan.analyzer.is_available", lambda _provider: False)
+
+    run_analyzer(state, repo_dir=repo_dir, db_path=db)
+
+    assert not (findings / "F-001.md").exists()
+    assert not (findings / "F-old.md").exists()
+    assert (findings / "F-miss-keep.md").is_file()
+    assert not list(markers.glob("N-*"))
+    conn = duckdb.connect(str(db), read_only=True)
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM review_verdicts WHERE reviewer = 'deep_analyzer'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert count == (0,)

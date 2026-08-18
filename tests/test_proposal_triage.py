@@ -412,6 +412,42 @@ def test_run_semgrep_failure_cannot_reuse_stale_sarif(
     assert not stale.exists()
 
 
+def test_run_semgrep_picks_up_registered_promoted_rules(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rules_root = tmp_path / "external-rules"
+    promoted = rules_root / "rules"
+    promoted.mkdir(parents=True)
+    (promoted / "approved.yml").write_text("rules: []\n", encoding="utf-8")
+    semgrep_mod.register_rules_root(tmp_path, rules_root)
+    captured: dict[str, list[str]] = {}
+
+    def fake_subprocess_run(cmd, **_kwargs):
+        captured["cmd"] = list(cmd)
+        output_index = cmd.index("--output") + 1
+        Path(cmd[output_index]).write_text(
+            '{"version":"2.1.0","runs":[]}',
+            encoding="utf-8",
+        )
+
+        class _Result:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return _Result()
+
+    monkeypatch.setattr(semgrep_mod, "is_available", lambda: True)
+    monkeypatch.setattr(semgrep_mod.subprocess, "run", fake_subprocess_run)
+    project_root = tmp_path / "src"
+    project_root.mkdir()
+
+    semgrep_mod.run_semgrep(project_root, cache_dir=tmp_path, project_id="external")
+
+    assert f"--config={promoted.resolve()}" in captured["cmd"]
+
+
 def test_pack_registry_file_is_valid_json_list(tmp_path: Path) -> None:
     enable_pack_for_repo("p/x", repo_dir=tmp_path)
     raw = (tmp_path / "aics-enabled-packs.json").read_text(encoding="utf-8")

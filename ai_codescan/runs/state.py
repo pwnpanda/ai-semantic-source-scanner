@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
+import re
 import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -43,6 +45,8 @@ def load_or_create(  # noqa: PLR0913
     llm_provider: str = "claude",
     llm_model: str | None = None,
 ) -> RunState:
+    if run_id and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", run_id) is None:
+        raise ValueError("run id must contain 1-80 letters, digits, underscores, or hyphens")
     runs_root = repo_dir / "runs"
     runs_root.mkdir(parents=True, exist_ok=True)
     if run_id:
@@ -114,3 +118,4 @@ def save(state: RunState) -> None:
         json.dumps(payload, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    os.utime(state.run_dir)

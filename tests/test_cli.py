@@ -505,6 +505,7 @@ def test_nominate_help_advertises_llm_flags() -> None:
     out = _help_text(result.stdout)
     assert "--llm-provider" in out
     assert "--llm-model" in out
+    assert "--run-id" in out
 
 
 def test_run_help_advertises_llm_flags() -> None:
@@ -555,13 +556,14 @@ def test_nominate_persists_llm_config_to_run_json(
     tmp_path: Path, fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cache = tmp_path / "cache"
+    run_id = f"orchestrator-{'a' * 64}"
     runner.invoke(
         app,
         ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
     )
     repo_id = next(p.name for p in cache.iterdir() if p.is_dir())
     monkeypatch.setenv("PATH", "/nonexistent")
-    runner.invoke(
+    result = runner.invoke(
         app,
         [
             "--cache-dir",
@@ -573,12 +575,67 @@ def test_nominate_persists_llm_config_to_run_json(
             "gemini",
             "--llm-model",
             "gemini-2.5-pro",
+            "--run-id",
+            run_id,
         ],
     )
-    runs = sorted((cache / repo_id / "runs").iterdir())
-    run_json = json.loads((runs[-1] / "run.json").read_text(encoding="utf-8"))
+    assert result.exit_code == 0
+    run_dir = cache / repo_id / "runs" / run_id
+    run_json = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     assert run_json["llm_provider"] == "gemini"
     assert run_json["llm_model"] == "gemini-2.5-pro"
+
+    other_run = cache / repo_id / "runs" / "other-run"
+    other_run.mkdir()
+    os.utime(run_dir, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(other_run, ns=(2_000_000_000, 2_000_000_000))
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "nominate",
+            "--repo-id",
+            repo_id,
+            "--llm-provider",
+            "gemini",
+            "--llm-model",
+            "gemini-2.5-pro",
+            "--run-id",
+            run_id,
+        ],
+    )
+    assert result.exit_code == 0
+    latest = max((cache / repo_id / "runs").iterdir(), key=lambda path: path.stat().st_mtime_ns)
+    assert latest == run_dir
+
+
+def test_nominate_rejects_unsafe_run_id(
+    tmp_path: Path,
+    fixtures_dir: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "prep", str(fixtures_dir / "tiny-express")],
+    )
+    repo_id = next(path.name for path in cache.iterdir() if path.is_dir())
+
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "nominate",
+            "--repo-id",
+            repo_id,
+            "--run-id",
+            "../escape",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "run id must contain" in result.output
 
 
 def test_analyze_help_advertises_llm_flags() -> None:

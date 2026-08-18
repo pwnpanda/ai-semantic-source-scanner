@@ -16,6 +16,7 @@ from ai_codescan.miss_review import (
     run_miss_review,
     stage_miss_review_queue,
 )
+from ai_codescan.review_cache import build_review_cache_key
 
 
 def test_parse_miss_review_output_extracts_classification() -> None:
@@ -272,6 +273,83 @@ def test_run_miss_review_invalidates_marker_with_malformed_review(
     assert not (review_dir / "B-miss-current.json").exists()
     assert not (done_dir / "B-miss-current").exists()
     assert not stale_proposal.exists()
+
+
+def test_provider_change_purges_unbacked_persisted_verdict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "/nonexistent")
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    candidates_path = repo_dir / "miss_candidates.jsonl"
+    candidates_path.write_text(
+        json.dumps(
+            {
+                "id": "B-miss-current",
+                "score": 0.8,
+                "vector": "workflow/stale-approval",
+                "review_fingerprint": "current-evidence",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    review_dir = repo_dir / "miss_reviews"
+    done_dir = repo_dir / ".done-miss-review"
+    review_dir.mkdir()
+    done_dir.mkdir()
+    (review_dir / "B-miss-current.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": "B-miss-current",
+                "classification": "false-positive",
+                "confidence": "high",
+                "rationale": "old Claude review",
+                "evidence": [],
+                "proposal": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    claude_key = build_review_cache_key(
+        "current-evidence",
+        LLMConfig(provider="claude", model="opus"),
+    )
+    (done_dir / "B-miss-current").write_text(
+        json.dumps(claude_key.to_jsonable()),
+        encoding="utf-8",
+    )
+    db_path = repo_dir / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO review_verdicts
+          (nomination_id, finding_id, candidate_id, verdict, reviewer)
+        VALUES ('B-miss-current', 'B-miss-current', 'B-miss-current',
+                'false-positive', 'miss_reviewer')
+        """
+    )
+    conn.close()
+
+    run_miss_review(
+        candidates_path=candidates_path,
+        repo_dir=repo_dir,
+        db_path=db_path,
+        run_dir=repo_dir / "runs" / "test",
+        max_candidates=10,
+        llm=LLMConfig(provider="codex", model="gpt-5.6-codex"),
+    )
+
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM review_verdicts WHERE reviewer = 'miss_reviewer'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert count == (0,)
 
 
 def test_run_miss_review_invokes_loop_when_llm_available(

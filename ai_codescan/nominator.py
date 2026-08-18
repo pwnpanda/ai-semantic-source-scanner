@@ -17,6 +17,7 @@ import duckdb
 
 from ai_codescan.evidence import build_evidence_bundle, write_evidence_bundle
 from ai_codescan.llm import LLMConfig, build_argv, is_available
+from ai_codescan.review_cache import build_llm_context_fingerprint
 from ai_codescan.runs.state import RunState, save
 from ai_codescan.scoring import attach_scores, persist_candidate_scores, score_candidates
 from ai_codescan.taxonomy.loader import BugClass, resolve_classes
@@ -213,6 +214,61 @@ def _empty_nominations_md() -> str:
     )
 
 
+def _update_context_digest(digest: Any, path: Path, *, label: str) -> None:
+    digest.update(label.encode("utf-8"))
+    digest.update(b"\0")
+    if path.is_file() and not path.is_symlink():
+        digest.update(path.read_bytes())
+    else:
+        digest.update(b"missing")
+    digest.update(b"\0")
+
+
+def _nomination_context_fingerprint(
+    state: RunState,
+    *,
+    repo_dir: Path,
+    llm: LLMConfig,
+) -> str:
+    """Bind generated nominations to their model, source, queue, and prompt."""
+    digest = hashlib.sha256()
+    digest.update(
+        build_llm_context_fingerprint(llm, source_root=repo_dir / "source").encode("utf-8")
+    )
+    digest.update(json.dumps(state.target_bug_classes, sort_keys=True).encode("utf-8"))
+    for label, path in (
+        ("prompt", SKILL_DIR / "prompts" / "nominator.md"),
+        ("queue", state.run_dir / "queue.jsonl"),
+        ("repo", state.run_dir / "inputs" / "repo.md"),
+        ("entrypoints", state.run_dir / "inputs" / "entrypoints.md"),
+    ):
+        _update_context_digest(digest, path, label=label)
+    return digest.hexdigest()
+
+
+def _reset_nomination_attempt_if_needed(
+    state: RunState,
+    *,
+    nominations_path: Path,
+    context_fingerprint: str,
+    reusable: bool,
+) -> None:
+    """Start a fresh generated document when any nomination input changed."""
+    context_path = state.run_dir / ".nominate-context"
+    previous = ""
+    if context_path.is_file():
+        previous = context_path.read_text(encoding="utf-8", errors="replace").strip()
+    if reusable and previous == context_fingerprint:
+        return
+    done_dir = state.run_dir / ".done"
+    if done_dir.is_dir():
+        for marker in done_dir.iterdir():
+            if marker.is_file() or marker.is_symlink():
+                marker.unlink(missing_ok=True)
+    nominations_path.write_text(_empty_nominations_md(), encoding="utf-8")
+    context_path.write_text(context_fingerprint + "\n", encoding="utf-8")
+
+
 def write_llm_cmd_script(target: Path, llm: LLMConfig) -> Path:
     """Write a one-shot wrapper script that invokes ``llm`` with stdin-piped prompt.
 
@@ -264,8 +320,18 @@ def run_nominator(
     nominations_path = state.run_dir / "nominations.md"
 
     effective = llm or LLMConfig(provider=state.llm_provider, model=state.llm_model)
+    context_fingerprint = _nomination_context_fingerprint(
+        state,
+        repo_dir=repo_dir,
+        llm=effective,
+    )
+    _reset_nomination_attempt_if_needed(
+        state,
+        nominations_path=nominations_path,
+        context_fingerprint=context_fingerprint,
+        reusable=bool(effective.model),
+    )
     if not is_available(effective.provider):
-        nominations_path.write_text(_empty_nominations_md(), encoding="utf-8")
         return nominations_path
 
     cmd_script = write_llm_cmd_script(state.run_dir / ".llm-cmd.sh", effective)

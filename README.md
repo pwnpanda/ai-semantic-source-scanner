@@ -40,7 +40,7 @@ prep ─→ Gate 1 ─→ analyze ─→ Gate 2 ─→ validate ─→ Gate 3 �
 |---|---|
 | **`uv`** | Python 3.13 venv + dep manager |
 | **`node`** ≥ 22 + **`pnpm`** | AST worker (ts-morph + parse5 + tree-sitter) |
-| **`git`** | Snapshots use `git worktree` for git targets |
+| **`git`** | Clean or explicitly pinned Git snapshots use `git worktree` |
 
 | Optional | What you lose without it |
 |---|---|
@@ -242,7 +242,7 @@ uv run ai-codescan cache rm <repo-id>
 | `--temperature <float>` | `0.0` | Determinism by default |
 | `--report-dir <path>` | `./report/` | Where final reports land |
 | `--cache-dir <path>` | `~/.ai_codescan/repos/<id>/` | Per-target snapshot + DuckDB |
-| `--commit <sha>` | `HEAD` | Pin git snapshot to a commit |
+| `--commit <sha>` | live tree | Pin a Git snapshot to a commit; dirty unpinned trees are copied as-is |
 | `--yes` | off | Run unattended: auto-confirm LLM prompts, HITL gates, zero-output prompts, and rate-limit/auth recovery prompts |
 | `--phases <list>` | all stages | `run` only; comma-separated subset of `prep,nominate,gate-1,analyze,gate-2,validate,gate-3,report` |
 | `--from <stage>` / `--to <stage>` | full flow | `run` only; resume or stop at a named stage |

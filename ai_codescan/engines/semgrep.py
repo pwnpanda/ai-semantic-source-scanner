@@ -20,8 +20,20 @@ _BUNDLED_RULES_DIR = Path(__file__).parent / "semgrep_rules"
 passed to semgrep alongside ``--config=auto`` so we extend (not replace)
 the community ruleset with patterns the OSS pack misses (e.g. CWE-208
 timing-attack on env-var secrets)."""
-
 _RULES_ROOT_REGISTRY = "aics-semgrep-rules.json"
+
+
+def configured_rules_roots(cache_dir: Path) -> list[Path]:
+    """Return per-repo Semgrep roots whose promoted rules are active."""
+    roots = [cache_dir / ".semgrep"]
+    registry = cache_dir / _RULES_ROOT_REGISTRY
+    try:
+        payload = json.loads(registry.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return roots
+    if isinstance(payload, dict) and payload.get("rules_root"):
+        roots.append(Path(str(payload["rules_root"])).expanduser())
+    return list(dict.fromkeys(root.resolve() for root in roots))
 
 
 def register_rules_root(cache_dir: Path, rules_root: Path) -> Path:
@@ -39,17 +51,8 @@ def register_rules_root(cache_dir: Path, rules_root: Path) -> Path:
 
 def active_rule_dirs(cache_dir: Path) -> list[Path]:
     """Return promoted custom-rule directories; never include ``rules.staged``."""
-    roots = [cache_dir / ".semgrep"]
-    registry = cache_dir / _RULES_ROOT_REGISTRY
-    if registry.is_file():
-        try:
-            payload = json.loads(registry.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        if isinstance(payload, dict) and payload.get("rules_root"):
-            roots.append(Path(str(payload["rules_root"])).expanduser())
     active: list[Path] = []
-    for root in roots:
+    for root in configured_rules_roots(cache_dir):
         candidate = root.resolve() / "rules"
         if candidate not in active and candidate.is_dir():
             active.append(candidate)

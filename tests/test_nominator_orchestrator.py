@@ -146,3 +146,18 @@ def test_run_nominator_stages_scores_and_bundles(
     finally:
         conn.close()
     assert row is not None
+
+    done_dir = state.run_dir / ".done"
+    done_dir.mkdir()
+    (done_dir / "A-F1").write_text("old-default-model", encoding="utf-8")
+    nominations.write_text("# Nominations\n\nold default-model output\n", encoding="utf-8")
+
+    run_nominator(
+        state,
+        repo_dir=repo_dir,
+        bug_classes=resolve_classes(["sqli"]),
+        db_path=db,
+    )
+
+    assert "old default-model output" not in nominations.read_text(encoding="utf-8")
+    assert not (done_dir / "A-F1").exists()

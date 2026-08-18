@@ -30,18 +30,20 @@ invoke_llm() {
   # Back off and retry instead; only a persistent failure is fatal.
   #
   # stdin is consumed by the first attempt, so buffer the prompt to replay it.
-  local prompt_file attempt delay rc
+  local prompt_file attempt delay rc retries
   prompt_file="$(mktemp)"
   cat - >"$prompt_file"
   delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
+  retries="${AI_CODESCAN_LLM_RETRIES:-5}"
   rc=1
-  for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
+  for attempt in $(seq 1 "$retries"); do
     if [[ -n "$LLM_CMD" ]]; then
       "$LLM_CMD" <"$prompt_file" && rc=0
     else
       claude -p "$(cat "$prompt_file")" && rc=0
     fi
     [[ "$rc" -eq 0 ]] && break
+    [[ "$attempt" -eq "$retries" ]] && break
     printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
     sleep "$delay"
     delay=$((delay * 2))

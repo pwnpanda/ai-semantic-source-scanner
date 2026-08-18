@@ -45,7 +45,16 @@ def parse_finding(md: str) -> Finding:
         raise ValueError("unterminated frontmatter")
     front_raw = md[4:end]
     body = md[end + 5 :].lstrip("\n")
-    front = yaml.safe_load(front_raw) or {}
+    try:
+        loaded = yaml.safe_load(front_raw)
+    except yaml.YAMLError as exc:
+        raise ValueError("invalid YAML frontmatter") from exc
+    if loaded is None:
+        front = {}
+    elif isinstance(loaded, dict):
+        front = loaded
+    else:
+        raise ValueError("finding frontmatter must be a mapping")
     cwe_raw = front.get("cwe")
     raw_status = str(front.get("status", "unverified"))
     if raw_status not in _STATUS_VALUES:
