@@ -93,7 +93,7 @@ import java.security.MessageDigest
           ("CWE-601", "open.redirect", "(?i)^sendRedirect$"),
           // Phase 20 — XXE + response splitting; Kotlin reuses the Java stack.
           ("CWE-611", "xml.parse",     "(?i)^(parse|unmarshal|read)$"),
-          ("CWE-611", "xml.parse",     "(?i)^(newDocumentBuilder|newSAXParser|createXMLStreamReader)$"),
+          ("CWE-611", "xml.parse",     "(?i)^createXMLStreamReader$"),
           ("CWE-93",  "header.write",  "(?i)^(setHeader|addHeader|addCookie)$"),
           // Phase 21 — logging / SSTI / LDAP / XPath; same JVM libraries as Java.
           ("CWE-532", "log.sensitive", "(?i)^(trace|debug|info|warn|error|fatal|severe)$"),
@@ -136,10 +136,10 @@ import java.security.MessageDigest
           ("CWE-601", "open.redirect", "(?i)^Redirect$"),
           ("CWE-601", "open.redirect", "(?i)^RedirectToAction$"),
           ("CWE-601", "open.redirect", "(?i)^RedirectToRoute$"),
-          // Phase 20 — XXE. ``XmlDocument.LoadXml`` resolves entities on
-          // .NET Framework by default (``XmlResolver`` non-null); modern
-          // .NET Core defaults are safe, so the reviewer confirms the TFM.
-          ("CWE-611", "xml.parse",     "(?i)^(LoadXml|XmlTextReader|XPathDocument)$"),
+          // Phase 20 — XXE. Constructors are lowered to ``<init>`` and
+          // receiver-gated below to XmlTextReader/XPathDocument. LoadXml can
+          // resolve entities on .NET Framework; deployment TFM still matters.
+          ("CWE-611", "xml.parse",     "(?i)^(LoadXml|<init>)$"),
           // Phase 20 — response splitting via header write.
           ("CWE-93",  "header.write",  "(?i)^(AppendHeader|AddHeader)$"),
           // Phase 21 — logging / LDAP / XPath / ReDoS.
@@ -227,10 +227,10 @@ import java.security.MessageDigest
           ("CWE-94",  "code.exec",     "(?i)class_eval"),
           // Open redirect — Rails ``redirect_to`` with a user-controlled URL.
           ("CWE-601", "open.redirect", "(?i)^redirect_to$"),
-          // Phase 20 — XXE. Nokogiri is safe by default; ``noent`` opts back
-          // in. REXML historically resolved entities (also a billion-laughs
-          // DoS surface).
-          ("CWE-611", "xml.parse",     "(?i)^(XML|parse|noent)$"),
+          // Phase 20 — XXE. Nokogiri is safe by default; REXML historically
+          // resolved entities. ``noent`` is configuration rather than a data
+          // sink, so only the calls that consume XML input are catalogued.
+          ("CWE-611", "xml.parse",     "(?i)^(XML|parse)$"),
           // Phase 20 — response splitting via a raw header assignment.
           ("CWE-93",  "header.write",  "(?i)^(set_header|headers)$"),
           // Phase 21 — SSTI. rubysrc2cpg lowers ``ERB.new(user)`` to the
@@ -341,7 +341,7 @@ import java.security.MessageDigest
           // external entities. We flag the parse call and let the mitigations
           // layer / reviewer confirm whether hardening was applied.
           ("CWE-611", "xml.parse",     "(?i)^(parse|unmarshal|read)$"),
-          ("CWE-611", "xml.parse",     "(?i)^(newDocumentBuilder|newSAXParser|createXMLStreamReader)$"),
+          ("CWE-611", "xml.parse",     "(?i)^createXMLStreamReader$"),
           // Phase 20 — HTTP response splitting. CRLF in an attacker-controlled
           // header value splits the response. ``addCookie`` is included
           // because the cookie value lands in a Set-Cookie header.
@@ -403,15 +403,13 @@ import java.security.MessageDigest
           // Phase 20 — XXE. ``lxml.etree`` resolves external entities unless
           // an explicit hardened ``XMLParser(resolve_entities=False)`` is
           // passed; stdlib ``xml.sax`` / ``xml.dom.minidom`` are likewise
-          // unsafe pre-3.7.1 defaults. ``fromstring``/``parse`` are the two
-          // entry shapes. Note ``parse`` also matches other libraries — the
-          // reviewer confirms the receiver is an XML parser.
+          // unsafe pre-3.7.1 defaults. These calls consume XML input; generic
+          // ``parse`` is receiver-gated below, while parser constructors are
+          // excluded because they configure rather than consume input.
           ("CWE-611", "xml.parse",     "(?i)^(fromstring|parseString|parse)$"),
-          ("CWE-611", "xml.parse",     "(?i)^(XMLParser|XMLPullParser)$"),
           // Phase 21 — sensitive data in logs. Mirrors the JS log.sensitive
-          // sink set; the *source* side (auth headers, tokens, passwords) is
-          // what makes a hit interesting, so the bare logger method names are
-          // acceptable here.
+          // sink set, then requires a logging-library type or logger-shaped
+          // receiver below.
           ("CWE-532", "log.sensitive", "(?i)^(debug|info|warning|warn|error|critical|exception)$"),
           // Phase 21/22 — NoSQL operator injection (pymongo / motor). Bare
           // ``find`` is receiver-gated below so ``str.find`` remains excluded.
@@ -634,6 +632,10 @@ import java.security.MessageDigest
   val baseRawSources = cpg.fieldAccess.code(sourceNamePattern).l ++
                        cpg.identifier.name(sourceNamePattern).l
   val srcRegex = sourceNamePattern.r
+  val goRequestSourceFullName =
+    ("""(?is).*(?:net/http\.Request\.(?:FormValue|PostFormValue|Cookie)|""" +
+      """github\.com/gin-gonic/gin\..*Context\.(?:Query|QueryArray|PostForm|""" +
+      """GetHeader|Param|GetRawData|FormValue|Cookie)).*""").r
   val rawSources =
     if (language.toLowerCase == "java" || language.toLowerCase == "kotlin") {
       val jvmParamSources =
@@ -652,7 +654,13 @@ import java.security.MessageDigest
       // object (``c.Query("id")``, ``r.URL.Query()``); the *call result* is
       // the taint source, so include matching call nodes alongside
       // identifier/fieldAccess reads.
-      val goCallSources = cpg.call.code(sourceNamePattern).l
+      val goCallSources = cpg.call
+        .filter { call =>
+          val code = if (call.code != null) call.code else ""
+          val fullName = if (call.methodFullName != null) call.methodFullName else ""
+          srcRegex.findFirstIn(code).isDefined || goRequestSourceFullName.matches(fullName)
+        }
+        .l
       baseRawSources ++ goCallSources
     } else if (language.toLowerCase == "python") {
       // Indexed Flask/Django reads such as request.args["pattern"] are
@@ -736,15 +744,29 @@ import java.security.MessageDigest
   // particular APIs. methodFullName is preferred; source-code receiver text
   // is the fallback for frontends with incomplete type recovery.
   val jsSstiReceiver =
-    """(?is).*(?:handlebars|lodash|nunjucks|pug|ejs|dot)(?::|\.).*(?:compile|template).*""".r
+    """(?is).*(?:handlebars|hbs|lodash|nunjucks|pug|ejs|dot)(?::|\.).*(?:compile|template).*""".r
   val jsEmailReceiver =
-    ("""(?is).*(?:nodemailer|mailer|mailTransport|emailClient|sendgrid|\bses\w*)\.""" +
+    ("""(?is).*(?:nodemailer|mailer|mailTransport|emailClient|sendgrid|\bses\w*|""" +
+      """\b(?:smtpTransport|transport(?:er)?)\b)\.""" +
       """(?:sendMail|sendEmail).*""").r
+  val jsHeaderReceiver =
+    ("""(?is).*(?:http\.ServerResponse|express.*Response|""" +
+      """\b(?:res|response|reply|ctx)\.(?:setHeader|append)\b).*""").r
   val jsRegExpConstructor = """(?is).*\b(?:new\s+)?RegExp\s*\(.*""".r
   val jsMongoReceiver =
     """(?is).*(?:mongodb|mongoose|mongojs|monk|\b(?:mongo|collection|coll)\w*\.).*""".r
   val javaSstiReceiver =
     """(?is).*(?:org\.apache\.velocity.*\.evaluate|freemarker\.template\.Template\.<init>).*""".r
+  val jvmXmlReceiver =
+    ("""(?s).*(?:javax\.xml|jakarta\.xml|org\.xml\.sax|org\.dom4j|org\.jdom|""" +
+      """\b(?:DocumentBuilder|SAXParser|XMLInputFactory|XMLReader|Unmarshaller)\b|""" +
+      """\b(?:xml|sax|dom)\w*\.(?i:parse|unmarshal|read|newDocumentBuilder|""" +
+      """newSAXParser|createXMLStreamReader)\b).*""").r
+  val jvmLoggerReceiver =
+    ("""(?s).*(?:org\.slf4j|org\.apache\.logging|java\.util\.logging|""" +
+      """ch\.qos\.logback|io\.github\.oshai\.kotlinlogging|mu\.KLogger|""" +
+      """\b(?:log|logger|LOG|LOGGER|[A-Za-z_]\w*(?:Log|Logger|_log|_logger))\.""" +
+      """(?i:trace|debug|info|warn|error|fatal|severe)\b).*""").r
   val jvmXpathReceiver =
     """(?is).*(?:javax\.xml\.xpath|org\.apache\.xpath|\bXPath\w*(?:\.|\b)|\bxpath\.).*""".r
   val jvmLdapReceiver =
@@ -755,11 +777,35 @@ import java.security.MessageDigest
   val pythonRegexReceiver = """(?is).*(?:\bre(?:gex)?(?:\.py)?[:.]|\bre(?:gex)?\.compile).*""".r
   val pythonMongoReceiver =
     """(?is).*(?:pymongo|motor|mongoengine|beanie|\b(?:mongo|collection|coll)\w*\.).*""".r
+  val pythonXmlReceiver =
+    ("""(?is)(?!.*defusedxml).*(?:lxml|xml\.etree|xml\.dom|xml\.sax|""" +
+      """\b(?:etree|ElementTree|minidom|sax|xml)\.(?:fromstring|parseString|parse)|""" +
+      """\b(?:xml|sax)\w*\.(?:fromstring|parseString|parse)).*""").r
+  val pythonLoggerReceiver =
+    ("""(?s).*(?:logging\.(?:Logger|RootLogger)|structlog|loguru|""" +
+      """\b(?:logging|log|logger|LOG|LOGGER|[A-Za-z_]\w*(?:Log|Logger|_log|_logger))\.""" +
+      """(?i:debug|info|warning|warn|error|critical|exception)\b).*""").r
   val phpXpathReceiver =
     ("""(?is).*(?:DOMXPath|SimpleXMLElement|""" +
       """\b\w*xpath\w*\s*->\s*(?:query|evaluate)\s*\().*""").r
   val rubyErbReceiver = """(?is).*(?:erb\.ERB\.initialize|ERB\.new\s*\().*""".r
+  val rubyXmlReceiver =
+    ("""(?s).*(?:\b(?:Nokogiri|REXML|LibXML|Ox|Oga)(?:::|\.)|""" +
+      """\b(?:xml|sax)\w*\.(?i:XML|parse)\b).*""").r
+  val rubyLoggerReceiver =
+    ("""(?s).*(?:\b(?:Rails\.logger|Logger|Log4r|SemanticLogger)(?:::|\.)|""" +
+      """\b(?:log|logger|LOG|LOGGER|[A-Za-z_]\w*(?:Log|Logger|_log|_logger))\.""" +
+      """(?i:debug|info|warn|error|fatal)\b).*""").r
+  val csharpXmlReceiver =
+    ("""(?is).*(?:\bXmlDocument\.LoadXml|""" +
+      """\b(?:XmlTextReader|XPathDocument)\.<init>|""" +
+      """new\s+(?:XmlTextReader|XPathDocument)\s*\().*""").r
+  val phpXmlReceiver =
+    """(?is).*(?:simplexml_load_|DOMDocument|XMLReader|\b\w*xml\w*\s*->\s*load(?:XML|HTML)).*""".r
   val goTemplateReceiver = """(?is).*(?:html/template|text/template)[^\s]*\.Parse\s.*""".r
+  val goHeaderReceiver =
+    ("""(?is).*(?:net/http\.(?:Header|.*\.Header.*)\.(?:Set|Add)|""" +
+      """\.Header\s*\(\s*\)\s*\.(?:Set|Add)).*""").r
   // Python SSRF: bare ``urlopen`` is specific enough on its own; the bare
   // method names (get/post/etc.) need receiver filtering to avoid matching
   // e.g. ``dict.get`` / ``Session.get`` outside HTTP-client contexts. The
@@ -818,9 +864,9 @@ import java.security.MessageDigest
           val lhsCode = if (args.head.code != null) args.head.code else ""
           val rhsCode = if (args(1).code != null) args(1).code else ""
           val lhsName = lhsCode.trim.takeWhile(char => char.isLetterOrDigit || char == '_')
-          val rhsName = rhsCode.trim
+          val rhsName = rhsCode.trim.takeWhile(char => char.isLetterOrDigit || char == '_')
           if (
-            lhsName.nonEmpty && rhsName.matches("[A-Za-z_]\\w*") &&
+            lhsName.nonEmpty && rhsName.nonEmpty &&
             found.contains(rhsName) && !found.contains(lhsName)
           ) {
             found.add(lhsName)
@@ -835,6 +881,10 @@ import java.security.MessageDigest
   val jsMongoCollectionVars = assignedReceiverVars(
     language.toLowerCase.matches("javascript|typescript|jssrc"),
     """(?is).*(?:\.collection\s*\(|mongoose\.model\s*\(|mongojs\s*\().*""".r
+  )
+  val pythonMongoDatabaseVars = assignedReceiverVars(
+    language.toLowerCase == "python",
+    """(?is).*(?:MongoClient|AsyncIOMotorClient|pymongo|motor|mongoengine|beanie).*""".r
   )
 
   // Type-aware Python HTTP-client receiver discovery.
@@ -928,6 +978,8 @@ import java.security.MessageDigest
   // the first identifier of the form `<name>.` from the call's code text
   // and check it against `pythonHttpClientVars`.
   val pythonReceiverIdentifierRegex = """(?is)^\s*([A-Za-z_]\w*)\.""".r
+  def receiverRootName(call: CallNode): String =
+    receiverCode(call).trim.takeWhile(char => char.isLetterOrDigit || char == '_')
   def filterJavascriptSinks(
     cwe: String,
     sinkClass: String,
@@ -958,6 +1010,8 @@ import java.security.MessageDigest
       sinks.filter(call => jsSstiReceiver.matches(callDescriptor(call)))
     } else if (sinkClass == "email.send") {
       sinks.filter(call => jsEmailReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "header.write") {
+      sinks.filter(call => jsHeaderReceiver.matches(callDescriptor(call)))
     } else if (sinkClass == "nosql.query") {
       sinks.filter { call =>
         jsMongoReceiver.matches(callDescriptor(call)) ||
@@ -979,9 +1033,16 @@ import java.security.MessageDigest
 
   def filterPythonSinks(cwe: String, sinkClass: String, sinks: List[CallNode]): List[CallNode] = {
     if (sinkClass == "nosql.query") {
-      sinks.filter(call => pythonMongoReceiver.matches(callDescriptor(call)))
+      sinks.filter { call =>
+        pythonMongoReceiver.matches(callDescriptor(call)) ||
+        pythonMongoDatabaseVars.contains(receiverRootName(call))
+      }
     } else if (sinkClass == "redos") {
       sinks.filter(call => pythonRegexReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "xml.parse") {
+      sinks.filter(call => pythonXmlReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "log.sensitive") {
+      sinks.filter(call => pythonLoggerReceiver.matches(callDescriptor(call)))
     } else if (cwe == "CWE-918") {
       sinks.filter { call =>
         val code = if (call.code != null) call.code else ""
@@ -1001,6 +1062,10 @@ import java.security.MessageDigest
   def filterJvmSinks(sinkClass: String, sinks: List[CallNode]): List[CallNode] = {
     if (sinkClass == "ssti") {
       sinks.filter(call => javaSstiReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "xml.parse") {
+      sinks.filter(call => jvmXmlReceiver.matches(callDescriptor(call)))
+    } else if (sinkClass == "log.sensitive") {
+      sinks.filter(call => jvmLoggerReceiver.matches(callDescriptor(call)))
     } else if (sinkClass == "xpath.query") {
       sinks.filter(call => jvmXpathReceiver.matches(callDescriptor(call)))
     } else if (sinkClass == "ldap.query") {
@@ -1014,6 +1079,10 @@ import java.security.MessageDigest
         sinks.filter(call => csharpRegexReceiver.matches(callDescriptor(call)))
       case "csharp" | "csharpsrc" if sinkClass == "xpath.query" =>
         sinks.filter(call => csharpXpathReceiver.matches(callDescriptor(call)))
+      case "csharp" | "csharpsrc" if sinkClass == "xml.parse" =>
+        sinks.filter(call => csharpXmlReceiver.matches(callDescriptor(call)))
+      case "php" if sinkClass == "xml.parse" =>
+        sinks.filter(call => phpXmlReceiver.matches(callDescriptor(call)))
       case "php" if sinkClass == "xpath.query" =>
         sinks.filter { call =>
           val name = if (call.name != null) call.name.toLowerCase else ""
@@ -1021,8 +1090,14 @@ import java.security.MessageDigest
         }
       case "ruby" | "rubysrc" if sinkClass == "ssti" =>
         sinks.filter(call => rubyErbReceiver.matches(callDescriptor(call)))
+      case "ruby" | "rubysrc" if sinkClass == "xml.parse" =>
+        sinks.filter(call => rubyXmlReceiver.matches(callDescriptor(call)))
+      case "ruby" | "rubysrc" if sinkClass == "log.sensitive" =>
+        sinks.filter(call => rubyLoggerReceiver.matches(callDescriptor(call)))
       case "go" | "golang" if sinkClass == "ssti" =>
         sinks.filter(call => goTemplateReceiver.matches(callDescriptor(call)))
+      case "go" | "golang" if sinkClass == "header.write" =>
+        sinks.filter(call => goHeaderReceiver.matches(callDescriptor(call)))
       case _ => sinks
     }
   }

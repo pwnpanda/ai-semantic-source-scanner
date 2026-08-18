@@ -83,14 +83,26 @@ gaps:
 - C# `new Regex(...)` is lowered to `<init>`. The constructor and static `IsMatch` select only
   pattern arguments; instance `IsMatch` is not a second sink because its pattern was already
   captured at construction.
-- JS/Python Mongo `find` is supported with type/receiver gates.
-- JS email calls require a mailer/SES-shaped receiver; unrelated application `sendEmail` methods
-  are safe near-misses.
-- JS Handlebars/lodash, Java Velocity/FreeMarker, Ruby ERB, and Go template parsing use receiver and argument semantics. FreeMarker `process`, Go `ParseFiles`/`ParseGlob`, and unrelated `compile` calls are safe near-misses rather than SSTI sinks.
+- JS/Python Mongo `find` is supported with type/receiver gates. PyMongo constructor and alias
+  propagation covers both `db.users.find(...)` and `db["users"].find(...)` without trusting a
+  generic variable named `db`.
+- JS email calls require a mailer, Nodemailer transporter, or SES-shaped receiver; unrelated
+  application `sendEmail` and transport-like methods are safe near-misses.
+- JS response headers require an HTTP response receiver, and Go `Set`/`Add` calls require a
+  `net/http.Header` chain. Tainted FormData and cache calls are excluded.
+- JS Handlebars/lodash (including the common `hbs` alias), Java Velocity/FreeMarker, Ruby ERB,
+  and Go template parsing use receiver and argument semantics. FreeMarker `process`, Go
+  `ParseFiles`/`ParseGlob`, and unrelated `compile` calls are safe near-misses rather than SSTI
+  sinks.
 - Java/Kotlin XPath includes the canonical `evaluate` and `compile` APIs and selects the expression argument. LDAP selects the filter argument.
+- Ambiguous XML `parse`/`read` and JVM/Python/Ruby logging names require XML-parser and logger
+  receivers. JSON/CSV parsers and application `info`/`error` methods are explicit near-misses.
+- Parser factories/configuration (`newDocumentBuilder`, Python `XMLParser`, Ruby `noent`) are not
+  data sinks. C# XML-reader/document constructors use Joern's real `<init>` call shape and a
+  class-specific receiver gate.
 - Kotlin annotated request parameters join Java parameters in the Joern source set.
 
-Paired Joern eval repositories cover JS, Python, Java, and C# positive/safe semantics. The
+Paired Joern eval repositories cover JS, Python, Java, C#, and Go positive/safe semantics. The
 compact unit matrix covers every Phase 20/21 language mapping without requiring a full CPG
 build per language.
 
@@ -128,7 +140,7 @@ Three classes the `bug_classes.yaml` taxonomy already *declared* (`xxe` → CWE-
 
 | Class | CWE / sink_class | Sinks |
 |---|---|---|
-| XXE | CWE-611 `xml.parse` | Java+Kotlin `parse`/`unmarshal`/`read`, `newDocumentBuilder`/`newSAXParser`; Python `fromstring`/`parseString`/`parse`, `XMLParser`; PHP `simplexml_load_string`/`loadXML`/`loadHTML`; C# `LoadXml`/`XmlTextReader`/`XPathDocument`; Ruby `XML`/`parse`/`noent` |
+| XXE | CWE-611 `xml.parse` | Java+Kotlin `parse`/`unmarshal`/`read`/`createXMLStreamReader`; Python `fromstring`/`parseString`/`parse`; PHP `simplexml_load_string`/`loadXML`/`loadHTML`; C# `LoadXml` and XML-reader/document constructors; Ruby `XML`/`parse` |
 | Prototype pollution | CWE-1321 `proto.pollute` | JS `merge`/`mergeWith`/`defaultsDeep`/`extend`/`deepmerge` (unfiltered) + `set`/`setWith` (receiver-gated) |
 | Response splitting | CWE-93 `header.write` | JS `setHeader`/`append`; Java+Kotlin `setHeader`/`addHeader`/`addCookie`; C# `AppendHeader`/`AddHeader`; PHP `header`; Ruby `set_header`/`headers`; Go `Set`/`Add` |
 

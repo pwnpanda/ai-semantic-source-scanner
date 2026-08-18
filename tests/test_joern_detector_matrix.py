@@ -26,17 +26,15 @@ _DETECTOR_MATRIX: dict[RuleKey, DetectorRule] = {
     ("kotlin", "CWE-611", "xml.parse"): DetectorRule(
         (
             r"(?i)^(parse|unmarshal|read)$",
-            r"(?i)^(newDocumentBuilder|newSAXParser|createXMLStreamReader)$",
+            r"(?i)^createXMLStreamReader$",
         ),
         (
             "parse",
             "unmarshal",
             "read",
-            "newDocumentBuilder",
-            "newSAXParser",
             "createXMLStreamReader",
         ),
-        ("parseInt", "readText"),
+        ("parseInt", "readText", "newDocumentBuilder", "newSAXParser"),
     ),
     ("kotlin", "CWE-93", "header.write"): DetectorRule(
         (r"(?i)^(setHeader|addHeader|addCookie)$",),
@@ -73,9 +71,9 @@ _DETECTOR_MATRIX: dict[RuleKey, DetectorRule] = {
         ("select", "find"),
     ),
     ("csharp", "CWE-611", "xml.parse"): DetectorRule(
-        (r"(?i)^(LoadXml|XmlTextReader|XPathDocument)$",),
-        ("LoadXml", "XmlTextReader", "XPathDocument"),
-        ("LoadJson", "TextReader"),
+        (r"(?i)^(LoadXml|<init>)$",),
+        ("LoadXml", "<init>"),
+        ("LoadJson", "TextReader", "XmlTextReader", "XPathDocument"),
     ),
     ("csharp", "CWE-93", "header.write"): DetectorRule(
         (r"(?i)^(AppendHeader|AddHeader)$",),
@@ -135,9 +133,9 @@ _DETECTOR_MATRIX: dict[RuleKey, DetectorRule] = {
         ("find", "search"),
     ),
     ("ruby", "CWE-611", "xml.parse"): DetectorRule(
-        (r"(?i)^(XML|parse|noent)$",),
-        ("XML", "parse", "noent"),
-        ("JSON", "parse_uri"),
+        (r"(?i)^(XML|parse)$",),
+        ("XML", "parse"),
+        ("JSON", "parse_uri", "noent"),
     ),
     ("ruby", "CWE-93", "header.write"): DetectorRule(
         (r"(?i)^(set_header|headers)$",),
@@ -177,17 +175,15 @@ _DETECTOR_MATRIX: dict[RuleKey, DetectorRule] = {
     ("java", "CWE-611", "xml.parse"): DetectorRule(
         (
             r"(?i)^(parse|unmarshal|read)$",
-            r"(?i)^(newDocumentBuilder|newSAXParser|createXMLStreamReader)$",
+            r"(?i)^createXMLStreamReader$",
         ),
         (
             "parse",
             "unmarshal",
             "read",
-            "newDocumentBuilder",
-            "newSAXParser",
             "createXMLStreamReader",
         ),
-        ("parseInt", "newBuilder"),
+        ("parseInt", "newBuilder", "newDocumentBuilder", "newSAXParser"),
     ),
     ("java", "CWE-93", "header.write"): DetectorRule(
         (r"(?i)^(setHeader|addHeader|addCookie)$",),
@@ -224,12 +220,9 @@ _DETECTOR_MATRIX: dict[RuleKey, DetectorRule] = {
         ("find", "lookup"),
     ),
     ("python", "CWE-611", "xml.parse"): DetectorRule(
-        (
-            r"(?i)^(fromstring|parseString|parse)$",
-            r"(?i)^(XMLParser|XMLPullParser)$",
-        ),
-        ("fromstring", "parseString", "parse", "XMLParser", "XMLPullParser"),
-        ("from_json", "parse_qs"),
+        (r"(?i)^(fromstring|parseString|parse)$",),
+        ("fromstring", "parseString", "parse"),
+        ("from_json", "parse_qs", "XMLParser", "XMLPullParser"),
     ),
     ("python", "CWE-532", "log.sensitive"): DetectorRule(
         (r"(?i)^(debug|info|warning|warn|error|critical|exception)$",),
@@ -455,6 +448,7 @@ def test_firestore_receiver_gate_rejects_unrelated_mutators(code: str) -> None:
             "jsSstiReceiver",
             (
                 "handlebars:compile Handlebars.compile(input)",
+                "<unknown>.compile hbs.compile(input)",
                 "lodash:template lodash.template(input)",
                 "nunjucks.compile(input)",
             ),
@@ -465,10 +459,25 @@ def test_firestore_receiver_gate_rejects_unrelated_mutators(code: str) -> None:
             (
                 "nodemailer.Transport.sendMail mailer.sendMail(message)",
                 "aws.SES.sendEmail sesClient.sendEmail(message)",
+                "<unknown>.sendMail transporter.sendMail(message)",
+                "<unknown>.sendMail transport.sendMail(message)",
             ),
             (
                 "NotificationService.sendEmail notifications.sendEmail(message)",
                 "queue.sendMail(message)",
+                "HttpTransport.sendMail httpTransport.sendMail(message)",
+                "transportQueue.sendMail(message)",
+            ),
+        ),
+        (
+            "jsHeaderReceiver",
+            (
+                "http.ServerResponse.setHeader res.setHeader(name, value)",
+                "express.Response.append response.append(name, value)",
+            ),
+            (
+                "FormData.append formData.append(name, value)",
+                "Array.append values.append(value)",
             ),
         ),
         (
@@ -492,6 +501,28 @@ def test_firestore_receiver_gate_rejects_unrelated_mutators(code: str) -> None:
             (
                 "freemarker.template.Template.process process(model, writer)",
                 "freemarker.template.Configuration.getTemplate getTemplate(name)",
+            ),
+        ),
+        (
+            "jvmXmlReceiver",
+            (
+                "javax.xml.parsers.DocumentBuilder.parse builder.parse(input)",
+                "org.xml.sax.XMLReader.parse xmlReader.parse(input)",
+            ),
+            (
+                "com.fasterxml.jackson.core.JsonParser.read parser.read(input)",
+                "com.example.CsvParser.parse parser.parse(input)",
+            ),
+        ),
+        (
+            "jvmLoggerReceiver",
+            (
+                "org.slf4j.Logger.info logger.info(secret)",
+                "org.apache.logging.log4j.Logger.error auditLogger.error(secret)",
+            ),
+            (
+                "com.example.Status.info status.info(secret)",
+                "com.example.Catalog.error catalog.error(secret)",
             ),
         ),
         (
@@ -534,6 +565,30 @@ def test_firestore_receiver_gate_rejects_unrelated_mutators(code: str) -> None:
             ),
         ),
         (
+            "pythonXmlReceiver",
+            (
+                "lxml.etree.fromstring etree.fromstring(input)",
+                "xml.sax.parse xml.sax.parse(input)",
+                "<unknown>.parse xml_parser.parse(input)",
+            ),
+            (
+                "json.parse json.parse(input)",
+                "csv.Parser.parse parser.parse(input)",
+                "defusedxml.ElementTree.parse safe_xml.parse(input)",
+            ),
+        ),
+        (
+            "pythonLoggerReceiver",
+            (
+                "logging.Logger.error logger.error(secret)",
+                "structlog.BoundLogger.info audit_logger.info(secret)",
+            ),
+            (
+                "Response.error response.error(secret)",
+                "Catalog.info catalog.info(secret)",
+            ),
+        ),
+        (
             "phpXpathReceiver",
             (
                 "DOMXPath.query $engine->query($expression)",
@@ -547,11 +602,55 @@ def test_firestore_receiver_gate_rejects_unrelated_mutators(code: str) -> None:
             ("json.initialize JSON.new(source)",),
         ),
         (
+            "rubyXmlReceiver",
+            (
+                "nokogiri.Nokogiri.XML Nokogiri::XML(input)",
+                "rexml.REXML.Document.parse xml_parser.parse(input)",
+            ),
+            ("json.JSON.parse JSON.parse(input)", "csv.CSV.parse CSV.parse(input)"),
+        ),
+        (
+            "rubyLoggerReceiver",
+            ("logger.Logger.info logger.info(secret)", "Rails.logger.error(secret)"),
+            ("Result.info result.info(secret)", "Catalog.error catalog.error(secret)"),
+        ),
+        (
+            "csharpXmlReceiver",
+            (
+                "System.Xml.XmlDocument.LoadXml document.LoadXml(input)",
+                "System.Xml.XPath.XPathDocument.<init> new XPathDocument(input)",
+            ),
+            (
+                "Newtonsoft.Json.JsonConvert.LoadXml serializer.LoadXml(input)",
+                "System.Xml.XmlQualifiedName.<init> new XmlQualifiedName(input)",
+            ),
+        ),
+        (
+            "phpXmlReceiver",
+            ("simplexml_load_string($input)", "DOMDocument $xml->loadXML($input)"),
+            ("JsonDocument $document->loadXML($input)",),
+        ),
+        (
             "goTemplateReceiver",
             ("html/template.New.<ReturnType>.Parse template.New('x').Parse(source)",),
             (
                 "html/template.ParseFiles template.ParseFiles(source)",
                 "strconv.ParseInt strconv.ParseInt(source, 10, 64)",
+            ),
+        ),
+        (
+            "goHeaderReceiver",
+            (
+                (
+                    "net/http.ResponseWriter.Header.<ReturnType>.<unknown>.Set "
+                    "writer.Header().Set(name, value)"
+                ),
+                "net/http.Header.Add header.Add(name, value)",
+            ),
+            (
+                "example.Cache.Set cache.Set(name, value)",
+                "example.Header.Set header.Set(name, value)",
+                "example.Collection.Add collection.Add(value)",
             ),
         ),
     ),
@@ -579,3 +678,11 @@ def test_go_standard_regexp_is_not_modelled_as_redos() -> None:
     catalog = _catalog()
 
     assert ("go", "CWE-1333", "redos") not in catalog
+
+
+def test_go_request_source_gate_uses_api_type_not_variable_name() -> None:
+    source = _named_scala_regex("goRequestSourceFullName")
+
+    assert source.fullmatch("net/http.Request.FormValue")
+    assert source.fullmatch("github.com/gin-gonic/gin.Context.Query")
+    assert source.fullmatch("example.Cache.FormValue") is None

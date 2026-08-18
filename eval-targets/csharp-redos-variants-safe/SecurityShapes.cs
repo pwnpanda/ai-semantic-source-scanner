@@ -1,3 +1,4 @@
+using System;
 using System.Text.RegularExpressions;
 
 public static class SecurityShapes
@@ -6,6 +7,9 @@ public static class SecurityShapes
 
     public static bool Match(string input)
     {
-        return Identifier.IsMatch(input) || Regex.IsMatch(input, "^[a-z0-9_-]{1,64}$");
+        var relativeReference = new Uri(input, UriKind.RelativeOrAbsolute);
+        return relativeReference.IsAbsoluteUri
+            || Identifier.IsMatch(input)
+            || Regex.IsMatch(input, "^[a-z0-9_-]{1,64}$");
     }
 }

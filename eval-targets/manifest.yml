@@ -864,9 +864,9 @@ cases:
     target: javascript-phase21-variants-safe
     language: javascript
     engine: joern
-    # Array.find, WebAssembly.compile and URL construction are tainted safe
-    # near-misses. Constant template/header arguments are excluded before the
-    # co-location fallback.
+    # Array.find, WebAssembly.compile, FormData.append, an unrelated transport,
+    # and URL construction are tainted safe near-misses. Constant
+    # template/header arguments are excluded before the co-location fallback.
     expected_findings: []
     allowed_false_positives: []
   - id: csharp-redos-variants
@@ -877,26 +877,64 @@ cases:
       - id: CSHARP-REGEX-CONSTRUCTOR-001
         cwe: CWE-1333
         file: SecurityShapes.cs
-        source_line: 5
-        sink_line: 7
+        source_line: 6
+        sink_line: 8
         source_contains: pattern
         sink_contains: <init>
         line_tolerance: 1
       - id: CSHARP-REGEX-ISMATCH-001
         cwe: CWE-1333
         file: SecurityShapes.cs
-        source_line: 5
-        sink_line: 8
+        source_line: 12
+        sink_line: 14
         source_contains: pattern
         sink_contains: IsMatch
+        line_tolerance: 1
+      - id: CSHARP-XML-READER-001
+        cwe: CWE-611
+        file: SecurityShapes.cs
+        source_line: 17
+        sink_line: 19
+        source_contains: xml
+        sink_contains: <init>
         line_tolerance: 1
     allowed_false_positives: []
   - id: csharp-redos-variants-safe
     target: csharp-redos-variants-safe
     language: csharp
     engine: joern
-    # Request/input data is matched against a fixed pattern; it is not used as
-    # the regular expression itself.
+    # Request/input data is matched against a fixed pattern, and the unrelated
+    # Uri constructor is not an XML reader/document constructor.
+    expected_findings: []
+    allowed_false_positives: []
+  - id: go-header-variants
+    target: go-header-variants
+    language: go
+    engine: joern
+    expected_findings:
+      - id: GO-HTTP-HEADER-001
+        cwe: CWE-93
+        file: main.go
+        source_line: 6
+        sink_line: 7
+        source_contains: request.FormValue
+        sink_contains: Set
+        line_tolerance: 1
+      - id: GO-HTTP-HEADER-ADD-001
+        cwe: CWE-93
+        file: main.go
+        source_line: 6
+        sink_line: 8
+        source_contains: request.FormValue
+        sink_contains: Add
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: go-header-variants-safe
+    target: go-header-variants-safe
+    language: go
+    engine: joern
+    # A tainted cache.Set call is not an HTTP response-header write; the real
+    # Header.Set call receives only fixed literals.
     expected_findings: []
     allowed_false_positives: []
   - id: java-phase21-variants
@@ -953,26 +991,42 @@ cases:
       - id: PYTHON-MONGO-FIND-001
         cwe: CWE-943
         file: server.py
-        source_line: 14
-        sink_line: 16
+        source_line: 17
+        sink_line: 20
+        source_contains: request.json
+        sink_contains: find
+        line_tolerance: 1
+      - id: PYTHON-MONGO-INDEXED-FIND-001
+        cwe: CWE-943
+        file: server.py
+        source_line: 17
+        sink_line: 21
         source_contains: request.json
         sink_contains: find
         line_tolerance: 1
       - id: PYTHON-REGEX-COMPILE-001
         cwe: CWE-1333
         file: server.py
-        source_line: 15
-        sink_line: 17
+        source_line: 18
+        sink_line: 22
         source_contains: request.args
         sink_contains: compile
+        line_tolerance: 1
+      - id: PYTHON-SENSITIVE-LOG-001
+        cwe: CWE-532
+        file: server.py
+        source_line: 19
+        sink_line: 23
+        source_contains: request.headers
+        sink_contains: error
         line_tolerance: 1
     allowed_false_positives: []
   - id: python-phase21-variants-safe
     target: python-phase21-variants-safe
     language: python
     engine: joern
-    # Application methods named find_one/compile are tainted near-misses; the
-    # real re.compile call has a static pattern.
+    # Application methods named find_one/compile/parse/error are tainted
+    # near-misses; the real re.compile call has a static pattern.
     expected_findings: []
     allowed_false_positives: []
   - id: kotlin-spring-semantic-hotspots

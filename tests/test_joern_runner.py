@@ -178,6 +178,7 @@ def test_joern_runs_against_tiny_aspnet_csharp(tmp_path: Path, fixtures_dir: Pat
         ("javascript-phase21-variants", "javascript-phase21-variants-safe"),
         ("python-phase21-variants", "python-phase21-variants-safe"),
         ("csharp-redos-variants", "csharp-redos-variants-safe"),
+        ("go-header-variants", "go-header-variants-safe"),
         ("java-phase21-variants", "java-phase21-variants-safe"),
     ),
 )

@@ -8,6 +8,7 @@ const values = ["alpha", "beta"];
 const render = Handlebars.compile("<p>{{value}}</p>");
 const searchService = { findOne: (value) => value };
 const notificationService = { sendEmail: async (value) => value };
+const httpTransport = { sendMail: async (value) => value };
 
 app.use(express.json());
 
@@ -15,8 +16,11 @@ app.post("/preview", async (req, res) => {
   const match = values.find((value) => value === req.body.filter);
   const unrelatedRecord = searchService.findOne(req.body.filter);
   const module = await WebAssembly.compile(req.body.moduleBytes);
+  const formData = new FormData();
+  formData.append("field", req.body.formValue);
   const parsed = new URL(req.body.url, "https://example.invalid");
   const notification = await notificationService.sendEmail(req.body.notification);
+  const relayed = await httpTransport.sendMail(req.body.relayPayload);
   res.setHeader("X-Request-Label", "fixed");
   res.json({
     match,
@@ -24,6 +28,7 @@ app.post("/preview", async (req, res) => {
     module: Boolean(module),
     parsed: parsed.href,
     notification: Boolean(notification),
+    relayed: Boolean(relayed),
     html: render(req.body),
   });
 });
