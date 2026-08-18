@@ -11,6 +11,7 @@ import yaml
 from typer.testing import CliRunner
 
 from ai_codescan.cli import app
+from ai_codescan.engines.semgrep import active_rule_dirs
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.model_proposals import (
     ModelProposal,
@@ -712,6 +713,9 @@ def test_model_proposals_cli_link_targets_then_apply(tmp_path: Path) -> None:
     negative = tmp_path / "negative-target"
     negative.mkdir()
     rules_root = tmp_path / ".semgrep"
+    promoted = rules_root / "rules"
+    promoted.mkdir(parents=True)
+    (promoted / "preexisting.yml").write_text("rules: []\n", encoding="utf-8")
 
     linked = runner.invoke(
         app,
@@ -749,10 +753,61 @@ def test_model_proposals_cli_link_targets_then_apply(tmp_path: Path) -> None:
     # rule landed in rules.staged/ by default.
     staged = rules_root / "rules.staged"
     assert any(staged.glob("aics-cwe-639-*.yml")), list(staged.iterdir())
+    repo_dir = cache / "repo-1"
+    assert not (repo_dir / "aics-semgrep-rules.json").exists()
+    assert promoted.resolve() not in active_rule_dirs(repo_dir)
+
+
+def test_model_proposals_promote_registers_external_semgrep_root(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    proposals_dir = cache / "repo-1" / "runs" / "run-1" / "model_proposals"
+    write_model_proposals([_proposal()], proposals_dir=proposals_dir)
+    positive = tmp_path / "positive-target"
+    positive.mkdir()
+    negative = tmp_path / "negative-target"
+    negative.mkdir()
+    rules_root = tmp_path / "external-semgrep"
+    linked = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "model-proposals",
+            "link-targets",
+            "proposal-test",
+            "--repo-id",
+            "repo-1",
+            "--positive",
+            str(positive),
+            "--negative",
+            str(negative),
+        ],
+    )
+
+    promoted = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "model-proposals",
+            "apply",
+            "proposal-test",
+            "--repo-id",
+            "repo-1",
+            "--rules-root",
+            str(rules_root),
+            "--promote",
+        ],
+    )
+
+    assert linked.exit_code == 0, linked.stdout + linked.stderr
+    assert promoted.exit_code == 0, promoted.stdout + promoted.stderr
+    assert any((rules_root / "rules").glob("aics-cwe-639-*.yml"))
     registry = json.loads(
         (cache / "repo-1" / "aics-semgrep-rules.json").read_text(encoding="utf-8")
     )
     assert registry == {"rules_root": str(rules_root.resolve())}
+    assert (rules_root / "rules").resolve() in active_rule_dirs(cache / "repo-1")
 
 
 def test_model_proposals_apply_refuses_without_paired_targets(tmp_path: Path) -> None:

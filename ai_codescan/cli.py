@@ -1345,7 +1345,8 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
         rules_root=effective_rules_root,
         staged=not promote,
     )
-    register_rules_root(repo_dir, effective_rules_root)
+    if promote:
+        register_rules_root(repo_dir, effective_rules_root)
     db_path = cache_root / repo_id / "index.duckdb"
     if db_path.is_file():
         conn = duckdb.connect(str(db_path))
