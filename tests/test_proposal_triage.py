@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from ai_codescan.engines import semgrep as semgrep_mod
 from ai_codescan.index.duckdb_schema import apply_schema
@@ -331,8 +332,11 @@ def test_run_semgrep_picks_up_enabled_packs(tmp_path: Path, monkeypatch) -> None
 
     def fake_subprocess_run(cmd, **_kw):
         captured["cmd"] = list(cmd)
+        output_index = cmd.index("--output") + 1
+        Path(cmd[output_index]).write_text('{"version":"2.1.0","runs":[]}', encoding="utf-8")
 
         class _R:
+            returncode = 0
             stdout = b""
             stderr = b""
 
@@ -347,6 +351,65 @@ def test_run_semgrep_picks_up_enabled_packs(tmp_path: Path, monkeypatch) -> None
 
     pack_args = [a for a in captured["cmd"] if a == "--config=p/python.lang.security.injection.sql"]
     assert pack_args, f"pack not propagated: {captured['cmd']}"
+
+
+def test_run_semgrep_loads_promoted_rules_but_not_staged_rules(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    active = tmp_path / ".semgrep" / "rules"
+    staged = tmp_path / ".semgrep" / "rules.staged"
+    active.mkdir(parents=True)
+    staged.mkdir(parents=True)
+    (active / "promoted.yml").write_text("rules: []\n", encoding="utf-8")
+    (staged / "unapproved.yml").write_text("rules: []\n", encoding="utf-8")
+    captured: dict[str, list[str]] = {}
+
+    def fake_subprocess_run(cmd, **_kw):
+        captured["cmd"] = list(cmd)
+        output_index = cmd.index("--output") + 1
+        Path(cmd[output_index]).write_text('{"version":"2.1.0","runs":[]}', encoding="utf-8")
+
+        class _Result:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return _Result()
+
+    monkeypatch.setattr(semgrep_mod, "is_available", lambda: True)
+    monkeypatch.setattr(semgrep_mod.subprocess, "run", fake_subprocess_run)
+    project_root = tmp_path / "src"
+    project_root.mkdir()
+
+    semgrep_mod.run_semgrep(project_root, cache_dir=tmp_path, project_id="custom")
+
+    assert f"--config={active}" in captured["cmd"]
+    assert f"--config={staged}" not in captured["cmd"]
+
+
+def test_run_semgrep_failure_cannot_reuse_stale_sarif(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    stale = tmp_path / "semgrep" / "project.sarif"
+    stale.parent.mkdir()
+    stale.write_text('{"version":"2.1.0","runs":[{"results":[{}]}]}', encoding="utf-8")
+
+    class _Failed:
+        returncode = 2
+        stdout = b""
+        stderr = b"invalid rule"
+
+    monkeypatch.setattr(semgrep_mod, "is_available", lambda: True)
+    monkeypatch.setattr(semgrep_mod.subprocess, "run", lambda *_args, **_kwargs: _Failed())
+    project_root = tmp_path / "src"
+    project_root.mkdir()
+
+    with pytest.raises(RuntimeError, match="invalid rule"):
+        semgrep_mod.run_semgrep(project_root, cache_dir=tmp_path, project_id="project")
+
+    assert not stale.exists()
 
 
 def test_pack_registry_file_is_valid_json_list(tmp_path: Path) -> None:

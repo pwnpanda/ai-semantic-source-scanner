@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import subprocess
+import tempfile
+from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 
 import duckdb
 
 from ai_codescan.ast.runner import AstJob, run_jobs
+from ai_codescan.cache_state import build_scan_fingerprint, scan_stage_is_current, set_scan_stage
 from ai_codescan.codeql_extensions import render_codeql_yaml_extensions
 from ai_codescan.config import compute_repo_id
 from ai_codescan.engines.codeql import build_database, run_queries
@@ -20,6 +26,7 @@ from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.index.scip import build_scip_index
 from ai_codescan.ingest.sarif import ingest_sarif
 from ai_codescan.manifest import IGNORED_SOURCE_DIRS
+from ai_codescan.repo_lock import repo_scan_lock
 from ai_codescan.repo_md import render_repo_md
 from ai_codescan.sidecars import emit_sidecars
 from ai_codescan.snapshot import SnapshotResult, take_snapshot
@@ -69,6 +76,8 @@ _SOURCE_INDEX_TABLES = (
     "candidate_scores",
 )
 
+_PREP_INCOMPLETE_MARKER = ".prep-incomplete"
+
 
 def _has_skipped_part(path: Path, *, base: Path, skipped: frozenset[str]) -> bool:
     return any(part in skipped for part in path.relative_to(base).parts)
@@ -108,15 +117,6 @@ def _clear_source_index(conn: duckdb.DuckDBPyConnection) -> None:
     """Clear derived source state before rebuilding a changed snapshot."""
     for table in _SOURCE_INDEX_TABLES:
         conn.execute(f"DELETE FROM {table}")  # noqa: S608 - names are a fixed internal tuple
-
-
-def _clear_generated_sidecars(sidecars_root: Path) -> None:
-    """Remove generated sidecars that may refer to deleted source files."""
-    if not sidecars_root.is_dir():
-        return
-    for pattern in ("*.enrich.jsonl", "*.enrich.jsonl.tmp"):
-        for sidecar in sidecars_root.rglob(pattern):
-            sidecar.unlink(missing_ok=True)
 
 
 def _files_for_project(
@@ -286,11 +286,31 @@ def _scip_occurrence_line_range(
     return None
 
 
-def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: Path) -> dict:
+def _scip_tool_is_available(language: str) -> bool:
+    if language == "java" and os.environ.get("AI_CODESCAN_SCIP_JAVA_INDEX"):
+        return True
+    tool = {
+        "javascript": "scip-typescript",
+        "python": "scip-python",
+        "java": "scip-java",
+        "go": "scip-go",
+    }[language]
+    return shutil.which(tool) is not None
+
+
+def _build_scip_lookup(
+    snapshot_root: Path,
+    projects: list[Project],
+    cache_dir: Path,
+) -> tuple[dict, bool]:
     lookup: dict = {}
+    had_failures = False
     for project in projects:
         scip_language = _scip_language_for_project(project)
         if scip_language is None:
+            continue
+        if not _scip_tool_is_available(scip_language):
+            log.warning("scip index unavailable for %s (%s)", project.name, scip_language)
             continue
         try:
             result = build_scip_index(
@@ -301,6 +321,7 @@ def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: 
             )
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             log.warning("scip index failed for %s: %s", project.name, exc)
+            had_failures = True
             continue
         for doc in result.iter_documents():
             file = (snapshot_root / project.base_path / doc.relative_path).as_posix()
@@ -310,7 +331,7 @@ def _build_scip_lookup(snapshot_root: Path, projects: list[Project], cache_dir: 
                     continue
                 start, end = line_range
                 lookup[(file, start, end)] = f"scip:{occ.symbol}"
-    return lookup
+    return lookup, had_failures
 
 
 def _codeql_language_for_project(project: Project) -> str | None:  # noqa: PLR0911 - one early-return per language is the clearest expression
@@ -358,21 +379,30 @@ def _render_codeql_extension_packs(repo_dir: Path) -> list[Path]:
     return list(lang_dirs)
 
 
-def _run_codeql_for_projects(
+def _run_codeql_for_projects(  # noqa: PLR0913 - five positional data inputs; policy is keyword-only
     snapshot_root: Path,
     projects: list[Project],
     repo_dir: Path,
     bug_classes: list[BugClass] | None,
     conn,
-) -> None:
+    *,
+    strict: bool,
+) -> bool:
+    """Run CodeQL and return whether available projects failed in fallback mode."""
     tags: list[str] = []
     if bug_classes:
         for c in bug_classes:
             tags.extend(c.codeql_tags)
     extension_packs = _render_codeql_extension_packs(repo_dir) or None
+    had_failures = False
     for project in projects:
         language = _codeql_language_for_project(project)
         if language is None:
+            continue
+        if shutil.which("codeql") is None:
+            if strict:
+                raise RuntimeError("codeql engine requested but codeql is not on PATH")
+            log.warning("codeql unavailable for %s; hybrid fallback remains active", project.name)
             continue
         project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
         try:
@@ -408,13 +438,230 @@ def _run_codeql_for_projects(
                 engine="codeql",
             )
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-            # `database create --language=go` raises CalledProcessError when
-            # the Go toolchain isn't on PATH (CodeQL needs `go` to build
-            # the Go database). That's not a scanner error — recall-first
-            # means CodeQL absence falls back to Joern + Semgrep, not the
-            # whole case erroring out. Same applies to any other language
-            # whose extractor needs an external build tool.
+            if strict:
+                raise RuntimeError(f"codeql failed for {project.name}: {exc}") from exc
             log.warning("codeql failed for %s: %s", project.name, exc)
+            had_failures = True
+    return had_failures
+
+
+def _mark_prep_started(repo_dir: Path) -> bool:
+    """Write the crash marker and return whether an earlier attempt left it behind."""
+    marker = repo_dir / _PREP_INCOMPLETE_MARKER
+    was_incomplete = marker.is_file()
+    temporary = marker.with_suffix(".tmp")
+    temporary.write_text("prep in progress\n", encoding="utf-8")
+    temporary.replace(marker)
+    return was_incomplete
+
+
+def _index_projects(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    snapshot_root: Path,
+    projects: list[Project],
+    scip_lookup: dict,
+) -> None:
+    indexed_ast_files: set[tuple[str, Path]] = set()
+    for project in projects:
+        jobs = _deduplicate_ast_jobs(
+            _ast_jobs_for_project(snapshot_root, project),
+            indexed_ast_files,
+        )
+        if not jobs:
+            continue
+        files: list[dict] = []
+        symbols: list[dict] = []
+        xrefs: list[dict] = []
+        for record in run_jobs(jobs):
+            record_type = record["type"]
+            if record_type == "file":
+                files.append(record)
+            elif record_type == "symbol":
+                symbols.append(record)
+            elif record_type == "xref":
+                xrefs.append(record)
+        duckdb_ingest(
+            conn,
+            files=files,
+            symbols=symbols,
+            xrefs=xrefs,
+            scip_lookup=scip_lookup,
+            project_id=project.name,
+            snapshot_root=snapshot_root,
+        )
+        ingest_entrypoints(conn, detect_entrypoints(xrefs=xrefs, symbols=symbols))
+
+
+def _entrypoints_from_index(conn: duckdb.DuckDBPyConnection) -> list[Entrypoint]:
+    rows = conn.execute("SELECT symbol_id, kind, signature, file, line FROM entrypoints").fetchall()
+    return [
+        Entrypoint(
+            symbol_id=symbol_id,
+            kind=kind,
+            signature=signature,
+            file=file or "",
+            line=int(line or 0),
+        )
+        for symbol_id, kind, signature, file, line in rows
+    ]
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _emit_index_artifacts(  # noqa: PLR0913 - one positional arg; artifact context is keyword-only
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    target_name: str,
+    projects: list[Project],
+    snapshot_root: Path,
+    artifact_root: Path,
+) -> None:
+    _write_text_atomic(
+        artifact_root / "repo.md",
+        render_repo_md(target_name=target_name, projects=projects),
+    )
+    _write_text_atomic(
+        artifact_root / "entrypoints.md",
+        render_entrypoints_md(
+            target_name=target_name,
+            entrypoints=_entrypoints_from_index(conn),
+        ),
+    )
+    sidecars_root = artifact_root / "sidecars"
+    sidecars_root.mkdir(parents=True, exist_ok=True)
+    emit_sidecars(conn, snapshot_root=snapshot_root, sidecars_root=sidecars_root)
+
+
+def _promote_index_artifacts(artifact_root: Path, repo_dir: Path) -> None:
+    """Publish staged projections only after the DuckDB transaction commits."""
+    for name in ("repo.md", "entrypoints.md"):
+        (artifact_root / name).replace(repo_dir / name)
+    staged_sidecars = artifact_root / "sidecars"
+    live_sidecars = repo_dir / "sidecars"
+    backup_sidecars = repo_dir / ".sidecars.previous"
+    if backup_sidecars.exists():
+        shutil.rmtree(backup_sidecars)
+    if live_sidecars.exists():
+        live_sidecars.replace(backup_sidecars)
+    try:
+        staged_sidecars.replace(live_sidecars)
+    except BaseException:
+        if backup_sidecars.exists() and not live_sidecars.exists():
+            backup_sidecars.replace(live_sidecars)
+        raise
+    if backup_sidecars.exists():
+        shutil.rmtree(backup_sidecars)
+
+
+def _rebuild_source_index(  # noqa: PLR0913 - one positional arg; scan context is keyword-only
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    snapshot_root: Path,
+    projects: list[Project],
+    repo_dir: Path,
+    bug_classes: list[BugClass] | None,
+    engine: str,
+) -> bool:
+    _clear_source_index(conn)
+    scip_lookup, had_gaps = _build_scip_lookup(snapshot_root, projects, repo_dir)
+    _index_projects(
+        conn,
+        snapshot_root=snapshot_root,
+        projects=projects,
+        scip_lookup=scip_lookup,
+    )
+    if engine in {"codeql", "hybrid"}:
+        had_gaps = (
+            _run_codeql_for_projects(
+                snapshot_root,
+                projects,
+                repo_dir,
+                bug_classes,
+                conn,
+                strict=engine == "codeql",
+            )
+            or had_gaps
+        )
+    return had_gaps
+
+
+def _prepare_index(  # noqa: PLR0913 - transaction inputs are keyword-only orchestration state
+    *,
+    db_path: Path,
+    db_existed: bool,
+    fingerprint: str,
+    engine: str,
+    force: bool,
+    previous_attempt_failed: bool,
+    snapshot: SnapshotResult,
+    projects: list[Project],
+    repo_dir: Path,
+    target_name: str,
+    bug_classes: list[BugClass] | None,
+    artifact_root: Path,
+    quiet: bool,
+) -> bool:
+    conn = duckdb.connect(str(db_path))
+    try:
+        apply_schema(conn)
+        incremental = (
+            not force
+            and not previous_attempt_failed
+            and snapshot.skipped
+            and db_existed
+            and scan_stage_is_current(
+                conn,
+                fingerprint=fingerprint,
+                engine=engine,
+                required_stage="prep",
+            )
+        )
+        if incremental:
+            if not quiet:
+                log.info("skipping AST/SCIP/CodeQL stages — cached results reused")
+            _emit_index_artifacts(
+                conn,
+                target_name=target_name,
+                projects=projects,
+                snapshot_root=snapshot.snapshot_dir,
+                artifact_root=artifact_root,
+            )
+            return True
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            had_gaps = _rebuild_source_index(
+                conn,
+                snapshot_root=snapshot.snapshot_dir,
+                projects=projects,
+                repo_dir=repo_dir,
+                bug_classes=bug_classes,
+                engine=engine,
+            )
+            _emit_index_artifacts(
+                conn,
+                target_name=target_name,
+                projects=projects,
+                snapshot_root=snapshot.snapshot_dir,
+                artifact_root=artifact_root,
+            )
+            if engine in {"hybrid", "llm-heavy"}:
+                stage = "prep_with_gaps" if had_gaps else "prep"
+            else:
+                stage = "complete_with_gaps" if had_gaps else "complete"
+            set_scan_stage(conn, fingerprint=fingerprint, engine=engine, stage=stage)
+            conn.execute("COMMIT")
+        except BaseException:
+            with suppress(duckdb.Error):
+                conn.execute("ROLLBACK")
+            raise
+        return False
+    finally:
+        conn.close()
 
 
 def run_prep(  # noqa: PLR0913 - keyword-only orchestration knobs
@@ -424,95 +671,55 @@ def run_prep(  # noqa: PLR0913 - keyword-only orchestration knobs
     commit: str | None = None,
     bug_classes: list[BugClass] | None = None,
     engine: str = "codeql",
+    llm_provider: str = "claude",
+    llm_model: str = "",
     quiet: bool = False,
     force: bool = False,
 ) -> tuple[SnapshotResult, Path]:
     """Snapshot, detect, AST, SCIP, ingest. Returns the snapshot result and the duckdb path.
 
-    When the snapshot is reused (manifest matched) and the DuckDB index already exists,
-    the AST / SCIP / CodeQL stages are short-circuited and only cheap projections
-    (sidecars + entrypoints.md) are re-emitted. Pass ``force=True`` to bypass.
+    Reuse requires both a matching snapshot and a complete scanner/config fingerprint.
+    A failed rebuild rolls back source-derived rows and leaves a crash marker that forces
+    the next invocation to retry. Pass ``force=True`` to bypass reuse explicitly.
     """
     repo_dir = cache_root / compute_repo_id(target)
-    snap = take_snapshot(target, cache_dir=repo_dir, commit=commit)
-
-    projects = detect_projects(snap.snapshot_dir)
-    repo_md_path = repo_dir / "repo.md"
-    repo_md_path.write_text(
-        render_repo_md(target_name=target.name, projects=projects),
-        encoding="utf-8",
-    )
-
-    db_path = repo_dir / "index.duckdb"
-    incremental = (not force) and snap.skipped and db_path.is_file()
-
-    conn = duckdb.connect(str(db_path))
-    apply_schema(conn)
-
-    if incremental:
-        if not quiet:
-            log.info("skipping AST/SCIP/CodeQL stages — cached results reused")
-    else:
-        _clear_source_index(conn)
-        scip_lookup = _build_scip_lookup(snap.snapshot_dir, projects, repo_dir)
-
-        indexed_ast_files: set[tuple[str, Path]] = set()
-        for project in projects:
-            jobs = _deduplicate_ast_jobs(
-                _ast_jobs_for_project(snap.snapshot_dir, project),
-                indexed_ast_files,
-            )
-            if not jobs:
-                continue
-            files: list[dict] = []
-            symbols: list[dict] = []
-            xrefs: list[dict] = []
-            for record in run_jobs(jobs):
-                t = record["type"]
-                if t == "file":
-                    files.append(record)
-                elif t == "symbol":
-                    symbols.append(record)
-                elif t == "xref":
-                    xrefs.append(record)
-            duckdb_ingest(
-                conn,
-                files=files,
-                symbols=symbols,
-                xrefs=xrefs,
-                scip_lookup=scip_lookup,
-                project_id=project.name,
-                snapshot_root=snap.snapshot_dir,
-            )
-            entries = detect_entrypoints(xrefs=xrefs, symbols=symbols)
-            ingest_entrypoints(conn, entries)
-
-        if engine == "codeql":
-            _run_codeql_for_projects(snap.snapshot_dir, projects, repo_dir, bug_classes, conn)
-
-    all_entries_rows = conn.execute(
-        "SELECT symbol_id, kind, signature, file, line FROM entrypoints"
-    ).fetchall()
-    all_entries: list[Entrypoint] = []
-    for sym_id, kind, sig, file, line in all_entries_rows:
-        all_entries.append(
-            Entrypoint(
-                symbol_id=sym_id,
-                kind=kind,
-                signature=sig,
-                file=file or "",
-                line=int(line or 0),
-            )
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    with repo_scan_lock(repo_dir):
+        previous_attempt_failed = _mark_prep_started(repo_dir)
+        snap = take_snapshot(target, cache_dir=repo_dir, commit=commit)
+        projects = detect_projects(snap.snapshot_dir)
+        fingerprint = build_scan_fingerprint(
+            repo_dir,
+            engine=engine,
+            bug_classes=bug_classes,
+            engine_config=(
+                {"llm_provider": llm_provider, "llm_model": llm_model}
+                if engine == "llm-heavy"
+                else None
+            ),
         )
-    (repo_dir / "entrypoints.md").write_text(
-        render_entrypoints_md(target_name=target.name, entrypoints=all_entries),
-        encoding="utf-8",
-    )
-
-    sidecars_root = repo_dir / "sidecars"
-    if not incremental:
-        _clear_generated_sidecars(sidecars_root)
-    emit_sidecars(conn, snapshot_root=snap.snapshot_dir, sidecars_root=sidecars_root)
-
-    conn.close()
-    return snap, db_path
+        db_path = repo_dir / "index.duckdb"
+        db_existed = db_path.is_file()
+        artifact_root = Path(tempfile.mkdtemp(prefix=".prep-artifacts-", dir=repo_dir))
+        try:
+            incremental = _prepare_index(
+                db_path=db_path,
+                db_existed=db_existed,
+                fingerprint=fingerprint,
+                engine=engine,
+                force=force,
+                previous_attempt_failed=previous_attempt_failed,
+                snapshot=snap,
+                projects=projects,
+                repo_dir=repo_dir,
+                target_name=target.name,
+                bug_classes=bug_classes,
+                artifact_root=artifact_root,
+                quiet=quiet,
+            )
+            _promote_index_artifacts(artifact_root, repo_dir)
+        finally:
+            if artifact_root.exists():
+                shutil.rmtree(artifact_root)
+        (repo_dir / _PREP_INCOMPLETE_MARKER).unlink(missing_ok=True)
+        return replace(snap, index_reused=incremental), db_path

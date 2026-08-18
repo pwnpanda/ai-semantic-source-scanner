@@ -27,6 +27,7 @@ class SnapshotResult:
     commit_sha: str | None
     method: Literal["git-worktree", "cp"]
     skipped: bool  # True when a previous matching snapshot was reused
+    index_reused: bool = False  # Set by prep when source-derived rows were reused
 
 
 def _is_git_repo(target: Path) -> bool:

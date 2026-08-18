@@ -824,12 +824,54 @@ def test_scan_skip_hitl_runs_stages_in_order(tmp_path: Path, monkeypatch) -> Non
         "report",
     ]
     assert calls[0][-2:] == ["--engine", "hybrid"]
+    assert calls[0][calls[0].index("--llm-provider") : calls[0].index("--llm-provider") + 2] == [
+        "--llm-provider",
+        "claude",
+    ]
     # Gates auto-accept under --skip-hitl.
     assert calls[2][-2:] == ["gate-1", "--yes"]
     assert calls[4][-2:] == ["gate-2", "--yes"]
     assert calls[7][-2:] == ["gate-3", "--yes"]
     # The report stage emits HTML.
     assert "--html" in calls[8]
+
+
+def test_scan_forwards_codex_provider_and_model_to_llm_heavy_prep(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        cli_mod.subprocess,
+        "run",
+        lambda cmd, **_kwargs: calls.append(list(cmd)) or _Result(),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(tmp_path),
+            "scan",
+            str(tmp_path / "src"),
+            "--skip-hitl",
+            "--engine",
+            "llm-heavy",
+            "--llm-provider",
+            "codex",
+            "--llm-model",
+            "gpt-5.6",
+        ],
+    )
+
+    assert result.exit_code == 0
+    prep_call = calls[0]
+    assert "--engine" in prep_call and prep_call[prep_call.index("--engine") + 1] == "llm-heavy"
+    assert prep_call[prep_call.index("--llm-provider") + 1] == "codex"
+    assert prep_call[prep_call.index("--llm-model") + 1] == "gpt-5.6"
 
 
 def test_scan_aborts_when_a_fatal_stage_fails(tmp_path: Path, monkeypatch) -> None:

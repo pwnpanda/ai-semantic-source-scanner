@@ -75,7 +75,7 @@ def test_prep_indexes_polyglot_yaml_once_and_skips_build_output(
     config = target / "src" / "main" / "resources" / "application.yml"
     config.write_text("on: push\n", encoding="utf-8")
     (target / "build" / "generated.yml").write_text("on: pull_request\n", encoding="utf-8")
-    monkeypatch.setattr("ai_codescan.prep._build_scip_lookup", lambda *_args: {})
+    monkeypatch.setattr("ai_codescan.prep._build_scip_lookup", lambda *_args: ({}, False))
 
     _snapshot, db_path = run_prep(
         target,

@@ -486,7 +486,10 @@ def _argv_for(  # noqa: PLR0911, PLR0912, PLR0913 - direct mapping; flattening h
 ) -> list[str]:
     base = ["ai-codescan", "--cache-dir", str(cache_root)]
     if stage == "prep":
-        argv = [*base, "prep", str(target), "--engine", engine]
+        argv = [*base, "prep", str(target), "--llm-provider", llm_provider]
+        if llm_model:
+            argv += ["--llm-model", llm_model]
+        argv += ["--engine", engine]
         if commit:
             argv += ["--commit", commit]
         if target_bug_class:

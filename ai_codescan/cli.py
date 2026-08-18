@@ -19,10 +19,16 @@ import typer
 import yaml
 
 from ai_codescan.analyzer import ReviewLimits, run_analyzer
+from ai_codescan.cache_state import (
+    build_scan_fingerprint,
+    scan_db_stage,
+    scan_db_stage_is_current,
+)
 from ai_codescan.config import compute_repo_id, default_cache_root
 from ai_codescan.engines.codeql import run_queries
 from ai_codescan.engines.hybrid import run_hybrid
 from ai_codescan.engines.llm_heavy import run_llm_heavy_engine
+from ai_codescan.engines.semgrep import register_rules_root
 from ai_codescan.eval import (
     compare_eval_results,
     load_eval_cases,
@@ -50,6 +56,7 @@ from ai_codescan.model_proposals import (
 )
 from ai_codescan.nominator import run_nominator, write_llm_cmd_script
 from ai_codescan.prep import run_prep
+from ai_codescan.repo_lock import RepoScanLockedError, repo_scan_lock
 from ai_codescan.report import write_candidate_audit, write_report
 from ai_codescan.runs.orchestrator import (
     PIPELINE_STAGES,
@@ -60,7 +67,7 @@ from ai_codescan.runs.orchestrator import (
 )
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.server import serve as start_server
-from ai_codescan.snapshot import force_remove
+from ai_codescan.snapshot import SnapshotResult, force_remove
 from ai_codescan.stack_detect import ProjectKind, detect_projects
 from ai_codescan.storage_taint import (
     find_unresolved_dynamic_calls,
@@ -79,6 +86,7 @@ from ai_codescan.taxonomy.diff import (
     maybe_run_periodic_check,
 )
 from ai_codescan.taxonomy.loader import (
+    BugClass,
     UnknownBugClassError,
     list_classes,
     resolve_classes,
@@ -122,6 +130,135 @@ _QuietOption = Annotated[bool, typer.Option("--quiet", "-q", help="Suppress non-
 _VerboseOption = Annotated[bool, typer.Option("--verbose", "-v", help="Verbose logging.")]
 
 
+def _prep_bug_classes(target_bug_class: str) -> list[BugClass]:
+    if not target_bug_class:
+        return list_classes()
+    try:
+        return resolve_classes(
+            [token.strip() for token in target_bug_class.split(",") if token.strip()]
+        )
+    except UnknownBugClassError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+
+
+def _hybrid_project_roots(snapshot_root: Path) -> list[tuple[Path, str, str]]:
+    roots: list[tuple[Path, str, str]] = []
+    for project in detect_projects(snapshot_root):
+        language: str | None = None
+        if project.kind is ProjectKind.NODE:
+            language = "javascript"
+        elif project.kind is ProjectKind.PYTHON:
+            language = "python"
+        elif project.kind is ProjectKind.JAVA:
+            project_dir = snapshot_root / project.base_path
+            java_count = sum(1 for _ in project_dir.rglob("*.java"))
+            kotlin_count = sum(
+                1 for path in project_dir.rglob("*") if path.suffix in {".kt", ".kts"}
+            )
+            language = "kotlin" if kotlin_count > java_count else "java"
+        elif project.kind is ProjectKind.GO:
+            language = "go"
+        elif project.kind is ProjectKind.RUBY:
+            language = "ruby"
+        elif project.kind is ProjectKind.PHP:
+            language = "php"
+        elif project.kind is ProjectKind.CSHARP:
+            language = "csharp"
+        if language is None:
+            continue
+        project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
+        roots.append((snapshot_root / project.base_path, project_id, language))
+    return roots
+
+
+def _run_post_prep_engine(  # noqa: PLR0913 - one positional arg; scan context is keyword-only
+    engine: str,
+    *,
+    snapshot: SnapshotResult,
+    repo_dir: Path,
+    db_path: Path,
+    bug_classes: list[BugClass],
+    llm: LLMConfig,
+    quiet: bool,
+) -> None:
+    fingerprint = build_scan_fingerprint(
+        repo_dir,
+        engine=engine,
+        bug_classes=bug_classes,
+        engine_config=(
+            {"llm_provider": llm.provider, "llm_model": llm.model or ""}
+            if engine == "llm-heavy"
+            else None
+        ),
+    )
+    full_scan_reused = scan_db_stage_is_current(
+        db_path,
+        fingerprint=fingerprint,
+        engine=engine,
+        required_stage="complete",
+    )
+    if engine == "llm-heavy":
+        if full_scan_reused:
+            if not quiet:
+                typer.echo("llm-heavy: cached complete stage reused")
+            return
+        state = load_or_create(
+            repo_dir,
+            engine="llm-heavy",
+            temperature=0.0,
+            target_bug_classes=[item.name for item in bug_classes],
+            llm_provider=llm.provider,
+            llm_model=llm.model,
+        )
+        count = run_llm_heavy_engine(
+            state,
+            repo_dir=repo_dir,
+            db_path=db_path,
+            target_bug_classes=[item.name for item in bug_classes],
+            llm=llm,
+            scan_fingerprint=fingerprint,
+        )
+        if not quiet:
+            typer.echo(f"llm-heavy ingested {count} flow(s)")
+        return
+    if engine != "hybrid":
+        return
+    stats = run_hybrid(
+        _hybrid_project_roots(snapshot.snapshot_dir),
+        snapshot_root=snapshot.snapshot_dir,
+        repo_dir=repo_dir,
+        db_path=db_path,
+        scan_fingerprint=fingerprint,
+    )
+    if not quiet:
+        typer.echo(
+            f"hybrid: codeql={stats.codeql_flows} semgrep={stats.semgrep_flows} "
+            f"joern={stats.joern_flows} deduped={stats.deduped}"
+        )
+
+
+def _report_prep(
+    snapshot: SnapshotResult,
+    *,
+    db_path: Path,
+    bug_classes: list[BugClass],
+    engine: str,
+) -> None:
+    status_word = "skipped" if snapshot.skipped else "took"
+    commit_label = f" @ {snapshot.commit_sha[:8]}" if snapshot.commit_sha else ""
+    typer.echo(f"snapshot {status_word} ({snapshot.method}){commit_label}")
+    typer.echo(f"index at {db_path}")
+    typer.echo(f"bug classes: {', '.join(item.name for item in bug_classes)}")
+    typer.echo(f"engine: {engine}")
+    check = maybe_run_periodic_check()
+    if check is not None and check.missing_tags:
+        typer.echo(
+            f"note: taxonomy may be stale — {len(check.missing_tags)} CodeQL "
+            "tag(s) not in bug_classes.yaml. Run `ai-codescan taxonomy diff`."
+        )
+
+
 @app.callback()
 def _root(
     ctx: typer.Context,
@@ -149,6 +286,17 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
             help="Static prep engine: hybrid (recommended), codeql, or llm-heavy.",
         ),
     ] = "codeql",
+    llm_provider: Annotated[
+        str,
+        typer.Option(
+            "--llm-provider",
+            help="LLM CLI for --engine llm-heavy: claude, gemini, or codex.",
+        ),
+    ] = "claude",
+    llm_model: Annotated[
+        str,
+        typer.Option("--llm-model", help="Specific model for --engine llm-heavy."),
+    ] = "",
     target_bug_class: Annotated[
         str,
         typer.Option(
@@ -180,107 +328,46 @@ def prep(  # noqa: PLR0913, PLR0912, PLR0915 - flag plumbing + multi-stage orche
         typer.echo(f"Target is not a directory: {target}", err=True)
         raise typer.Exit(code=2)
 
-    if target_bug_class:
-        try:
-            bug_classes = resolve_classes(
-                [t.strip() for t in target_bug_class.split(",") if t.strip()]
-            )
-        except UnknownBugClassError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=2) from exc
-    else:
-        bug_classes = list_classes()
-
+    bug_classes = _prep_bug_classes(target_bug_class)
+    llm = _build_llm_config(llm_provider, llm_model)
     cache_root: Path = ctx.obj["cache_root"]
     quiet: bool = ctx.obj["quiet"]
-    repo_dir_pre = cache_root / compute_repo_id(target)
-    db_existed_before = (repo_dir_pre / "index.duckdb").is_file()
-    snap, db_path = run_prep(
-        target,
-        cache_root=cache_root,
-        commit=commit,
-        bug_classes=bug_classes,
-        # CodeQL prep stage runs when engine ∈ {codeql, hybrid}.
-        engine="codeql" if engine in {"codeql", "hybrid"} else "none",
-        quiet=quiet,
-        force=force,
-    )
-    incremental_used = (not force) and snap.skipped and db_existed_before
-    if incremental_used and not quiet:
-        typer.echo("incremental: skipping AST/SCIP/CodeQL stages — cached results reused")
-    if engine == "llm-heavy":
-        repo_dir = cache_root / compute_repo_id(target)
-        state = load_or_create(
-            repo_dir,
-            engine="llm-heavy",
-            temperature=0.0,
-            target_bug_classes=[c.name for c in bug_classes],
-        )
-        n = run_llm_heavy_engine(
-            state,
-            repo_dir=repo_dir,
-            db_path=db_path,
-            target_bug_classes=[c.name for c in bug_classes],
-        )
-        if not quiet:
-            typer.echo(f"llm-heavy ingested {n} flow(s)")
-    elif engine == "hybrid":
-        # Walk detected projects and run Semgrep (+ Joern when on PATH), then dedupe.
-        repo_dir = cache_root / compute_repo_id(target)
-        snapshot_root = snap.snapshot_dir
-        roots: list[tuple[Path, str, str]] = []
-        for project in detect_projects(snapshot_root):
-            if project.kind is ProjectKind.NODE:
-                language = "javascript"
-            elif project.kind is ProjectKind.PYTHON:
-                language = "python"
-            elif project.kind is ProjectKind.JAVA:
-                # Kotlin-heavy JVM projects route to Joern's kotlin2cpg
-                # frontend; mixed / Java-only projects keep javasrc2cpg.
-                # CodeQL's java-kotlin extractor handles both regardless.
-                project_dir = snapshot_root / project.base_path
-                java_count = sum(1 for _ in project_dir.rglob("*.java"))
-                kotlin_count = sum(1 for p in project_dir.rglob("*") if p.suffix in {".kt", ".kts"})
-                language = "kotlin" if kotlin_count > java_count else "java"
-            elif project.kind is ProjectKind.GO:
-                language = "go"
-            elif project.kind is ProjectKind.RUBY:
-                language = "ruby"
-            elif project.kind is ProjectKind.PHP:
-                language = "php"
-            elif project.kind is ProjectKind.CSHARP:
-                language = "csharp"
-            else:
-                continue
-            project_id = f"{project.name}-{project.base_path.as_posix().replace('/', '_')}"
-            roots.append((snapshot_root / project.base_path, project_id, language))
-        stats = run_hybrid(
-            roots,
-            snapshot_root=snapshot_root,
-            repo_dir=repo_dir,
-            db_path=db_path,
-        )
-        if not quiet:
-            typer.echo(
-                f"hybrid: codeql={stats.codeql_flows} semgrep={stats.semgrep_flows} "
-                f"joern={stats.joern_flows} deduped={stats.deduped}"
+    repo_dir = cache_root / compute_repo_id(target)
+    try:
+        with repo_scan_lock(repo_dir):
+            snap, db_path = run_prep(
+                target,
+                cache_root=cache_root,
+                commit=commit,
+                bug_classes=bug_classes,
+                engine=engine,
+                llm_provider=llm.provider,
+                llm_model=llm.model or "",
+                quiet=quiet,
+                force=force,
             )
-
+            if snap.index_reused and not quiet:
+                typer.echo("incremental: skipping AST/SCIP/CodeQL stages — cached results reused")
+            _run_post_prep_engine(
+                engine=engine,
+                snapshot=snap,
+                repo_dir=repo_dir,
+                db_path=db_path,
+                bug_classes=bug_classes,
+                llm=llm,
+                quiet=quiet,
+            )
+    except RepoScanLockedError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if (cache_stage := scan_db_stage(db_path)) and cache_stage != "complete":
+        typer.echo(
+            "warning: scan completed with unpinned or unavailable analyzer inputs; "
+            "the prep cache remains retryable",
+            err=True,
+        )
     if not quiet:
-        status_word = "skipped" if snap.skipped else "took"
-        commit_label = f" @ {snap.commit_sha[:8]}" if snap.commit_sha else ""
-        typer.echo(f"snapshot {status_word} ({snap.method}){commit_label}")
-        typer.echo(f"index at {db_path}")
-        typer.echo(f"bug classes: {', '.join(c.name for c in bug_classes)}")
-        typer.echo(f"engine: {engine}")
-
-        # Periodic taxonomy stale-check (cheap; weekly cadence by default).
-        check = maybe_run_periodic_check()
-        if check is not None and check.missing_tags:
-            typer.echo(
-                f"note: taxonomy may be stale — {len(check.missing_tags)} CodeQL "
-                "tag(s) not in bug_classes.yaml. Run `ai-codescan taxonomy diff`."
-            )
+        _report_prep(snap, db_path=db_path, bug_classes=bug_classes, engine=engine)
 
 
 @app.command("list-bug-classes")
@@ -1105,7 +1192,10 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
         Path,
         typer.Option(
             "--rules-root",
-            help="Rules root dir; the rule lands under <root>/rules.staged/ (default: ./.semgrep).",
+            help=(
+                "Rules root dir; defaults to the repo cache's .semgrep/ and lands under "
+                "rules.staged/."
+            ),
         ),
     ] = Path(".semgrep"),
     promote: Annotated[
@@ -1236,7 +1326,15 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
             err=True,
         )
         raise typer.Exit(code=1)
-    rule_path = apply_proposal_to_semgrep(proposal, rules_root=rules_root, staged=not promote)
+    repo_dir = cache_root / repo_id
+    effective_rules_root = repo_dir / ".semgrep" if rules_root == Path(".semgrep") else rules_root
+    rule_path = apply_proposal_to_semgrep(
+        proposal,
+        rules_root=effective_rules_root,
+        staged=not promote,
+    )
+    if promote:
+        register_rules_root(repo_dir, effective_rules_root)
     db_path = cache_root / repo_id / "index.duckdb"
     if db_path.is_file():
         conn = duckdb.connect(str(db_path))
@@ -2213,7 +2311,7 @@ def scan(  # noqa: PLR0913 - Typer command surface is intentionally explicit
         typer.echo(f"{msg} — non-fatal, continuing", err=True)
         return False
 
-    _stage("prep", str(target), "--engine", engine)
+    _stage("prep", str(target), *llm_args, "--engine", engine)
     _stage("nominate", *llm_args)
     if skip_hitl:
         _stage("gate-1", "--yes")

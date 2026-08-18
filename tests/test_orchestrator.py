@@ -259,6 +259,25 @@ def test_drive_pipeline_runs_each_stage_in_order(tmp_path: Path) -> None:
     assert state.completed == ["prep", "nominate", "gate-1"]
 
 
+def test_drive_pipeline_forwards_codex_config_to_llm_heavy_prep(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def runner(argv: list[str]) -> StageOutcome:
+        seen.extend(argv)
+        return StageOutcome(rc=0, stderr="")
+
+    opts = replace(
+        _opts(tmp_path, phases=["prep"]),
+        engine="llm-heavy",
+        llm_provider="codex",
+        llm_model="gpt-5.6",
+    )
+    assert drive_pipeline(opts, runner=runner, asker=lambda _prompt: "c") == 0
+    assert seen[seen.index("--engine") + 1] == "llm-heavy"
+    assert seen[seen.index("--llm-provider") + 1] == "codex"
+    assert seen[seen.index("--llm-model") + 1] == "gpt-5.6"
+
+
 def test_drive_pipeline_skips_completed_stages_on_resume(tmp_path: Path) -> None:
     first_seen: list[str] = []
 

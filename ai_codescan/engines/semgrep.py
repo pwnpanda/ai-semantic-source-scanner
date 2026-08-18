@@ -7,8 +7,10 @@ ingested into the same ``flows`` table the CodeQL engine writes to, with
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 _BUNDLED_RULES_DIR = Path(__file__).parent / "semgrep_rules"
@@ -16,6 +18,40 @@ _BUNDLED_RULES_DIR = Path(__file__).parent / "semgrep_rules"
 passed to semgrep alongside ``--config=auto`` so we extend (not replace)
 the community ruleset with patterns the OSS pack misses (e.g. CWE-208
 timing-attack on env-var secrets)."""
+
+_RULES_ROOT_REGISTRY = "aics-semgrep-rules.json"
+
+
+def register_rules_root(cache_dir: Path, rules_root: Path) -> Path:
+    """Record the custom Semgrep root so future scans load its promoted rules."""
+    registry = cache_dir / _RULES_ROOT_REGISTRY
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    temporary = registry.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps({"rules_root": str(rules_root.expanduser().resolve())}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(registry)
+    return registry
+
+
+def active_rule_dirs(cache_dir: Path) -> list[Path]:
+    """Return promoted custom-rule directories; never include ``rules.staged``."""
+    roots = [cache_dir / ".semgrep"]
+    registry = cache_dir / _RULES_ROOT_REGISTRY
+    if registry.is_file():
+        try:
+            payload = json.loads(registry.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict) and payload.get("rules_root"):
+            roots.append(Path(str(payload["rules_root"])).expanduser())
+    active: list[Path] = []
+    for root in roots:
+        candidate = root.resolve() / "rules"
+        if candidate not in active and candidate.is_dir():
+            active.append(candidate)
+    return active
 
 
 class SemgrepUnavailableError(RuntimeError):
@@ -54,16 +90,27 @@ def run_semgrep(
     sarif_dir = cache_dir / "semgrep"
     sarif_dir.mkdir(parents=True, exist_ok=True)
     sarif_path = sarif_dir / f"{project_id}.sarif"
+    sarif_path.unlink(missing_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=sarif_dir, prefix=f".{project_id}-", suffix=".sarif", delete=False
+    ) as temporary_file:
+        temporary_path = Path(temporary_file.name)
+    temporary_path.unlink()
     cmd = [
         "semgrep",
         "scan",
         f"--config={config}",
         "--sarif",
         "--output",
-        str(sarif_path),
+        str(temporary_path),
     ]
     if _BUNDLED_RULES_DIR.is_dir() and any(_BUNDLED_RULES_DIR.glob("*.yaml")):
         cmd.append(f"--config={_BUNDLED_RULES_DIR}")
+    for rules_dir in active_rule_dirs(cache_dir):
+        if any(
+            path.is_file() and path.suffix in {".yml", ".yaml"} for path in rules_dir.rglob("*")
+        ):
+            cmd.append(f"--config={rules_dir}")
     # Local-import to avoid a circular dependency at module load time —
     # proposal_triage is a higher-level module that itself imports model_proposals.
     from ai_codescan.proposal_triage import enabled_packs  # noqa: PLC0415
@@ -71,10 +118,27 @@ def run_semgrep(
     for pack in enabled_packs(cache_dir):
         cmd.append(f"--config={pack}")
     cmd.append(str(project_root))
-    subprocess.run(  # noqa: S603 - argv-only, no shell
-        cmd,  # noqa: S607
-        check=False,  # semgrep exits non-zero on findings; that's not an error
-        capture_output=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603 - argv-only, no shell
+            cmd,  # noqa: S607
+            check=False,
+            capture_output=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+            raise RuntimeError(
+                f"semgrep exited {result.returncode} for {project_id}: "
+                f"{stderr.strip() or 'no stderr'}"
+            )
+        if not temporary_path.is_file():
+            raise RuntimeError(f"semgrep did not produce SARIF for {project_id}")
+        payload = json.loads(temporary_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("runs"), list):
+            raise RuntimeError(f"semgrep produced invalid SARIF for {project_id}")
+        temporary_path.replace(sarif_path)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"semgrep produced invalid SARIF for {project_id}") from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return sarif_path

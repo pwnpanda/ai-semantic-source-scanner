@@ -2,18 +2,20 @@
 # LLM-heavy walker driver. Same protocol as the other skills: inputs
 # inlined into the prompt, output extracted from sentinel-bracketed
 # stdout. No reliance on file-modifying-tool permissions.
+# Markdown backticks are intentional literals in single-quoted printf formats.
+# shellcheck disable=SC2016
 set -euo pipefail
 RUN_DIR="${AI_CODESCAN_RUN_DIR:?missing AI_CODESCAN_RUN_DIR}"
 SKILL_DIR="${AI_CODESCAN_SKILL_DIR:?missing AI_CODESCAN_SKILL_DIR}"
 LLM_CMD="${AI_CODESCAN_LLM_CMD:-}"
 PROMPT="$SKILL_DIR/prompts/walker.md"
 OUT="$RUN_DIR/llm_heavy_flows.jsonl"
-SOURCE_ROOT="$RUN_DIR/../source"
+SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:?missing AI_CODESCAN_SOURCE_ROOT}"
 REPO_MD="$RUN_DIR/inputs/repo.md"
 ENTRY_MD="$RUN_DIR/inputs/entrypoints.md"
 TARGET_BUG_CLASSES="${AI_CODESCAN_TARGET_BUG_CLASSES:-}"
 
-: > "$OUT"
+: >"$OUT"
 
 invoke_llm() {
   # Rate limits surface as a non-zero exit from the provider CLI. Callers
@@ -24,19 +26,19 @@ invoke_llm() {
   # stdin is consumed by the first attempt, so buffer the prompt to replay it.
   local prompt_file attempt delay rc
   prompt_file="$(mktemp)"
-  cat - > "$prompt_file"
+  cat - >"$prompt_file"
   delay="${AI_CODESCAN_LLM_RETRY_DELAY:-60}"
   rc=1
   for attempt in $(seq 1 "${AI_CODESCAN_LLM_RETRIES:-5}"); do
     if [[ -n "$LLM_CMD" ]]; then
-      "$LLM_CMD" < "$prompt_file" && rc=0
+      "$LLM_CMD" <"$prompt_file" && rc=0
     else
       claude -p "$(cat "$prompt_file")" && rc=0
     fi
     [[ "$rc" -eq 0 ]] && break
     printf 'llm attempt %d failed; retrying in %ds … ' "$attempt" "$delay" >&2
     sleep "$delay"
-    delay=$(( delay * 2 ))
+    delay=$((delay * 2))
   done
   rm -f "$prompt_file"
   return "$rc"
@@ -80,8 +82,9 @@ if not start or not end:
     print("no flows block in LLM output", file=sys.stderr)
     sys.exit(2)
 body = raw[start.end():start.end() + end.start()].strip("\n")
-# Keep only non-empty lines that look like JSON.
-lines = [ln for ln in body.splitlines() if ln.strip().startswith("{")]
+# Preserve every non-empty protocol line so Python ingestion can reject
+# malformed or prose-contaminated output instead of silently caching it.
+lines = [ln for ln in body.splitlines() if ln.strip()]
 out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 PY
 }
@@ -89,14 +92,14 @@ PY
 echo "[llm-heavy] walking source tree (single LLM pass; this can take minutes)" >&2
 iter_log="$RUN_DIR/.llm_heavy.stdout"
 start_ts=$(date +%s)
-if ! render_prompt | invoke_llm > "$iter_log"; then
+if ! render_prompt | invoke_llm >"$iter_log"; then
   echo "[llm-heavy] FAIL (llm error)" >&2
-  exit 0
+  exit 1
 fi
 if ! write_flows_from_stdout "$iter_log"; then
   echo "[llm-heavy] FAIL no flows block" >&2
-  exit 0
+  exit 1
 fi
-elapsed=$(( $(date +%s) - start_ts ))
-count=$(wc -l < "$OUT" 2>/dev/null | tr -d ' ')
+elapsed=$(($(date +%s) - start_ts))
+count=$(wc -l <"$OUT" 2>/dev/null | tr -d ' ')
 echo "[llm-heavy] done: ${count:-0} flows in ${elapsed}s" >&2

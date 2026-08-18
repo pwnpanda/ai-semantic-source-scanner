@@ -43,11 +43,29 @@ def test_build_argv_gemini_with_model() -> None:
 
 def test_build_argv_codex_with_model() -> None:
     argv = build_argv(LLMConfig(provider="codex", model="o3"), "hi")
-    assert argv == ["codex", "exec", "-c", 'model="o3"', "hi"]
+    assert argv == [
+        "codex",
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--model",
+        "o3",
+        "hi",
+    ]
 
 
 def test_build_argv_codex_no_model() -> None:
-    assert build_argv(LLMConfig(provider="codex"), "hi") == ["codex", "exec", "hi"]
+    assert build_argv(LLMConfig(provider="codex"), "hi") == [
+        "codex",
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "hi",
+    ]
 
 
 def test_parse_provider_model_just_provider() -> None:

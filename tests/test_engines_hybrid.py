@@ -6,9 +6,15 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from ai_codescan.cache_state import set_scan_stage
 from ai_codescan.engines import joern as joern_eng
 from ai_codescan.engines import semgrep as semgrep_eng
-from ai_codescan.engines.hybrid import _ingest_joern_jsonl, dedupe_flows, run_hybrid
+from ai_codescan.engines.hybrid import (
+    HybridStageError,
+    _ingest_joern_jsonl,
+    dedupe_flows,
+    run_hybrid,
+)
 from ai_codescan.index.duckdb_schema import apply_schema
 
 
@@ -385,3 +391,157 @@ def test_run_hybrid_routes_per_project_language(tmp_path: Path, _stub_engines: l
     finally:
         conn.close()
     assert engines == {"joern"}
+
+
+def test_run_hybrid_reuses_complete_fingerprint_without_rerunning_engines(
+    tmp_path: Path,
+    _stub_engines: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(semgrep_eng, "is_available", lambda: False)
+    db_path = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    set_scan_stage(conn, fingerprint="same-inputs", engine="hybrid", stage="prep")
+    conn.close()
+    snapshot = tmp_path / "snap"
+    project_root = snapshot / "app"
+    project_root.mkdir(parents=True)
+    repo_dir = tmp_path / "cache"
+    repo_dir.mkdir()
+    roots = [(project_root, "app", "javascript")]
+
+    first = run_hybrid(
+        roots,
+        snapshot_root=snapshot,
+        repo_dir=repo_dir,
+        db_path=db_path,
+        scan_fingerprint="same-inputs",
+    )
+    second = run_hybrid(
+        roots,
+        snapshot_root=snapshot,
+        repo_dir=repo_dir,
+        db_path=db_path,
+        scan_fingerprint="same-inputs",
+    )
+
+    assert first.reused is False
+    assert second.reused is True
+    assert _stub_engines == ["javascript"]
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM flows").fetchone() == (1,)
+    finally:
+        conn.close()
+
+
+def test_run_hybrid_auto_semgrep_completion_is_not_reusable(
+    tmp_path: Path,
+    _stub_engines: list[str],
+) -> None:
+    db_path = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    set_scan_stage(conn, fingerprint="same-inputs", engine="hybrid", stage="prep")
+    conn.close()
+    snapshot = tmp_path / "snap"
+    project_root = snapshot / "app"
+    project_root.mkdir(parents=True)
+    repo_dir = tmp_path / "cache"
+    repo_dir.mkdir()
+    roots = [(project_root, "app", "javascript")]
+
+    run_hybrid(
+        roots,
+        snapshot_root=snapshot,
+        repo_dir=repo_dir,
+        db_path=db_path,
+        scan_fingerprint="same-inputs",
+    )
+    conn = duckdb.connect(str(db_path))
+    assert conn.execute("SELECT stage FROM scan_cache_state").fetchone() == ("complete_unpinned",)
+    set_scan_stage(conn, fingerprint="same-inputs", engine="hybrid", stage="prep")
+    conn.close()
+
+    second = run_hybrid(
+        roots,
+        snapshot_root=snapshot,
+        repo_dir=repo_dir,
+        db_path=db_path,
+        scan_fingerprint="same-inputs",
+    )
+    assert second.reused is False
+    assert _stub_engines == ["javascript", "javascript"]
+
+
+def test_run_hybrid_failure_rolls_back_and_leaves_stage_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    set_scan_stage(conn, fingerprint="same-inputs", engine="hybrid", stage="prep")
+    conn.close()
+    snapshot = tmp_path / "snap"
+    project_root = snapshot / "app"
+    project_root.mkdir(parents=True)
+    repo_dir = tmp_path / "cache"
+    repo_dir.mkdir()
+
+    def fail_semgrep(*_args, **_kwargs):
+        raise RuntimeError("rule parse failed")
+
+    monkeypatch.setattr(semgrep_eng, "is_available", lambda: True)
+    monkeypatch.setattr(semgrep_eng, "run_semgrep", fail_semgrep)
+    monkeypatch.setattr(joern_eng, "is_available", lambda: False)
+
+    with pytest.raises(HybridStageError, match="rule parse failed"):
+        run_hybrid(
+            [(project_root, "app", "javascript")],
+            snapshot_root=snapshot,
+            repo_dir=repo_dir,
+            db_path=db_path,
+            scan_fingerprint="same-inputs",
+        )
+
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert conn.execute("SELECT stage FROM scan_cache_state").fetchone() == ("prep",)
+        assert conn.execute("SELECT COUNT(*) FROM flows").fetchone() == (0,)
+    finally:
+        conn.close()
+
+
+def test_run_hybrid_rejects_mismatched_or_incomplete_prep_generation(
+    tmp_path: Path,
+) -> None:
+    repo_dir = tmp_path / "cache"
+    repo_dir.mkdir()
+    db_path = repo_dir / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    set_scan_stage(conn, fingerprint="old-inputs", engine="hybrid", stage="prep")
+    conn.close()
+    snapshot = repo_dir / "source"
+    snapshot.mkdir()
+
+    with pytest.raises(HybridStageError, match="no matching completed prep"):
+        run_hybrid(
+            [],
+            snapshot_root=snapshot,
+            repo_dir=repo_dir,
+            db_path=db_path,
+            scan_fingerprint="new-inputs",
+        )
+
+    (repo_dir / ".prep-incomplete").write_text("in progress\n", encoding="utf-8")
+    with pytest.raises(HybridStageError, match="prep is incomplete"):
+        run_hybrid(
+            [],
+            snapshot_root=snapshot,
+            repo_dir=repo_dir,
+            db_path=db_path,
+            scan_fingerprint="old-inputs",
+        )

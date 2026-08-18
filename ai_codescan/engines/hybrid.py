@@ -12,14 +12,17 @@ import hashlib
 import json
 import logging
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
 
+from ai_codescan.cache_state import scan_stage_for_inputs, set_scan_stage
 from ai_codescan.engines import joern as joern_eng
 from ai_codescan.engines import semgrep as semgrep_eng
 from ai_codescan.ingest.sarif import ingest_sarif
+from ai_codescan.repo_lock import repo_scan_lock
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +46,11 @@ class HybridStats:
     semgrep_flows: int
     joern_flows: int
     deduped: int
+    reused: bool = False
+
+
+class HybridStageError(RuntimeError):
+    """Raised when an available hybrid engine fails for any project."""
 
 
 def _flow_key(steps_json: str, cwe: str | None) -> tuple[str, int, str, int, str]:
@@ -121,6 +129,69 @@ def _count_flows(conn: duckdb.DuckDBPyConnection, *, engine_like: str) -> int:
         [engine_like],
     ).fetchone()
     return int(row[0]) if row else 0
+
+
+def _cached_stats(conn: duckdb.DuckDBPyConnection) -> HybridStats:
+    return HybridStats(
+        codeql_flows=_count_flows(conn, engine_like="%codeql%"),
+        semgrep_flows=_count_flows(conn, engine_like="%semgrep%"),
+        joern_flows=_count_flows(conn, engine_like="%joern%"),
+        deduped=0,
+        reused=True,
+    )
+
+
+def _run_project_engines(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    project_roots: list[tuple[Path, str, str]],
+    snapshot_root: Path,
+    repo_dir: Path,
+) -> tuple[int, int, list[str], bool]:
+    semgrep_flows = 0
+    joern_flows = 0
+    failures: list[str] = []
+    used_mutable_semgrep = False
+    for project_root, project_id, language in project_roots:
+        if semgrep_eng.is_available():
+            used_mutable_semgrep = True
+            try:
+                sarif_path = semgrep_eng.run_semgrep(
+                    project_root, cache_dir=repo_dir, project_id=project_id
+                )
+                semgrep_flows += ingest_sarif(
+                    conn,
+                    sarif_path=sarif_path,
+                    project_id=project_id,
+                    snapshot_root=snapshot_root,
+                    engine="semgrep",
+                )
+            except (RuntimeError, OSError) as exc:
+                log.warning("semgrep failed for %s: %s", project_id, exc)
+                failures.append(f"semgrep/{project_id}: {exc}")
+
+        if joern_eng.is_available():
+            try:
+                jsonl_path = joern_eng.run_joern(
+                    project_root,
+                    cache_dir=repo_dir,
+                    project_id=project_id,
+                    language=language,
+                )
+                joern_flows += _ingest_joern_jsonl(
+                    conn,
+                    jsonl_path=jsonl_path,
+                    project_id=project_id,
+                    snapshot_root=snapshot_root,
+                    project_root=project_root,
+                )
+            except joern_eng.JoernUnavailableError as exc:
+                log.warning("joern skipped for %s: %s", project_id, exc)
+                failures.append(f"joern/{project_id}: {exc}")
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                log.warning("joern failed for %s: %s", project_id, exc)
+                failures.append(f"joern/{project_id}: {exc}")
+    return semgrep_flows, joern_flows, failures, used_mutable_semgrep
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -230,6 +301,7 @@ def run_hybrid(
     snapshot_root: Path,
     repo_dir: Path,
     db_path: Path,
+    scan_fingerprint: str | None = None,
 ) -> HybridStats:
     """Drive Semgrep (and Joern when available) and dedupe.
 
@@ -239,51 +311,56 @@ def run_hybrid(
     flows table via the standard prep stage. This function adds Semgrep + Joern
     flows and runs the dedupe pass.
     """
-    conn = duckdb.connect(str(db_path))
-    try:
-        codeql_flows = _count_flows(conn, engine_like="codeql%")
-        semgrep_flows = 0
-        joern_flows = 0
+    with repo_scan_lock(repo_dir):
+        if scan_fingerprint and (repo_dir / ".prep-incomplete").is_file():
+            raise HybridStageError("hybrid stage refused: prep is incomplete")
+        conn = duckdb.connect(str(db_path))
+        try:
+            base_has_gaps = False
+            if scan_fingerprint:
+                stage = scan_stage_for_inputs(
+                    conn,
+                    fingerprint=scan_fingerprint,
+                    engine="hybrid",
+                )
+                if stage == "complete":
+                    return _cached_stats(conn)
+                if stage not in {"prep", "prep_with_gaps"}:
+                    raise HybridStageError(
+                        "hybrid stage refused: no matching completed prep generation"
+                    )
+                base_has_gaps = stage == "prep_with_gaps"
+            conn.execute("BEGIN TRANSACTION")
+            codeql_flows = _count_flows(conn, engine_like="codeql%")
+            semgrep_flows, joern_flows, failures, used_mutable_semgrep = _run_project_engines(
+                conn,
+                project_roots=project_roots,
+                snapshot_root=snapshot_root,
+                repo_dir=repo_dir,
+            )
 
-        for project_root, project_id, language in project_roots:
-            if semgrep_eng.is_available():
-                try:
-                    sarif_path = semgrep_eng.run_semgrep(
-                        project_root, cache_dir=repo_dir, project_id=project_id
-                    )
-                    semgrep_flows += ingest_sarif(
-                        conn,
-                        sarif_path=sarif_path,
-                        project_id=project_id,
-                        snapshot_root=snapshot_root,
-                        engine="semgrep",
-                    )
-                except (RuntimeError, OSError) as exc:
-                    log.warning("semgrep failed for %s: %s", project_id, exc)
-
-            if joern_eng.is_available():
-                try:
-                    jsonl_path = joern_eng.run_joern(
-                        project_root,
-                        cache_dir=repo_dir,
-                        project_id=project_id,
-                        language=language,
-                    )
-                    joern_flows += _ingest_joern_jsonl(
-                        conn,
-                        jsonl_path=jsonl_path,
-                        project_id=project_id,
-                        snapshot_root=snapshot_root,
-                        project_root=project_root,
-                    )
-                except joern_eng.JoernUnavailableError as exc:
-                    log.warning("joern skipped for %s: %s", project_id, exc)
-                except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-                    log.warning("joern failed for %s: %s", project_id, exc)
-
-        deduped = dedupe_flows(conn)
-    finally:
-        conn.close()
+            if failures:
+                raise HybridStageError("hybrid stage incomplete: " + "; ".join(failures))
+            deduped = dedupe_flows(conn)
+            if scan_fingerprint:
+                completion_stage = "complete"
+                if base_has_gaps:
+                    completion_stage = "complete_with_gaps"
+                elif used_mutable_semgrep:
+                    completion_stage = "complete_unpinned"
+                set_scan_stage(
+                    conn,
+                    fingerprint=scan_fingerprint,
+                    engine="hybrid",
+                    stage=completion_stage,
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            with suppress(duckdb.Error):
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
 
     return HybridStats(
         codeql_flows=codeql_flows,

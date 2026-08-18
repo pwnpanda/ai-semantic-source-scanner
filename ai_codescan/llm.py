@@ -56,7 +56,7 @@ def build_argv(config: LLMConfig, prompt: str) -> list[str]:
 
     - claude: ``claude [--model X] -p <prompt>``
     - gemini: ``gemini [-m X] -p <prompt>``
-    - codex:  ``codex exec [-c model=X] <prompt>``
+    - codex:  ``codex exec --sandbox read-only [--model X] <prompt>``
     """
     if config.provider == "claude":
         argv = ["claude"]
@@ -73,9 +73,16 @@ def build_argv(config: LLMConfig, prompt: str) -> list[str]:
         return argv
 
     if config.provider == "codex":
-        argv = ["codex", "exec"]
+        argv = [
+            "codex",
+            "exec",
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+            "--ephemeral",
+        ]
         if config.model:
-            argv += ["-c", f'model="{config.model}"']
+            argv += ["--model", config.model]
         argv.append(prompt)
         return argv
 

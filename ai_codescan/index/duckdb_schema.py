@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS candidate_scores (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Authoritative cache generation marker. Source-derived rows and this marker
+-- are committed in one transaction, so a failed stage can never advertise a
+-- partially rebuilt index as current.
+CREATE TABLE IF NOT EXISTS scan_cache_state (
+  singleton INTEGER PRIMARY KEY,
+  fingerprint VARCHAR NOT NULL,
+  engine VARCHAR NOT NULL,
+  stage VARCHAR NOT NULL,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Phase 3 model-extension feedback loop: tracks whether a proposal is still
 -- pending, has been applied (rule rendered), or has been rejected. Survives
 -- runs so the user sees a stable status across reanalyses.
