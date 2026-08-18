@@ -80,7 +80,9 @@ positive/negative tests for every receiver gate. It also corrected several CPG a
 gaps:
 
 - JS `new RegExp(...)` is lowered to `<operator>.new`; the detector now matches that call and gates it to a RegExp constructor.
-- C# `new Regex(...)` is lowered to `<init>`; static and instance `IsMatch` select only the pattern-bearing argument/receiver.
+- C# `new Regex(...)` is lowered to `<init>`. The constructor and static `IsMatch` select only
+  pattern arguments; instance `IsMatch` is not a second sink because its pattern was already
+  captured at construction.
 - JS/Python Mongo `find` is supported with type/receiver gates.
 - JS email calls require a mailer/SES-shaped receiver; unrelated application `sendEmail` methods
   are safe near-misses.
