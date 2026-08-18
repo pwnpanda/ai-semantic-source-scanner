@@ -44,3 +44,9 @@ def test_idor_class_marked_needs_semantic() -> None:
 def test_xss_class_does_not_need_semantic() -> None:
     classes = resolve_classes(["xss"])
     assert classes[0].needs_semantic is False
+
+
+def test_sensitive_logging_has_consistent_data_exposure_group() -> None:
+    classes = {item.name: item for item in resolve_classes(["@data-exposure"])}
+
+    assert classes["sensitive-logging"].group == "data-exposure"

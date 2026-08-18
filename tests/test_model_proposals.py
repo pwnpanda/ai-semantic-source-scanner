@@ -14,6 +14,7 @@ from ai_codescan.cli import app
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.model_proposals import (
     ModelProposal,
+    _bug_class_for_cwe,
     accept_model_proposal,
     apply_proposal_to_semgrep,
     list_model_proposals,
@@ -24,6 +25,18 @@ from ai_codescan.model_proposals import (
 )
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize(
+    ("cwe", "expected"),
+    [
+        ("CWE-93", "crlf-injection"),
+        ("CWE-532", "sensitive-logging"),
+        ("CWE-611", "xxe"),
+    ],
+)
+def test_semantic_hotspot_cwes_map_to_existing_bug_classes(cwe: str, expected: str) -> None:
+    assert _bug_class_for_cwe(cwe) == expected
 
 
 def _proposal() -> ModelProposal:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,10 @@ import duckdb
 _DEFAULT_CONTEXT_LINES = 5
 _MIN_FLOW_STEP_FIELDS = 2
 _TRUNCATE_KEEP_EXCERPTS = 2
+_CONFIG_SECRET_KEY_RE = re.compile(
+    r"(?i)^\s*[A-Za-z0-9_.-]*(?:user[-_.]?info|password|secret|token|"
+    r"api[-_.]?key|credential)[A-Za-z0-9_.-]*\s*:"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,14 +82,45 @@ class EvidenceBundle:
         }
 
 
-def _read_excerpt(file: Path, line: int, *, context_lines: int) -> EvidenceExcerpt:
+@dataclass(frozen=True, slots=True)
+class _EvidenceMetadata:
+    cwe: str | None
+    engine: str
+    confidence: str
+    source_loc: str
+    source_name: str
+    sink_name: str
+    sink_class: str
+    parameterization: str
+    flow_steps: list[tuple[str, int]]
+
+
+def _redact_config_line(line: str) -> str:
+    key, separator, _value = line.partition(":")
+    if not separator:
+        return "<redacted>"
+    return f"{key}: <redacted>"
+
+
+def _read_excerpt(
+    file: Path,
+    line: int,
+    *,
+    context_lines: int,
+    redacted_lines: frozenset[int] = frozenset(),
+) -> EvidenceExcerpt:
     start = max(1, line - context_lines)
     end = line + context_lines
     excerpt = ""
     actual_end = start - 1
     if file.is_file():
         lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
-        kept = lines[start - 1 : end]
+        kept = [
+            _redact_config_line(value)
+            if number in redacted_lines or (redacted_lines and _CONFIG_SECRET_KEY_RE.search(value))
+            else value
+            for number, value in enumerate(lines[start - 1 : end], start=start)
+        ]
         excerpt = "\n".join(kept)
         actual_end = start + max(0, len(kept) - 1)
     return EvidenceExcerpt(
@@ -214,6 +250,72 @@ def _review_questions(candidate: dict[str, Any], *, stream: str) -> list[str]:
     return questions
 
 
+def _secret_lines_by_file(candidate: dict[str, Any]) -> dict[str, frozenset[int]]:
+    vector = str(candidate.get("vector") or "")
+    if not vector.startswith("secrets/"):
+        return {}
+    file = str(candidate.get("file") or "")
+    line = _int_or_none(candidate.get("line"))
+    if not file or line is None:
+        return {}
+    return {file: frozenset({line})}
+
+
+def _candidate_source_loc(candidate: dict[str, Any]) -> str:
+    source_loc = str(candidate.get("source_loc") or "")
+    line = _int_or_none(candidate.get("line"))
+    if source_loc and line is not None and _parse_loc(source_loc) is None:
+        return f"{source_loc}:{line}"
+    if not source_loc and candidate.get("file") and line is not None:
+        return f"{candidate['file']}:{line}"
+    return source_loc or str(candidate.get("file") or "")
+
+
+def _evidence_metadata(
+    conn: duckdb.DuckDBPyConnection,
+    candidate: dict[str, Any],
+    flow_id: str | None,
+) -> _EvidenceMetadata:
+    values = _EvidenceMetadata(
+        cwe=str(candidate.get("cwe") or "") or None,
+        engine=str(candidate.get("engine") or ""),
+        confidence=str(candidate.get("confidence") or ""),
+        source_loc=_candidate_source_loc(candidate),
+        source_name=str(candidate.get("source_name") or candidate.get("name") or ""),
+        sink_name=str(candidate.get("lib") or ""),
+        sink_class=str(candidate.get("sink_class") or ""),
+        parameterization=str(candidate.get("parameterization") or ""),
+        flow_steps=[],
+    )
+    if not flow_id:
+        return values
+    row = conn.execute(
+        """
+        SELECT f.cwe, f.engine, f.confidence, f.steps_json,
+               s.evidence_loc, s.key, t.class, t.lib, t.parameterization
+        FROM flows f
+        LEFT JOIN taint_sources s ON s.tid = f.tid
+        LEFT JOIN taint_sinks t ON t.sid = f.sid
+        WHERE f.fid = ?
+        """,
+        [flow_id],
+    ).fetchone()
+    if row is None:
+        return values
+    cwe, engine, confidence, steps, source_loc, source, sink_class, sink, parameterization = row
+    return _EvidenceMetadata(
+        cwe=str(cwe or values.cwe or "") or None,
+        engine=str(engine or values.engine),
+        confidence=str(confidence or values.confidence),
+        source_loc=str(source_loc or values.source_loc),
+        source_name=str(source or values.source_name),
+        sink_name=str(sink or values.sink_name),
+        sink_class=str(sink_class or values.sink_class),
+        parameterization=str(parameterization or values.parameterization),
+        flow_steps=_flow_steps(str(steps or "")),
+    )
+
+
 def build_evidence_bundle(
     conn: duckdb.DuckDBPyConnection,
     candidate: dict[str, Any],
@@ -229,58 +331,12 @@ def build_evidence_bundle(
     candidate_id = str(candidate.get("id") or "candidate")
     flow_id = str(candidate["fid"]) if candidate.get("fid") else None
     stream = str(candidate.get("stream") or "")
-
-    flow_row = None
-    if flow_id:
-        flow_row = conn.execute(
-            """
-            SELECT f.fid, f.cwe, f.engine, f.confidence, f.steps_json,
-                   s.evidence_loc, s.key, t.class, t.lib, t.parameterization
-            FROM flows f
-            LEFT JOIN taint_sources s ON s.tid = f.tid
-            LEFT JOIN taint_sinks t ON t.sid = f.sid
-            WHERE f.fid = ?
-            """,
-            [flow_id],
-        ).fetchone()
-
-    cwe = str(candidate.get("cwe") or "") or None
-    engine = str(candidate.get("engine") or "")
-    confidence = str(candidate.get("confidence") or "")
-    source_loc = str(candidate.get("source_loc") or candidate.get("file") or "")
-    source_name = str(candidate.get("source_name") or candidate.get("name") or "")
-    sink_name = str(candidate.get("lib") or "")
-    sink_class = str(candidate.get("sink_class") or "")
-    parameterization = str(candidate.get("parameterization") or "")
-    step_locs: list[tuple[str, int]] = []
-
-    if flow_row is not None:
-        (
-            _fid,
-            cwe_raw,
-            engine_raw,
-            conf_raw,
-            steps_json,
-            source_loc_raw,
-            source_key,
-            sink_class_raw,
-            sink_name_raw,
-            parameterization_raw,
-        ) = flow_row
-        cwe = str(cwe_raw or cwe or "") or None
-        engine = str(engine_raw or engine)
-        confidence = str(conf_raw or confidence)
-        source_loc = str(source_loc_raw or source_loc)
-        source_name = str(source_key or source_name)
-        sink_name = str(sink_name_raw or sink_name)
-        sink_class = str(sink_class_raw or sink_class)
-        parameterization = str(parameterization_raw or parameterization)
-        step_locs = _flow_steps(str(steps_json or ""))
+    metadata = _evidence_metadata(conn, candidate, flow_id)
 
     step_locs = _candidate_step_locs(
         candidate,
-        source_loc=source_loc,
-        flow_steps=step_locs,
+        source_loc=metadata.source_loc,
+        flow_steps=metadata.flow_steps,
     )
 
     effective_context_lines = context_lines
@@ -289,12 +345,20 @@ def build_evidence_bundle(
 
     excerpts: list[EvidenceExcerpt] = []
     seen: set[tuple[str, int]] = set()
+    secret_lines = _secret_lines_by_file(candidate)
     for file, line in step_locs:
         key = (file, line)
         if key in seen:
             continue
         seen.add(key)
-        excerpts.append(_read_excerpt(Path(file), line, context_lines=effective_context_lines))
+        excerpts.append(
+            _read_excerpt(
+                Path(file),
+                line,
+                context_lines=effective_context_lines,
+                redacted_lines=secret_lines.get(file, frozenset()),
+            )
+        )
 
     files = {file for file, _line in step_locs}
     lines = {line for _file, line in step_locs}
@@ -305,14 +369,14 @@ def build_evidence_bundle(
         candidate_id=candidate_id,
         stream=stream,
         flow_id=flow_id,
-        cwe=cwe,
-        source_loc=source_loc,
-        source_name=source_name,
-        sink_name=sink_name,
-        sink_class=sink_class,
-        parameterization=parameterization,
-        engine=engine,
-        confidence=confidence,
+        cwe=metadata.cwe,
+        source_loc=metadata.source_loc,
+        source_name=metadata.source_name,
+        sink_name=metadata.sink_name,
+        sink_class=metadata.sink_class,
+        parameterization=metadata.parameterization,
+        engine=metadata.engine,
+        confidence=metadata.confidence,
         score=float(candidate["score"]) if candidate.get("score") is not None else None,
         score_label=str(candidate.get("score_label") or "") or None,
         score_factors=_score_factors(candidate),

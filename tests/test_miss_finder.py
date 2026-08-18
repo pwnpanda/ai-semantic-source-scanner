@@ -6,11 +6,14 @@ import json
 from pathlib import Path
 
 import duckdb
+import pytest
 from typer.testing import CliRunner
 
+import ai_codescan.miss_finder as miss_finder_module
 from ai_codescan.cli import app
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.miss_finder import build_miss_candidates, write_miss_candidates
+from ai_codescan.semantic_hotspots import SemanticHotspot
 
 runner = CliRunner()
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -68,6 +71,43 @@ def test_build_miss_candidates_id_differs_per_line(tmp_path: Path) -> None:
     by_line = {c["line"]: c["id"] for c in candidates if c["vector"] == "authz/bola"}
     assert len(by_line) == 2
     assert by_line[10] != by_line[20]
+
+
+def test_semantic_candidates_with_same_stable_identity_are_deduplicated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _connect(tmp_path)
+    shared = {
+        "concern": "generic concern",
+        "vector": "workflow/validation-bypass",
+        "cwe": "CWE-693",
+        "line": 12,
+        "name": "execute",
+        "evidence": "if (options.skipValidation)",
+    }
+    hotspots = [
+        SemanticHotspot(
+            file="/cache/one/sample-deadbeef/source/src/Handler.kt",
+            heuristic="first wording",
+            **shared,
+        ),
+        SemanticHotspot(
+            file="/different/cache/sample-deadbeef/source/src/Handler.kt",
+            heuristic="reworded heuristic",
+            **shared,
+        ),
+    ]
+    monkeypatch.setattr(
+        miss_finder_module,
+        "discover_semantic_hotspots",
+        lambda _conn: hotspots,
+    )
+
+    candidates = build_miss_candidates(conn)
+
+    assert len(candidates) == 1
+    assert len({candidate["id"] for candidate in candidates}) == 1
 
 
 def test_build_miss_candidates_from_entrypoint_risk_signals(tmp_path: Path) -> None:

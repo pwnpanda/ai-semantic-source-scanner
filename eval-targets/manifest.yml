@@ -1054,9 +1054,9 @@ cases:
       - id: KOTLIN-SKIP-VALIDATION-001
         cwe: CWE-693
         file: src/main/kotlin/example/SecurityShapes.kt
-        source_line: 12
-        sink_line: 12
-        sink_contains: skip/bypass
+        source_line: 32
+        sink_line: 32
+        sink_contains: bypass control
         line_tolerance: 1
       - id: KOTLIN-FAIL-OPEN-SPEC-001
         cwe: CWE-693
@@ -1098,7 +1098,7 @@ cases:
         file: src/main/kotlin/example/SecurityShapes.kt
         source_line: 53
         sink_line: 53
-        sink_contains: readAllBytes
+        sink_contains: unbounded bulk read
         line_tolerance: 1
       - id: KOTLIN-CONTENT-DISPOSITION-001
         cwe: CWE-93

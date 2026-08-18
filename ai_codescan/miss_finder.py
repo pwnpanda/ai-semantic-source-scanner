@@ -44,6 +44,19 @@ _VECTOR_CWE = {
 }
 _HIGH_CONFIDENCE_FLOW_VALUES = {"definite", "high"}
 _ID_HASH_LEN = 12
+_CACHE_REPO_COMPONENT_RE = re.compile(r".+-[0-9a-f]{8}$", re.IGNORECASE)
+
+
+def _canonical_candidate_file(file: str) -> str:
+    normalized = file.replace("\\", "/")
+    parts = normalized.split("/")
+    source_indices = [index for index, part in enumerate(parts) if part == "source"]
+    for index in source_indices:
+        if index > 0 and _CACHE_REPO_COMPONENT_RE.fullmatch(parts[index - 1]):
+            return "/".join(parts[index + 1 :])
+    if source_indices:
+        return "/".join(parts[source_indices[-1] + 1 :])
+    return normalized
 
 
 def _stable_candidate_id(*, file: str, line: int, vector: str) -> str:
@@ -54,11 +67,13 @@ def _stable_candidate_id(*, file: str, line: int, vector: str) -> str:
     `review_verdicts` table keys on this id; stability across runs means
     verdicts are no longer orphaned when miss-finder runs again.
 
-    Deliberately omits `heuristic` (the human-readable rule label) so minor
-    wording changes to the rule do not shift every id; the `vector` carries
-    the canonical concern.
+    Cache snapshots live below a generated ``source`` directory. Hashing only
+    the path below that boundary keeps ids stable when the cache root changes.
+    The hash deliberately omits `heuristic` (the human-readable rule label) so
+    wording changes do not shift ids; the `vector` carries the canonical concern.
     """
-    blob = f"{file}\x00{line}\x00{vector}".encode()
+    canonical_file = _canonical_candidate_file(file)
+    blob = f"{canonical_file}\x00{line}\x00{vector}".encode()
     digest = hashlib.sha1(blob, usedforsecurity=False).hexdigest()[:_ID_HASH_LEN]
     return f"B-miss-{digest}"
 
@@ -185,7 +200,7 @@ def build_risk_map(conn: duckdb.DuckDBPyConnection) -> list[RiskMapEntry]:
 def build_miss_candidates(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
     """Return high-recall Stream B candidates for non-source/sink bug classes."""
     candidates: list[MissCandidate] = []
-    seen: set[tuple[str, str, int, str]] = set()
+    seen: set[tuple[str, str, int]] = set()
     for risk in build_risk_map(conn):
         display_sig = _compact_text(risk.signature)
         display_evidence = _compact_text(risk.haystack)
@@ -205,7 +220,7 @@ def build_miss_candidates(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any
             concern, vector, heuristic, evidence = rule
             cwe = _VECTOR_CWE[vector]
             candidate_file, candidate_line, candidate_name, entry_added_indices = entry_context
-            key = (candidate_file, vector, candidate_line, heuristic)
+            key = (_canonical_candidate_file(candidate_file), vector, candidate_line)
             if key in seen:
                 return
             seen.add(key)
@@ -271,11 +286,11 @@ def build_miss_candidates(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any
 
 def _append_semantic_hotspot(
     candidates: list[MissCandidate],
-    seen: set[tuple[str, str, int, str]],
+    seen: set[tuple[str, str, int]],
     hotspot: SemanticHotspot,
 ) -> None:
     """Append a source-aware hotspot without turning it into a proven finding."""
-    key = (hotspot.file, hotspot.vector, hotspot.line, hotspot.heuristic)
+    key = (_canonical_candidate_file(hotspot.file), hotspot.vector, hotspot.line)
     if key in seen:
         return
     seen.add(key)

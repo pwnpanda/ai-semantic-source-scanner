@@ -157,7 +157,7 @@ sensitive-logging:
   aliases: [sensitive-log, secret-logging]
   cwes: [CWE-532]
   codeql_tags: [security/cwe/cwe-532]
-  group: info-disclosure
+  group: data-exposure
 
 open-redirect:
   cwes: [CWE-601]
@@ -285,6 +285,6 @@ groups:
   javascript: [prototype-pollution, dom-clobbering]
   redirect: [open-redirect, client-side-redirect]
   dos: [redos, uncontrolled-resource-consumption]
-  data-exposure: [info-disclosure, hardcoded-credentials]
+  data-exposure: [info-disclosure, sensitive-logging, hardcoded-credentials]
   session: [session-fixation]
   all-injection: ["@injection", "@file", "@serialization"]

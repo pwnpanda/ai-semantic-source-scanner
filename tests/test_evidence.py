@@ -105,7 +105,13 @@ def test_write_evidence_bundle_outputs_json_and_markdown(tmp_path: Path) -> None
     source.write_text("var id = input;\n", encoding="utf-8")
     bundle = build_evidence_bundle(
         conn,
-        {"id": "B-auth-S1", "stream": "B", "file": source.as_posix(), "line": 1},
+        {
+            "id": "B-auth-S1",
+            "stream": "B",
+            "file": source.as_posix(),
+            "line": 1,
+            "source_loc": source.as_posix(),
+        },
     )
 
     json_path, md_path = write_evidence_bundle(bundle, bundles_dir=tmp_path / "bundles")
@@ -113,3 +119,36 @@ def test_write_evidence_bundle_outputs_json_and_markdown(tmp_path: Path) -> None
     assert json_path.is_file()
     assert md_path.is_file()
     assert "Evidence Bundle" in render_bundle_markdown(bundle)
+    assert bundle.source_loc == f"{source.as_posix()}:1"
+
+
+def test_secret_candidate_redacts_literal_from_every_evidence_format(tmp_path: Path) -> None:
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    source = tmp_path / "application.yml"
+    source.write_text(
+        "kafka:\n"
+        "  schema-registry:\n"
+        "    user-info: audit-user:do-not-leak\n"
+        "    client-secret: neighboring-secret\n",
+        encoding="utf-8",
+    )
+    bundle = build_evidence_bundle(
+        conn,
+        {
+            "id": "B-secret",
+            "stream": "B",
+            "vector": "secrets/yaml-user-info-literal",
+            "file": source.as_posix(),
+            "line": 3,
+            "evidence": "user-info: <redacted literal>",
+            "requires_llm_validation": False,
+        },
+    )
+
+    serialized = json.dumps(bundle.to_jsonable()) + render_bundle_markdown(bundle)
+    assert "do-not-leak" not in serialized
+    assert "neighboring-secret" not in serialized
+    assert "user-info: <redacted>" in serialized
+    assert bundle.source_loc == f"{source.as_posix()}:3"
