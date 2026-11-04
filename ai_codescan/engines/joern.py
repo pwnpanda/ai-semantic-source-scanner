@@ -85,6 +85,16 @@ def is_available() -> bool:
     return all(shutil.which(b) is not None for b in ("joern", "joern-parse"))
 
 
+def supports_language(language: str) -> bool:
+    """Return True when Joern ships a frontend for ``language``.
+
+    Some scanner languages (Perl) have no Joern frontend at all, so callers
+    must skip the CPG build rather than discover it via the ``ValueError``
+    raised by :func:`_build_cpg`.
+    """
+    return language in _JOERN_LANGUAGE_FLAG
+
+
 def _build_cpg(
     project_root: Path,
     *,

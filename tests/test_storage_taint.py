@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import duckdb
+import pytest
 import yaml
 
 from ai_codescan.index.duckdb_schema import apply_schema
@@ -483,3 +484,29 @@ def test_parse_resolver_proposals_returns_jsonl(tmp_path: Path) -> None:
     )
     out = parse_resolver_proposals(run_dir)
     assert {p["call_id"] for p in out} == {"S-1", "S-2"}
+
+
+@pytest.mark.parametrize(
+    "callee",
+    [
+        "$dbh->do",
+        "$dbh->prepare",
+        "$dbh->prepare_cached",
+        "$dbh->selectrow_array",
+        "$dbh->selectall_arrayref",
+        "$db->selectcol_arrayref",
+        "$sth->execute",
+    ],
+)
+def test_classify_call_matches_perl_dbi(callee: str) -> None:
+    """Perl DBI handles are conventional names, so any scalar receiver counts."""
+    assert classify_call(callee) == ("sql_column", "unknown")
+
+
+@pytest.mark.parametrize(
+    "callee",
+    ["$c->param", "$c->render", "$cgi->param", "$self->new", "$app->start"],
+)
+def test_classify_call_ignores_non_dbi_perl_methods(callee: str) -> None:
+    """Perl web-framework accessors must not be mistaken for SQL calls."""
+    assert classify_call(callee) is None

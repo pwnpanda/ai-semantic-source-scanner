@@ -38,7 +38,7 @@ def test_php_file_collection_skips_dependencies_and_wordpress_content(tmp_path: 
         languages={"php"},
     )
 
-    _ts, _html, _py, _java, _go, _ruby, php, _cs, _kt, _bash, _yaml = _files_for_project(
+    _ts, _html, _py, _java, _go, _ruby, php, _cs, _kt, _bash, _perl, _yaml = _files_for_project(
         tmp_path,
         project,
     )

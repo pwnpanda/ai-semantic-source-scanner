@@ -1,0 +1,2 @@
+requires 'CGI', '4.55';
+requires 'DBI', '1.643';

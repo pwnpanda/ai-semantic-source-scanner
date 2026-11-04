@@ -189,6 +189,29 @@ say "Installing Node worker deps (ai_codescan/ast/node_worker)"
 say "Node worker ready"
 
 # ---------------------------------------------------------------------------
+# Perl AST worker (optional): needs perl + PPI
+# ---------------------------------------------------------------------------
+# Perl has no tree-sitter grammar that is ABI compatible with the pinned
+# tree-sitter host, and neither Joern, Semgrep nor CodeQL parses Perl, so the
+# Perl AST worker is built on PPI (the parser perlcritic uses). This is only
+# needed to scan Perl sources; everything else works without it.
+if command -v perl >/dev/null 2>&1; then
+  if perl -MPPI -e1 >/dev/null 2>&1; then
+    say "Perl worker: PPI present ($(perl -MPPI -e 'print $PPI::VERSION' 2>/dev/null))"
+  else
+    warn "Perl found but PPI is missing - Perl sources will not be AST-indexed."
+    cat <<'EOF'
+  Install PPI with one of:
+    Debian/Ubuntu -> sudo apt-get install libppi-perl
+    macOS (brew)  -> brew install perl && cpanm PPI
+    any platform  -> cpanm PPI     (cpanm: https://metacpan.org/pod/App::cpanminus)
+EOF
+  fi
+else
+  say "Perl not found - skipping Perl worker check (Perl scanning unavailable)"
+fi
+
+# ---------------------------------------------------------------------------
 # Auto-install scip-typescript via npm if missing
 # ---------------------------------------------------------------------------
 if command -v scip-typescript >/dev/null 2>&1; then

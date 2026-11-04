@@ -198,6 +198,37 @@ def _looks_like_rails_routes(file: str) -> bool:
     return file.endswith("config/routes.rb") or "/config/routes/" in file
 
 
+# --- Perl ---------------------------------------------------------------
+# Mojolicious / Mojolicious::Lite: ``get '/path' => sub {...}`` and the
+# router form ``$r->get('/path')->to(...)``. Dancer / Dancer2 share the
+# bare-DSL shape. The callee text emitted by the PPI worker is either the
+# bare word (``get``) or ``<receiver>-><method>`` (``$r->get``).
+_PERL_HTTP_DSL = re.compile(
+    r"^(?:get|post|put|patch|del|delete|any|options|head|websocket)$",
+    re.IGNORECASE,
+)
+_PERL_ROUTER_METHOD = re.compile(
+    r"->(?:get|post|put|patch|del|delete|any|options|head|websocket|route)$",
+    re.IGNORECASE,
+)
+# Catalyst actions are subs with attributes (``sub index :Path :Args(0)``);
+# the PPI worker reports the sub name, so we key on the Catalyst controller
+# base-class import instead, plus the conventional action names.
+_PERL_CATALYST = re.compile(
+    r"^(?:Catalyst|Catalyst::Controller)(?:->|::)|->(?:forward|detach)$",
+)
+# Raw CGI parameter reads are the classic legacy Perl entrypoint:
+# ``$cgi->param('x')``, ``CGI->new``, ``$q->Vars``, ``param('x')``.
+_PERL_CGI_READ = re.compile(
+    r"^(?:CGI->new|param|Vars)$|->(?:param|Vars|url_param|cookie|multi_param)$",
+)
+# Plack/PSGI applications expose a coderef taking ``$env``; the app is wired
+# up through ``builder``/``mount``/``enable`` in a ``.psgi`` file.
+_PERL_PSGI = re.compile(r"^(?:builder|mount|enable)$")
+# CLI entrypoints: ``@ARGV`` reads and Getopt parsing.
+_PERL_CLI_ARGV = re.compile(r"\bARGV\b|^(?:GetOptions|GetOptionsFromArray)$")
+
+
 # --- Go callee patterns -----------------------------------------------------
 
 # stdlib net/http registration: ``http.HandleFunc(pattern, handler)`` and
@@ -337,6 +368,20 @@ def _classify_callee_ruby(callee: str, file: str) -> EntrypointKind | None:
     return None
 
 
+def _classify_callee_perl(callee: str) -> EntrypointKind | None:
+    if _PERL_HTTP_DSL.search(callee) or _PERL_ROUTER_METHOD.search(callee):
+        return "http_route"
+    if _PERL_CATALYST.search(callee):
+        return "http_route"
+    if _PERL_CGI_READ.search(callee):
+        return "http_route"
+    if _PERL_PSGI.search(callee):
+        return "http_route"
+    if _PERL_CLI_ARGV.search(callee):
+        return "cli"
+    return None
+
+
 def _classify_callee_php(callee: str) -> EntrypointKind | None:
     if _PHP_HTTP_ROUTE.search(callee) or _PHP_SYMFONY_ATTRIBUTE_ROUTE.search(callee):
         return "http_route"
@@ -404,6 +449,8 @@ def _classify_callee(callee: str, file: str) -> EntrypointKind | None:  # noqa: 
         return _classify_callee_go(callee)
     if file.endswith((".rb", ".rake")):
         return _classify_callee_ruby(callee, file)
+    if file.endswith((".pl", ".pm", ".psgi", ".t")):
+        return _classify_callee_perl(callee)
     if file.endswith((".php", ".phtml")):
         return _classify_callee_php(callee)
     if file.endswith((".cs", ".cshtml", ".razor")):

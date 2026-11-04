@@ -49,6 +49,10 @@ _GO_SKIP_PARTS = IGNORED_SOURCE_DIRS
 
 _RUBY_SKIP_PARTS = IGNORED_SOURCE_DIRS | {"tmp", "log"}
 
+# ``local/`` and ``blib/`` hold Carton-vendored CPAN deps and MakeMaker build
+# output respectively — third-party or generated code, not the project's own.
+_PERL_SKIP_PARTS = IGNORED_SOURCE_DIRS | {"local", "blib", "_build"}
+
 _PHP_SKIP_PARTS = IGNORED_SOURCE_DIRS | {
     "storage",  # Laravel storage/
 }
@@ -135,6 +139,7 @@ def _files_for_project(
     list[Path],
     list[Path],
     list[Path],
+    list[Path],
 ]:
     """Return per-language file lists under ``project.base_path``.
 
@@ -166,8 +171,9 @@ def _files_for_project(
     ]
     csharp = _source_files(base, suffixes={".cs"}, skipped=_CSHARP_SKIP_PARTS)
     bash = _source_files(base, suffixes={".sh", ".bash"}, skipped=IGNORED_SOURCE_DIRS)
+    perl = _source_files(base, suffixes={".pl", ".pm", ".psgi", ".t"}, skipped=_PERL_SKIP_PARTS)
     yaml_files = _source_files(base, suffixes={".yml", ".yaml"}, skipped=_CONFIG_SKIP_PARTS)
-    return ts, html, python, java, go, ruby, php, csharp, kotlin, bash, yaml_files
+    return ts, html, python, java, go, ruby, php, csharp, kotlin, bash, perl, yaml_files
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
@@ -183,6 +189,7 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         csharp_files,
         kotlin_files,
         bash_files,
+        perl_files,
         yaml_files,
     ) = _files_for_project(snapshot_root, project)
     jobs: list[AstJob] = []
@@ -221,6 +228,12 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
     # detection covers BASH-kind projects on its own.
     if bash_files:
         jobs.append(AstJob(kind="bash", project_root=base, files=bash_files))
+    # Perl scripts: like Bash, emit a ``perl`` AST job for any project that
+    # carries them. Legacy CGI helpers and maintenance scripts frequently sit
+    # beside a primary application in another language, and they are often the
+    # least-reviewed part of the attack surface.
+    if perl_files:
+        jobs.append(AstJob(kind="perl", project_root=base, files=perl_files))
     # Configuration remains part of the attack surface in polyglot repos.
     # In particular, application.yml and deployment manifests can contain
     # credentials and insecure framework settings that are invisible if YAML

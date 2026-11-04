@@ -708,3 +708,69 @@ def test_rails_app_with_asset_pipeline_yields_both_projects(tmp_path: Path) -> N
     )
     projects = detect_projects(pkg)
     assert {p.kind for p in projects} == {ProjectKind.NODE, ProjectKind.RUBY}
+
+
+def test_perl_cpanfile_project_detected(fixtures_dir: Path) -> None:
+    projects = detect_projects(fixtures_dir / "tiny-mojo")
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.PERL
+    assert p.name == "tiny-mojo"
+    assert "perl" in p.languages
+    assert "mojolicious" in p.frameworks
+    assert p.package_manager == "cpanm"
+
+
+def test_perl_makefile_pl_project_name_from_manifest(tmp_path: Path) -> None:
+    """Makefile.PL declares the distribution name; prefer it over the dir name."""
+    pkg = tmp_path / "somedir"
+    (pkg / "lib").mkdir(parents=True)
+    (pkg / "Makefile.PL").write_text(
+        "use ExtUtils::MakeMaker;\n"
+        "WriteMakefile(\n"
+        "    NAME => 'My::App',\n"
+        "    PREREQ_PM => { 'Dancer2' => 0.30, 'DBI' => 1.6 },\n"
+        ");\n",
+        encoding="utf-8",
+    )
+    (pkg / "lib" / "App.pm").write_text("package My::App;\n1;\n", encoding="utf-8")
+    projects = detect_projects(pkg)
+    assert len(projects) == 1
+    p = projects[0]
+    assert p.kind is ProjectKind.PERL
+    assert p.name == "My::App"
+    assert "dancer2" in p.frameworks
+    assert p.package_manager == "makemaker"
+
+
+def test_perl_psgi_implies_plack_framework(tmp_path: Path) -> None:
+    """A .psgi entry script means a PSGI app even if the manifest omits Plack."""
+    pkg = tmp_path / "psgiapp"
+    pkg.mkdir()
+    (pkg / "cpanfile").write_text("requires 'DBI';\n", encoding="utf-8")
+    (pkg / "app.psgi").write_text("my $app = sub { [200, [], ['ok']] };\n", encoding="utf-8")
+    projects = detect_projects(pkg)
+    assert len(projects) == 1
+    assert "plack" in projects[0].frameworks
+
+
+def test_bare_perl_files_detected_without_manifest(tmp_path: Path) -> None:
+    """Loose .pl scripts with no cpanfile still produce a Perl project."""
+    pkg = tmp_path / "scripts"
+    pkg.mkdir()
+    (pkg / "report.pl").write_text('print "hi\\n";\n', encoding="utf-8")
+    projects = detect_projects(pkg)
+    assert len(projects) == 1
+    assert projects[0].kind is ProjectKind.PERL
+
+
+def test_nested_perl_manifest_does_not_create_second_project(tmp_path: Path) -> None:
+    """An inner Makefile.PL under an outer distribution is part of it."""
+    outer = tmp_path / "dist"
+    inner = outer / "vendor" / "sub"
+    inner.mkdir(parents=True)
+    (outer / "cpanfile").write_text("requires 'Mojolicious';\n", encoding="utf-8")
+    (inner / "Makefile.PL").write_text("WriteMakefile(NAME => 'Inner');\n", encoding="utf-8")
+    projects = [p for p in detect_projects(outer) if p.kind is ProjectKind.PERL]
+    assert len(projects) == 1
+    assert projects[0].base_path == Path(".")

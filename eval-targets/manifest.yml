@@ -1156,3 +1156,49 @@ cases:
         file: src/main/kotlin/example/SecurityShapes.kt
       - cwe: CWE-93
         file: src/main/kotlin/example/SecurityShapes.kt
+  - id: perl-cgi-injection
+    target: perl-cgi-injection
+    language: perl
+    engine: hybrid
+    # Perl has no Joern frontend and no native Semgrep language support, so
+    # these four come from the generic-mode rules in
+    # engines/semgrep_rules/perl-injection.yaml. Pattern-mode findings carry a
+    # single location, so source_line == sink_line for every one of them.
+    expected_findings:
+      - id: PERL-CGI-SQLI-001
+        cwe: CWE-89
+        file: app.pl
+        source_line: 21
+        sink_line: 21
+        source_contains: interpolated directly into an SQL
+        line_tolerance: 1
+      - id: PERL-CGI-CMDI-001
+        cwe: CWE-78
+        file: app.pl
+        source_line: 27
+        sink_line: 27
+        source_contains: shell-executing
+        line_tolerance: 1
+      - id: PERL-CGI-OPEN-001
+        cwe: CWE-78
+        file: app.pl
+        source_line: 34
+        sink_line: 34
+        source_contains: Two-argument
+        line_tolerance: 1
+      - id: PERL-CGI-EVAL-001
+        cwe: CWE-95
+        file: app.pl
+        source_line: 43
+        sink_line: 43
+        source_contains: string ``eval``
+        line_tolerance: 1
+    allowed_false_positives: []
+  - id: perl-cgi-injection-safe
+    target: perl-cgi-injection-safe
+    language: perl
+    engine: hybrid
+    # Same entrypoints and parameters, written safely: bind values, LIST-form
+    # system(), three-argument open, and no string eval.
+    expected_findings: []
+    allowed_false_positives: []

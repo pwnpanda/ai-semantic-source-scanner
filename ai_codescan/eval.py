@@ -337,6 +337,9 @@ def _hybrid_project_roots(snapshot_root: Path) -> list[tuple[Path, str, str]]:
             language = "php"
         elif project.kind is ProjectKind.CSHARP:
             language = "csharp"
+        elif project.kind is ProjectKind.PERL:
+            # Semgrep generic-mode only; joern.supports_language skips the CPG.
+            language = "perl"
         else:
             continue
         project_id = project_artifact_id(project.name, project.base_path)

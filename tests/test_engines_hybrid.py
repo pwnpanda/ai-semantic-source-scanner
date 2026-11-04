@@ -729,6 +729,35 @@ def test_dedupe_collapses_single_step_findings_on_the_same_line(tmp_path: Path) 
     assert rows == [("cq-1", "codeql+semgrep")]
 
 
+def test_run_hybrid_skips_joern_for_a_language_with_no_frontend(
+    tmp_path: Path, _stub_engines: list[str]
+) -> None:
+    """Perl reaches Semgrep but never Joern.
+
+    ``joern.run_joern`` raises ``ValueError`` for an unknown language, which
+    the hybrid loop does not catch, so the language has to be gated out
+    before the call.
+    """
+    db_path = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    conn.close()
+
+    snapshot = tmp_path / "snap"
+    perl_root = snapshot / "perl-app"
+    perl_root.mkdir(parents=True)
+    repo_dir = tmp_path / "cache"
+    repo_dir.mkdir()
+
+    run_hybrid(
+        [(perl_root, "perl-app", "perl")],
+        snapshot_root=snapshot,
+        repo_dir=repo_dir,
+        db_path=db_path,
+    )
+    assert _stub_engines == []
+
+
 def test_semgrep_command_pins_the_project_root() -> None:
     """``--project-root`` keeps semgrep off its git target-discovery path.
 

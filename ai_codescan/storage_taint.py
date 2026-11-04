@@ -67,6 +67,13 @@ _SQL_CALL = re.compile(
     r"(?:query|exec|execute|prepare|get_results|get_var|get_row|"
     r"executeQuery|executeStatement|raw|select|statement|whereRaw|selectRaw)$"
     r"|\bmysqli_(?:query|multi_query|real_query)$"
+    # Perl DBI. Handle names are conventional rather than fixed ($dbh for a
+    # database handle, $sth for a statement handle), so match any scalar
+    # receiver and rely on the method name to carry the signal.
+    r"|\$\w+->"
+    r"(?:do|prepare|prepare_cached|execute|"
+    r"selectrow_array|selectrow_arrayref|selectrow_hashref|"
+    r"selectall_arrayref|selectall_hashref|selectcol_arrayref)$"
     # C# / .NET ADO.NET / Dapper / EF Core. ``cmd``/``command`` covers the
     # SqlCommand idiom; ``connection``/``conn`` covers Dapper extension
     # methods on ``IDbConnection``; ``Database`` covers EF Core's raw-SQL
@@ -318,6 +325,9 @@ _JS_TS_GLOBS = (
     "**/*.cshtml",
     "**/*.kt",
     "**/*.kts",
+    "**/*.pl",
+    "**/*.pm",
+    "**/*.psgi",
 )
 _SELECT_STRING = re.compile(
     r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",

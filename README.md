@@ -1,6 +1,6 @@
 # ai-semantic-source-scanner (`ai-codescan`)
 
-AI-driven SAST pipeline for JavaScript / TypeScript / Python / Java / Kotlin / Go / Ruby / PHP / C# / Bash / YAML / HTML codebases. Combines deterministic static analysis (AST, SCIP, CodeQL, Semgrep, optional Joern) with LLM agents that nominate bug candidates, write per-finding reports, and validate exploits in a hardened Docker sandbox.
+AI-driven SAST pipeline for JavaScript / TypeScript / Python / Java / Kotlin / Go / Ruby / PHP / C# / Perl / Bash / YAML / HTML codebases. Combines deterministic static analysis (AST, SCIP, CodeQL, Semgrep, optional Joern) with LLM agents that nominate bug candidates, write per-finding reports, and validate exploits in a hardened Docker sandbox.
 
 Five-stage pipeline with human-in-the-loop gates between every stage. Swappable LLM provider (`claude`, `gemini`, or `codex`).
 
@@ -326,6 +326,8 @@ Quality gates: zero ruff warnings, zero ty errors, all tests green. ~158 tests, 
 ## Status
 
 Phases 1, 2, and 3 are complete and tagged. JavaScript / TypeScript and Python are fully implemented (every layer of the pipeline — stack detection, CodeQL, Semgrep, Joern, AST extraction, SCIP indexing, storage-taint regexes, framework-aware entrypoint detection, fixtures, end-to-end smoke tests). Java, Go, Ruby, PHP, and C# reached MVP+: Java via `javasrc2cpg` + Spring/JAX-RS/Kafka entrypoints + tiny-spring SQLi fixture; Go via Joern's `gosrc2cpg` + Gin/Echo/Chi/Fiber/stdlib `http.HandleFunc` entrypoints + tiny-gin SQLi fixture; Ruby via tree-sitter-ruby AST + Rails routes / Sinatra DSL / Sidekiq workers + tiny-sinatra SQLi fixture (Joern's `rubysrc2cpg` is wired but beta — thin CPGs on DSL-heavy code); PHP via tree-sitter-php AST + Laravel/Symfony/Slim/WordPress entrypoints + tiny-slim SQLi fixture (CodeQL doesn't support PHP — coverage relies on Semgrep + Joern's `php2cpg` when `php` is on PATH); C# via CodeQL `--build-mode=none` + Joern `csharpsrc2cpg` + tree-sitter-c-sharp AST + ASP.NET Core attribute routing / minimal-API `app.MapGet` / Azure Functions entrypoints + tiny-aspnet SQLi fixture. Bare-source detection covers snippet repos and CTF challenges with no manifest. Joern install remains opt-in.
+
+Perl is the one supported language with no interprocedural engine behind it: it has no Joern frontend, no CodeQL pack, and Semgrep has no native Perl parser. Its deterministic layer is a PPI-based AST worker (stack detection from `cpanfile` / `Makefile.PL` / `Build.PL`, sub symbols and call xrefs, Mojolicious / Dancer / Catalyst / CGI.pm / raw-PSGI entrypoints, DBI idioms in storage-taint) plus four Semgrep **generic-mode** rules in `engines/semgrep_rules/perl-injection.yaml` covering interpolated `system`, interpolated DBI SQL, two-argument `open`, and string `eval`. Cross-function taint tracking for Perl comes from the `llm-heavy` engine alone — see the `## Perl` section of `skills/llm_heavy/SKILL.md`. PPI is an optional dependency (`apt-get install libppi-perl`, or `cpanm PPI`); without it Perl files are skipped with a warning rather than failing the scan.
 
 ## Claude Sessions
 

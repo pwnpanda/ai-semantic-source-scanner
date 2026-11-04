@@ -46,6 +46,7 @@ class ProjectKind(StrEnum):
     JAVA = "java"  # has pom.xml or build.gradle(.kts) (covers Kotlin too)
     GO = "go"  # has go.mod (or go.work)
     RUBY = "ruby"  # has Gemfile or *.gemspec
+    PERL = "perl"  # has cpanfile, Makefile.PL, Build.PL, or *.pl/*.pm sources
     PHP = "php"  # has composer.json, wp-config.php, or Drupal markers
     CSHARP = "csharp"  # has *.csproj, *.sln, or Directory.Build.props
     BASH = "bash"  # bare shell scripts (no manifest); detected via .sh files
@@ -102,6 +103,10 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".rb", "ruby"),
     (".rake", "ruby"),
     (".gemspec", "ruby"),
+    (".pl", "perl"),
+    (".pm", "perl"),
+    (".psgi", "perl"),
+    (".t", "perl"),
     (".php", "php"),
     (".phtml", "php"),
     (".cs", "csharp"),
@@ -645,6 +650,91 @@ def _detect_ruby_frameworks(pkg_dir: Path) -> set[str]:
     return frameworks
 
 
+_PERL_FRAMEWORK_MODULES: dict[str, str] = {
+    "mojolicious": "mojolicious",
+    "mojolicious::lite": "mojolicious",
+    "dancer": "dancer",
+    "dancer2": "dancer2",
+    "catalyst": "catalyst",
+    "catalyst::runtime": "catalyst",
+    "plack": "plack",
+    "cgi": "cgi",
+    "cgi::application": "cgi-application",
+    "mod_perl2": "mod_perl",
+    "dbi": "dbi",
+    "template": "template-toolkit",
+}
+
+# ``requires 'Foo::Bar';`` in a cpanfile, or ``'Foo::Bar' => 0`` in the
+# PREREQ_PM / requires hash of Makefile.PL / Build.PL.
+_PERL_CPANFILE_REQUIRE_RE = re.compile(
+    r"""^\s*(?:requires|recommends|suggests)\s+['"]([A-Za-z0-9_:]+)['"]""",
+    re.MULTILINE,
+)
+_PERL_PREREQ_RE = re.compile(r"""['"]([A-Za-z0-9_:]+)['"]\s*=>\s*['"]?[\d.]""")
+
+_PERL_MANIFEST_NAMES: tuple[str, ...] = ("cpanfile", "Makefile.PL", "Build.PL")
+
+
+def _perl_manifest(pkg_dir: Path) -> Path | None:
+    """Return the most authoritative Perl manifest in ``pkg_dir``.
+
+    Preference order: ``cpanfile`` (modern dependency declaration) >
+    ``Makefile.PL`` (ExtUtils::MakeMaker) > ``Build.PL`` (Module::Build).
+    """
+    for name in _PERL_MANIFEST_NAMES:
+        candidate = pkg_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _project_name_perl(manifest: Path) -> str:
+    """Best-effort Perl distribution name from Makefile.PL / Build.PL."""
+    parent_name = manifest.parent.name or "perl"
+    if manifest.name in {"Makefile.PL", "Build.PL"}:
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+        # ``NAME => 'My::App'`` (MakeMaker) or ``module_name => 'My::App'``
+        # (Module::Build).
+        match = re.search(
+            r"""(?:NAME|module_name|dist_name)\s*=>\s*['"]([A-Za-z0-9_:.\-]+)['"]""",
+            text,
+        )
+        if match:
+            return match.group(1)
+    return parent_name
+
+
+def _detect_perl_frameworks(pkg_dir: Path) -> set[str]:
+    """Frameworks declared in the Perl manifest, plus PSGI/CGI layout hints."""
+    frameworks: set[str] = set()
+    manifest = _perl_manifest(pkg_dir)
+    if manifest is not None:
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+        declared = {m.lower() for m in _PERL_CPANFILE_REQUIRE_RE.findall(text)}
+        declared |= {m.lower() for m in _PERL_PREREQ_RE.findall(text)}
+        frameworks |= {
+            label for module, label in _PERL_FRAMEWORK_MODULES.items() if module in declared
+        }
+    # A ``.psgi`` entry script implies a Plack/PSGI app even when the
+    # manifest doesn't pin Plack directly.
+    if any(_iter_files(pkg_dir, ".psgi")) and "plack" not in frameworks:
+        frameworks.add("plack")
+    return frameworks
+
+
+def _detect_perl_package_manager(pkg_dir: Path) -> str:
+    if (pkg_dir / "cpanfile.snapshot").is_file():
+        return "carton"
+    if (pkg_dir / "cpanfile").is_file():
+        return "cpanm"
+    if (pkg_dir / "Makefile.PL").is_file():
+        return "makemaker"
+    if (pkg_dir / "Build.PL").is_file():
+        return "module-build"
+    return "unknown"
+
+
 def _detect_ruby_package_manager(pkg_dir: Path) -> str:
     if (pkg_dir / "Gemfile.lock").is_file():
         return "bundler"
@@ -814,6 +904,51 @@ def _detect_go_projects(root: Path) -> list[Project]:
                 workspace_root=None,
                 frameworks=_detect_go_frameworks(pkg_dir),
                 package_manager=_detect_go_package_manager(pkg_dir),
+            )
+        )
+    return projects
+
+
+def _detect_perl_projects(root: Path) -> list[Project]:
+    """Find Perl distributions: one per cpanfile / Makefile.PL / Build.PL.
+
+    Outermost manifest wins, mirroring the Ruby/Go behaviour — a nested
+    ``Makefile.PL`` under an already-selected distribution is part of that
+    distribution, not a separate project.
+    """
+    candidates: list[Path] = []
+    for needle in _PERL_MANIFEST_NAMES:
+        for path in root.rglob(needle):
+            rel = path.relative_to(root)
+            if any(part in _SKIP_DIRS for part in rel.parts):
+                continue
+            candidates.append(path.parent)
+    candidates = sorted(set(candidates), key=lambda p: len(p.parts))
+
+    selected: list[Path] = []
+    for cand in candidates:
+        rel = cand.relative_to(root)
+        if any(_is_descendant(rel, sel) for sel in selected):
+            continue
+        selected.append(rel)
+
+    projects: list[Project] = []
+    for rel in selected:
+        pkg_dir = root / rel
+        manifest = _perl_manifest(pkg_dir)
+        if manifest is None:
+            continue
+        projects.append(
+            Project(
+                name=_project_name_perl(manifest),
+                kind=ProjectKind.PERL,
+                base_path=rel,
+                languages=_detect_languages(pkg_dir),
+                has_tsconfig=False,
+                is_workspace_member=False,
+                workspace_root=None,
+                frameworks=_detect_perl_frameworks(pkg_dir),
+                package_manager=_detect_perl_package_manager(pkg_dir),
             )
         )
     return projects
@@ -1125,6 +1260,7 @@ def detect_projects(root: Path) -> list[Project]:
     projects.extend(_detect_java_projects(root))
     projects.extend(_detect_go_projects(root))
     projects.extend(_detect_ruby_projects(root))
+    projects.extend(_detect_perl_projects(root))
     projects.extend(_detect_php_projects(root))
     projects.extend(_detect_csharp_projects(root))
     # YAML stays claim-aware: CI/k8s manifests beside a package.json describe the
@@ -1154,6 +1290,7 @@ _BARE_SOURCE_KIND_BY_EXT: tuple[tuple[str, ProjectKind, str], ...] = (
     (".java", ProjectKind.JAVA, "java"),
     (".go", ProjectKind.GO, "go"),
     (".rb", ProjectKind.RUBY, "ruby"),
+    (".pl", ProjectKind.PERL, "perl"),
     (".php", ProjectKind.PHP, "php"),
     (".cs", ProjectKind.CSHARP, "csharp"),
     (".sh", ProjectKind.BASH, "bash"),

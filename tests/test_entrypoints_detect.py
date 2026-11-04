@@ -784,3 +784,55 @@ def test_python_sys_argv_detected() -> None:
     ]
     eps = detect_entrypoints(xrefs=xrefs, symbols=[])
     assert any(e.kind == "cli" for e in eps)
+
+
+def _perl_xref(callee: str, *, file: str = "/abs/app.pl", line: int = 7) -> dict:
+    return {
+        "type": "xref",
+        "kind": "call",
+        "file": file,
+        "line": line,
+        "calleeText": callee,
+    }
+
+
+def test_perl_mojolicious_route_detected() -> None:
+    """Mojolicious/Dancer routes are parenless DSL calls: ``get '/x' => sub``."""
+    eps = detect_entrypoints(xrefs=[_perl_xref("get")], symbols=[])
+    assert [e.kind for e in eps] == ["http_route"]
+
+
+def test_perl_router_method_route_detected() -> None:
+    eps = detect_entrypoints(xrefs=[_perl_xref("$r->post")], symbols=[])
+    assert [e.kind for e in eps] == ["http_route"]
+
+
+def test_perl_cgi_param_read_detected() -> None:
+    """Legacy CGI param reads are the classic Perl request entrypoint."""
+    eps = detect_entrypoints(xrefs=[_perl_xref("$cgi->param")], symbols=[])
+    assert [e.kind for e in eps] == ["http_route"]
+
+
+def test_perl_psgi_builder_detected() -> None:
+    eps = detect_entrypoints(xrefs=[_perl_xref("builder", file="/abs/app.psgi")], symbols=[])
+    assert [e.kind for e in eps] == ["http_route"]
+
+
+def test_perl_getoptions_is_cli_entrypoint() -> None:
+    eps = detect_entrypoints(xrefs=[_perl_xref("GetOptions")], symbols=[])
+    assert [e.kind for e in eps] == ["cli"]
+
+
+def test_perl_ordinary_call_is_not_an_entrypoint() -> None:
+    """A plain helper call must not be classified as an entrypoint."""
+    eps = detect_entrypoints(xrefs=[_perl_xref("$dbh->selectrow_array")], symbols=[])
+    assert eps == []
+
+
+def test_perl_classifier_does_not_apply_to_other_languages() -> None:
+    """``get`` is only a Perl route marker in Perl files."""
+    eps = detect_entrypoints(
+        xrefs=[_perl_xref("get", file="/abs/helpers.rb")],
+        symbols=[],
+    )
+    assert [e.kind for e in eps] == []

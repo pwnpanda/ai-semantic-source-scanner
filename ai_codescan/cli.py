@@ -171,6 +171,9 @@ _HYBRID_LANGUAGES = {
     ProjectKind.RUBY: "ruby",
     ProjectKind.PHP: "php",
     ProjectKind.CSHARP: "csharp",
+    # Perl reaches the hybrid run for Semgrep's generic-mode rules only;
+    # joern.supports_language gates out the CPG build.
+    ProjectKind.PERL: "perl",
 }
 
 

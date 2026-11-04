@@ -1,0 +1,134 @@
+rules:
+  # Perl is not a Semgrep-supported language (66 languages as of 1.156.0, no
+  # Perl), and no Joern frontend or CodeQL pack parses it either. ``generic``
+  # mode is therefore the only rule-based engine that can reach Perl at all:
+  # it matches on the token stream rather than an AST.
+  #
+  # The consequence for every rule below is that we cannot do taint tracking —
+  # these are single-location pattern matches. They are deliberately written
+  # to fire on the *interpolation* shape (a Perl variable inside the argument
+  # of a dangerous call), because an interpolated variable is the thing that
+  # turns these APIs into injection sinks. Flows that launder input through a
+  # helper sub are invisible here and are the LLM review layer's job.
+
+  - id: perl-command-injection-interpolated
+    message: |
+      A Perl variable is interpolated into a shell-executing construct. Perl's
+      one-argument ``system``/``exec``/backticks pass the string to the shell,
+      so any attacker-controlled part of it is command injection. Use the
+      list form (``system($prog, @args)``), which bypasses the shell entirely.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.pl", "*.pm", "*.psgi", "*.t", "*.cgi"]
+    metadata:
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      category: security
+      confidence: MEDIUM
+      likelihood: MEDIUM
+      impact: HIGH
+      technology: [perl]
+      references:
+        - https://perldoc.perl.org/functions/system
+    patterns:
+      - pattern-either:
+          - pattern: system("...$...")
+          - pattern: exec("...$...")
+          - pattern: qx(...$...)
+      # ``system($prog, @args)`` is the safe list form — it never reaches a
+      # shell, so exclude it even when the args interpolate.
+      - pattern-not: system($PROG, ...)
+      - pattern-not: exec($PROG, ...)
+
+  - id: perl-sql-injection-interpolated
+    message: |
+      A Perl variable is interpolated directly into an SQL string handed to
+      DBI. Use placeholders (``?``) with bind values — ``$dbh->do($sql, undef,
+      $value)`` or ``prepare``/``execute`` — instead of building the statement
+      by interpolation.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.pl", "*.pm", "*.psgi", "*.t", "*.cgi"]
+    metadata:
+      cwe:
+        - "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+      category: security
+      confidence: MEDIUM
+      likelihood: MEDIUM
+      impact: HIGH
+      technology: [perl, dbi]
+      references:
+        - https://metacpan.org/pod/DBI#Placeholders-and-Bind-Values
+    patterns:
+      - pattern-either:
+          - pattern: $DBH->do("...$...")
+          - pattern: $DBH->prepare("...$...")
+          - pattern: $DBH->selectrow_array("...$...")
+          - pattern: $DBH->selectrow_hashref("...$...")
+          - pattern: $DBH->selectall_arrayref("...$...")
+
+  - id: perl-code-injection-eval-string
+    message: |
+      A Perl variable is interpolated into string ``eval``, which compiles and
+      runs the string as Perl code. If any part is attacker-controlled this is
+      remote code execution. Block ``eval { ... }`` is the exception-handling
+      form and is safe; only the string form compiles input.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.pl", "*.pm", "*.psgi", "*.t", "*.cgi"]
+    metadata:
+      cwe:
+        - "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code"
+      category: security
+      confidence: MEDIUM
+      likelihood: MEDIUM
+      impact: HIGH
+      technology: [perl]
+      references:
+        - https://perldoc.perl.org/functions/eval
+    patterns:
+      - pattern-either:
+          # ``eval EXPR`` is usually written without parentheses, so both
+          # spellings have to be listed; generic mode treats "(" as a token.
+          - pattern: eval("...$...")
+          - pattern: eval "...$..."
+
+  - id: perl-open-two-arg-interpolated
+    message: |
+      Two-argument ``open`` with an interpolated variable. Perl's 2-arg
+      ``open`` honours shell-style mode characters in the filename, so a value
+      beginning with ``|`` executes a command and ``>`` truncates a file. Use
+      the 3-argument form (``open my $fh, '<', $path``), which treats the path
+      as data.
+    severity: ERROR
+    languages: [generic]
+    paths:
+      include: ["*.pl", "*.pm", "*.psgi", "*.t", "*.cgi"]
+    metadata:
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      category: security
+      confidence: MEDIUM
+      likelihood: MEDIUM
+      impact: HIGH
+      technology: [perl]
+      references:
+        - https://perldoc.perl.org/functions/open
+    patterns:
+      # Generic mode matches a token stream and a metavariable binds exactly
+      # one token, so ``$FH`` cannot match the two tokens of ``my $fh``.
+      # ``...`` spans the filehandle regardless of which form is used.
+      - pattern: open(..., "...$...")
+      # The 3-arg form passes an explicit mode string and treats the path as
+      # data, so it is the safe shape. Match the mode literals directly —
+      # a ``$MODE`` metavariable here would bind ``my`` and wrongly exclude
+      # the 2-arg calls we are looking for.
+      - pattern-not: open(..., '<', ...)
+      - pattern-not: open(..., '>', ...)
+      - pattern-not: open(..., '>>', ...)
+      - pattern-not: open(..., '+<', ...)
+      - pattern-not: open(..., '-|', ...)
+      - pattern-not: open(..., '|-', ...)

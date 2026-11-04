@@ -175,7 +175,14 @@ def _run_project_engines(
                 log.warning("semgrep failed for %s: %s", project_id, exc)
                 failures.append(f"semgrep/{project_id}: {exc}")
 
-        if joern_eng.is_available():
+        if not joern_eng.supports_language(language):
+            # Perl has no Joern frontend. Semgrep's generic-mode rules above
+            # are the only deterministic pass; interprocedural taint for this
+            # project comes from the llm-heavy engine instead.
+            log.info(
+                "joern has no frontend for %s; skipping CPG build for %s", language, project_id
+            )
+        elif joern_eng.is_available():
             try:
                 jsonl_path = joern_eng.run_joern(
                     project_root,
