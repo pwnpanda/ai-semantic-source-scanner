@@ -77,6 +77,14 @@ def _semgrep_command(
     cmd = [
         "semgrep",
         "scan",
+        # Pin the project root to the directory we are scanning. Semgrep
+        # otherwise walks up looking for a ``.git`` and switches to
+        # ``git ls-files`` target discovery. A stray or broken ``.git``
+        # above the cache root (``~/.git`` is a common dotfiles-repo
+        # artifact) makes that call exit 128, and semgrep then reports zero
+        # targets and zero findings with no error in the SARIF - silently
+        # disabling the whole Semgrep layer for every language.
+        f"--project-root={project_root}",
         f"--config={config}",
         "--sarif",
         "--output",

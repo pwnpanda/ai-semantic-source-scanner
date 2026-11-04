@@ -28,8 +28,6 @@ from ai_codescan.source_paths import resolve_contained_file
 
 log = logging.getLogger(__name__)
 
-_MIN_STEPS_FOR_KEY = 2
-
 _CONFIDENCE_RANK: dict[str, int] = {
     "definite": 3,
     "inferred": 2,
@@ -57,8 +55,12 @@ class HybridStageError(RuntimeError):
 
 def _flow_key(steps_json: str, cwe: str | None) -> tuple[str, int, str, int, str]:
     steps = json.loads(steps_json or "[]")
-    if len(steps) < _MIN_STEPS_FOR_KEY:
+    if not steps:
         return ("", 0, "", 0, cwe or "")
+    # A pattern-only finding (Semgrep ``patterns`` mode, CodeQL ``problem``
+    # queries) has a single step that is both source and sink. Keying those
+    # on the degenerate empty tuple collapsed every pattern finding sharing a
+    # CWE into one row, no matter which file or line it came from.
     src = steps[0]
     sink = steps[-1]
     return (

@@ -682,3 +682,65 @@ def test_run_hybrid_rejects_mismatched_or_incomplete_prep_generation(
             db_path=db_path,
             scan_fingerprint="old-inputs",
         )
+
+
+def test_dedupe_keeps_distinct_single_step_pattern_findings(tmp_path: Path) -> None:
+    """Two pattern-mode findings sharing a CWE but on different lines both survive.
+
+    Semgrep ``patterns`` rules (and CodeQL ``problem`` queries) emit a single
+    location, which SARIF ingest stores as a one-step flow. Keying those on a
+    degenerate empty tuple collapsed every pattern finding with the same CWE
+    into a single row regardless of file or line.
+    """
+    db = tmp_path / "x.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    for fid, line in (("sg-27", 27), ("sg-34", 34)):
+        conn.execute(
+            "INSERT INTO flows VALUES "
+            f"('{fid}', 'T-{line}', 'K-{line}', 'CWE-78', 'semgrep', ?, '/sarif/s', 'definite')",
+            [json.dumps([["/abs/app.pl", line, line]])],
+        )
+
+    assert dedupe_flows(conn) == 0
+    fids = {row[0] for row in conn.execute("SELECT fid FROM flows").fetchall()}
+    assert fids == {"sg-27", "sg-34"}
+
+
+def test_dedupe_collapses_single_step_findings_on_the_same_line(tmp_path: Path) -> None:
+    """Same single location from two engines still dedupes to one row."""
+    db = tmp_path / "x.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    steps = json.dumps([["/abs/app.pl", 27, 27]])
+    conn.execute(
+        "INSERT INTO flows VALUES "
+        "('sg-1', 'T1', 'K1', 'CWE-78', 'semgrep', ?, '/sarif/s', 'inferred')",
+        [steps],
+    )
+    conn.execute(
+        "INSERT INTO flows VALUES "
+        "('cq-1', 'T2', 'K2', 'CWE-78', 'codeql', ?, '/sarif/c', 'definite')",
+        [steps],
+    )
+
+    assert dedupe_flows(conn) == 1
+    rows = conn.execute("SELECT fid, engine FROM flows").fetchall()
+    assert rows == [("cq-1", "codeql+semgrep")]
+
+
+def test_semgrep_command_pins_the_project_root() -> None:
+    """``--project-root`` keeps semgrep off its git target-discovery path.
+
+    Without it semgrep walks up for a ``.git``; a stray or unreadable one
+    above the cache root (``~/.git`` from a dotfiles repo) makes its
+    ``git ls-files`` call fail and semgrep then scans zero files and reports
+    zero findings with no error in the SARIF.
+    """
+    cmd = semgrep_eng._semgrep_command(
+        Path("/snap/app"),
+        cache_dir=Path("/cache"),
+        config="auto",
+        output_path=Path("/out.sarif"),
+    )
+    assert "--project-root=/snap/app" in cmd
