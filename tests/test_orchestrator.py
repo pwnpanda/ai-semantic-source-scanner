@@ -1155,3 +1155,27 @@ def test_registry_snapshot_is_part_of_the_scanner_fingerprint(tmp_path: Path) ->
     after = orchestrator_mod._scanner_configuration_fingerprint(repo_dir)
 
     assert before != after
+
+
+def test_fresh_cache_snapshot_does_not_rerun_prep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        orchestrator_mod.semgrep_engine,
+        "_fetch_registry_ruleset",
+        lambda _ref: "rules:\n- id: pinned\n",
+    )
+    prep_calls = 0
+
+    def runner(_argv: list[str]) -> StageOutcome:
+        nonlocal prep_calls
+        prep_calls += 1
+        orchestrator_mod.semgrep_engine.ensure_registry_snapshot(tmp_path / "repo-x")
+        _write_prep_cache_stage(tmp_path)
+        return StageOutcome(rc=0, stderr="")
+
+    opts = _opts(tmp_path, phases=["prep"])
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+    assert drive_pipeline(opts, runner=runner, asker=lambda _p: "c") == 0
+
+    assert prep_calls == 1

@@ -253,6 +253,21 @@ def _external_pack_paths(repo_dir: Path) -> list[tuple[str, Path]]:
     return paths
 
 
+def _materialise_pinned_scanner_inputs(repo_dir: Path) -> None:
+    """Create fingerprinted inputs that prep would otherwise create later.
+
+    The Semgrep registry snapshot is both downloaded by prep and hashed into
+    prep's fingerprint. Fingerprinting it before prep had created it meant a
+    fresh cache hashed ``missing`` on the first run and the real file on the
+    second, so the second run always reported changed inputs, re-ran prep and
+    invalidated completed nominate work -- once per new repository.
+
+    Downloading it here closes that gap. If the download fails, prep retains
+    its existing live-registry fallback.
+    """
+    semgrep_engine.ensure_registry_snapshot(repo_dir)
+
+
 def _hash_active_scanner_inputs(digest: Any, repo_dir: Path) -> None:
     # The pinned Semgrep registry snapshot is a prep input: refreshing it
     # changes the findings, so it has to change the fingerprint too or
@@ -1237,6 +1252,7 @@ def drive_pipeline(  # noqa: PLR0912 - top-level loop; helpers absorb the rest
 
     repo_dir = opts.cache_root / opts.repo_id
     source_fingerprint = _source_fingerprint(opts.target, commit=opts.commit)
+    _materialise_pinned_scanner_inputs(repo_dir)
     scanner_fingerprint = _scanner_configuration_fingerprint(repo_dir)
 
     for stage in opts.phases:
