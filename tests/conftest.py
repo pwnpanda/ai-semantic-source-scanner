@@ -35,6 +35,8 @@ from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
 
+from ai_codescan.engines import semgrep as semgrep_eng  # noqa: E402
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -57,3 +59,20 @@ def tmp_cache_dir(tmp_path: Path) -> Iterator[Path]:
     cache = tmp_path / "cache"
     cache.mkdir()
     yield cache
+
+
+@pytest.fixture(autouse=True)
+def _no_semgrep_registry_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite off the network.
+
+    Prep pins Semgrep rules by downloading a registry snapshot on first use.
+    Tests must never make that call: it is slow, flaky, and would make results
+    depend on the live registry. Failing the fetch exercises the documented
+    fallback (use the live registry, warn, carry on); tests that need a real
+    snapshot stub this themselves.
+    """
+
+    def _blocked(ref: str) -> str:
+        raise OSError(f"registry fetch blocked in tests (ruleset {ref!r})")
+
+    monkeypatch.setattr(semgrep_eng, "_fetch_registry_ruleset", _blocked)

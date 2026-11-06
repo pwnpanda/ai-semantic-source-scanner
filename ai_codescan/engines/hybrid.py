@@ -156,13 +156,22 @@ def _run_project_engines(
     joern_flows = 0
     failures: list[str] = []
     used_mutable_semgrep = False
+    # Resolve the ruleset once per run. A pinned local snapshot makes the
+    # findings reproducible, so the scan can be recorded as a plain
+    # ``complete`` generation that later resumes may reuse; falling back to
+    # the live registry keeps the ``complete_unpinned`` downgrade.
+    semgrep_config = semgrep_eng.resolve_config(repo_dir, "")
+    semgrep_is_pinned = semgrep_eng.config_is_pinned(semgrep_config)
     for project_root, raw_project_id, language in project_roots:
         project_id = normalize_artifact_id(raw_project_id)
         if semgrep_eng.is_available():
-            used_mutable_semgrep = True
+            used_mutable_semgrep = used_mutable_semgrep or not semgrep_is_pinned
             try:
                 sarif_path = semgrep_eng.run_semgrep(
-                    project_root, cache_dir=repo_dir, project_id=project_id
+                    project_root,
+                    cache_dir=repo_dir,
+                    project_id=project_id,
+                    config=semgrep_config,
                 )
                 semgrep_flows += ingest_sarif(
                     conn,

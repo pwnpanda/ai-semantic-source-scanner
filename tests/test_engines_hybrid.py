@@ -12,6 +12,7 @@ from ai_codescan.engines import semgrep as semgrep_eng
 from ai_codescan.engines.hybrid import (
     HybridStageError,
     _ingest_joern_jsonl,
+    _record_hybrid_completion,
     dedupe_flows,
     run_hybrid,
 )
@@ -773,3 +774,27 @@ def test_semgrep_command_pins_the_project_root() -> None:
         output_path=Path("/out.sarif"),
     )
     assert "--project-root=/snap/app" in cmd
+
+
+@pytest.mark.parametrize(
+    ("used_mutable_semgrep", "expected"),
+    [(False, "complete"), (True, "complete_unpinned")],
+)
+def test_pinned_semgrep_records_a_reusable_completion(
+    tmp_path: Path, used_mutable_semgrep: bool, expected: str
+) -> None:
+    """Pinned rules earn a plain ``complete``, which is what makes prep reusable.
+
+    With live registry rules the scan is downgraded to ``complete_unpinned``,
+    the orchestrator refuses to reuse prep, and every resume re-runs it.
+    """
+    conn = duckdb.connect(str(tmp_path / "x.duckdb"))
+    apply_schema(conn)
+    _record_hybrid_completion(
+        conn,
+        completion=("fingerprint-1", "complete"),
+        used_mutable_semgrep=used_mutable_semgrep,
+    )
+    row = conn.execute("SELECT stage FROM scan_cache_state WHERE singleton = 1").fetchone()
+    assert row is not None
+    assert row[0] == expected

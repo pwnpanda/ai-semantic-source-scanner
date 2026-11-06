@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ai_codescan.cache_state import scan_db_stage
+from ai_codescan.engines import semgrep as semgrep_engine
 from ai_codescan.engines.semgrep import configured_rules_roots
 from ai_codescan.findings.model import parse_finding
 from ai_codescan.findings.queue import parse_queue, render_queue
@@ -188,6 +189,14 @@ _REPO_SCANNER_CONFIG_FILES = (
 )
 _STAGE_FINGERPRINT_VERSION = 1
 
+_LLM_STAGES = frozenset({"nominate", "analyze", "validate"})
+"""Stages whose output is model-generated and therefore not reproducible.
+
+Re-running one really does invalidate everything downstream of it. Prep, by
+contrast, is deterministic static analysis: an unchanged fingerprint means
+unchanged output, so downstream work survives a prep re-run.
+"""
+
 
 def _digest_payload(payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -245,6 +254,14 @@ def _external_pack_paths(repo_dir: Path) -> list[tuple[str, Path]]:
 
 
 def _hash_active_scanner_inputs(digest: Any, repo_dir: Path) -> None:
+    # The pinned Semgrep registry snapshot is a prep input: refreshing it
+    # changes the findings, so it has to change the fingerprint too or
+    # downstream stages would keep nominations built on the old ruleset.
+    _update_file_digest(
+        digest,
+        semgrep_engine.registry_snapshot_path(repo_dir),
+        label="semgrep-registry-snapshot",
+    )
     for label, path in _external_pack_paths(repo_dir):
         _update_file_digest(digest, path, label=f"enabled-pack:{label}")
     for root in configured_rules_roots(repo_dir):
@@ -764,7 +781,14 @@ def _invalidate_inner_stage_cache(repo_dir: Path, stage: str) -> None:
 
 
 def _prep_cache_is_reusable(repo_dir: Path) -> bool:
-    """Accept only an exact durable prep or completed scan generation."""
+    """Accept only an exact durable prep or completed scan generation.
+
+    ``complete_unpinned`` is deliberately rejected: it records that the scan
+    ran against the live Semgrep registry, so its flows are not reproducible
+    and reusing them would silently mix rule generations. Pinning the ruleset
+    (the default now) records a plain ``complete`` instead, which is what
+    makes prep reusable and resumes cheap.
+    """
     return scan_db_stage(repo_dir / "index.duckdb") in {"prep", "complete"}
 
 
@@ -777,7 +801,7 @@ def _stage_completion_is_reusable(
     fingerprint: str,
 ) -> bool:
     """Return whether this stage may satisfy a later pipeline invocation."""
-    llm_stages = {"nominate", "analyze", "validate"}
+    llm_stages = _LLM_STAGES
     if stage in llm_stages and not opts.llm_model:
         return False
     if stage == "prep":
@@ -1145,7 +1169,15 @@ def _prepare_stage_attempt(
     )
     if (stage in state.completed or inputs_changed or not reusable) and not resuming_attempt:
         _invalidate_inner_stage_cache(repo_dir, stage)
-    _invalidate_downstream_state(state, stage=stage, repo_dir=repo_dir)
+    if inputs_changed or stage in _LLM_STAGES:
+        # A genuine input change invalidates downstream work, and so does
+        # re-running a model-generated stage, whose output varies run to run.
+        # Re-running a deterministic stage (prep) with an unchanged
+        # fingerprint does not: it reproduces the same output, and downstream
+        # per-item markers are content-addressed, so any entry that no longer
+        # applies simply fails to match and is redone. Invalidating there
+        # discarded completed LLM work that was still valid.
+        _invalidate_downstream_state(state, stage=stage, repo_dir=repo_dir)
     if stage in state.completed:
         state.completed.remove(stage)
         sys.stderr.write(f"[orchestrator] rerunning {stage} (inputs changed)\n")

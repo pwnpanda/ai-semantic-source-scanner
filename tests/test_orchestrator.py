@@ -1055,3 +1055,103 @@ def test_runner_signature_is_callable_returning_outcome() -> None:
 
     typed: Callable[[list[str]], StageOutcome] = runner
     assert isinstance(typed([]), StageOutcome)
+
+
+# ---------------------------------------------------------------------------
+# prep reusability and downstream invalidation (resume safety)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stage", ["prep", "complete"])
+def test_prep_cache_is_reusable_for_a_durable_stage(tmp_path: Path, stage: str) -> None:
+    _write_prep_cache_stage(tmp_path, stage)
+    assert orchestrator_mod._prep_cache_is_reusable(tmp_path / "repo-x") is True
+
+
+@pytest.mark.parametrize("stage", ["complete_unpinned", "nominate"])
+def test_prep_cache_is_not_reusable_without_a_durable_stage(tmp_path: Path, stage: str) -> None:
+    """``complete_unpinned`` records a scan built on live registry rules.
+
+    Those flows are not reproducible, so reusing them would mix rule
+    generations. Pinning the ruleset is what earns a plain ``complete``.
+    """
+    _write_prep_cache_stage(tmp_path, stage)
+    assert orchestrator_mod._prep_cache_is_reusable(tmp_path / "repo-x") is False
+
+
+def _prepare_attempt(
+    tmp_path: Path, state: OrchestratorState, *, stage: str, scanner_fp: str
+) -> str | None:
+    repo_dir = tmp_path / "repo-x"
+    return orchestrator_mod._prepare_stage_attempt(
+        state,
+        _opts(tmp_path, phases=[stage]),
+        stage=stage,
+        repo_dir=repo_dir,
+        fingerprints=("source-fp", scanner_fp),
+    )
+
+
+def _seed_downstream_markers(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a run dir holding completed nominate work."""
+    repo_dir = tmp_path / "repo-x"
+    run_dir = repo_dir / "runs" / "orchestrator-abc"
+    (run_dir / ".done").mkdir(parents=True)
+    (run_dir / ".done" / "A-joern-1234").write_text("", encoding="utf-8")
+    nominations = run_dir / "nominations.md"
+    nominations.write_text("# Nominations\n\n- one\n", encoding="utf-8")
+    return run_dir / ".done" / "A-joern-1234", nominations
+
+
+def test_rerunning_prep_with_unchanged_inputs_keeps_nominate_progress(tmp_path: Path) -> None:
+    """A resume must not discard completed LLM work.
+
+    Regression: prep re-ran on every resume and unconditionally invalidated
+    downstream, deleting hundreds of finished nominations that were still
+    valid. Nominate markers are content-addressed, so stale ones simply fail
+    to match and are redone.
+    """
+    _write_prep_cache_stage(tmp_path, "complete_unpinned")
+    marker, nominations = _seed_downstream_markers(tmp_path)
+    state = OrchestratorState(repo_id="repo-x", target=str(tmp_path / "src"), phases=["prep"])
+    # Same fingerprint as the attempt below, and nominate failed part-way.
+    fingerprint = _prepare_attempt(tmp_path, state, stage="prep", scanner_fp="scanner-fp")
+    assert fingerprint is not None
+
+    state.stage_fingerprints["prep"] = fingerprint
+    state.last_error = "nominate: rc=1"
+    _prepare_attempt(tmp_path, state, stage="prep", scanner_fp="scanner-fp")
+
+    assert marker.is_file(), "completed nomination marker was deleted on resume"
+    assert nominations.is_file(), "nominations.md was deleted on resume"
+
+
+def test_rerunning_prep_with_changed_inputs_invalidates_nominate(tmp_path: Path) -> None:
+    """A real input change still invalidates downstream work."""
+    _write_prep_cache_stage(tmp_path, "complete_unpinned")
+    marker, nominations = _seed_downstream_markers(tmp_path)
+    state = OrchestratorState(repo_id="repo-x", target=str(tmp_path / "src"), phases=["prep"])
+    state.stage_fingerprints["prep"] = "a-different-fingerprint"
+
+    _prepare_attempt(tmp_path, state, stage="prep", scanner_fp="scanner-fp")
+
+    assert not marker.exists(), "stale marker survived a genuine input change"
+    assert not nominations.exists()
+
+
+def test_registry_snapshot_is_part_of_the_scanner_fingerprint(tmp_path: Path) -> None:
+    """Refreshing pinned rules must invalidate downstream work.
+
+    The snapshot is a prep input: if it changed without changing the
+    fingerprint, nominations built on the old ruleset would be kept.
+    """
+    repo_dir = tmp_path / "repo-x"
+    repo_dir.mkdir()
+    before = orchestrator_mod._scanner_configuration_fingerprint(repo_dir)
+
+    snapshot = orchestrator_mod.semgrep_engine.registry_snapshot_path(repo_dir)
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text("rules:\n- id: refreshed\n", encoding="utf-8")
+    after = orchestrator_mod._scanner_configuration_fingerprint(repo_dir)
+
+    assert before != after

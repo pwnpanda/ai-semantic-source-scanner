@@ -250,6 +250,12 @@ uv run ai-codescan cache rm <repo-id>
 
 LLM provider/model + temperature are persisted to `runs/<run_id>/run.json` for auditability. The `run` orchestrator also writes `<cache>/<repo-id>/run.state.json` after every stage.
 
+### Pinned Semgrep rules
+
+Prep pins the Semgrep registry ruleset to `<cache>/<repo-id>/semgrep/registry-snapshot.yaml`, downloaded once on first use. Without this, `--config=auto` resolves against the live registry on every run, so the same code at the same scanner commit yields different flows on different days — which silently changes the candidate set a scan is built on and makes a part-way scan impossible to resume cleanly.
+
+To pick up newer community rules, delete the snapshot; the next prep re-downloads it. The snapshot is part of the prep fingerprint, so doing that correctly invalidates nominate/analyze/validate — expect those stages to re-run. A scan that falls back to the live registry (snapshot download failed, or `config='auto'` passed explicitly) is recorded as `complete_unpinned` and is deliberately not reusable by a later resume.
+
 ---
 
 ## Joern (deferred install)
