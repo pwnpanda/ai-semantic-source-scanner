@@ -442,6 +442,42 @@ def test_unknown_bug_class_errors_with_suggestion(tmp_path: Path, fixtures_dir: 
     assert "did you mean" in combined.lower()
 
 
+def test_post_prep_hybrid_uses_recorded_prep_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_root = tmp_path / "source"
+    snapshot_root.mkdir()
+    snapshot = cli_mod.SnapshotResult(
+        snapshot_dir=snapshot_root,
+        manifest_path=tmp_path / "manifest.jsonl",
+        commit_sha=None,
+        method="cp",
+        skipped=True,
+        index_reused=True,
+        scan_fingerprint="prep-generation",
+    )
+    received: list[str | None] = []
+    monkeypatch.setattr(cli_mod, "scan_db_stage_is_current", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        cli_mod,
+        "run_hybrid",
+        lambda *_args, **kwargs: received.append(kwargs.get("scan_fingerprint")),
+    )
+
+    cli_mod._run_post_prep_engine(
+        "hybrid",
+        snapshot=snapshot,
+        repo_dir=tmp_path,
+        db_path=tmp_path / "index.duckdb",
+        bug_classes=[],
+        llm=cli_mod.LLMConfig(provider="claude"),
+        quiet=True,
+    )
+
+    assert received == ["prep-generation"]
+
+
 @pytest.mark.integration
 def test_nominate_creates_nominations_md(
     tmp_path: Path, fixtures_dir: Path, monkeypatch: pytest.MonkeyPatch

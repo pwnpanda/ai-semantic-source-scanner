@@ -938,4 +938,8 @@ def run_prep(  # noqa: PLR0913 - keyword-only orchestration knobs
             if artifact_root.exists():
                 shutil.rmtree(artifact_root)
         (repo_dir / _PREP_INCOMPLETE_MARKER).unlink(missing_ok=True)
-        return replace(snap, index_reused=incremental), db_path
+        return replace(
+            snap,
+            index_reused=incremental,
+            scan_fingerprint=fingerprint,
+        ), db_path

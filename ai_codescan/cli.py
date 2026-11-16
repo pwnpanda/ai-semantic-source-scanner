@@ -21,7 +21,6 @@ import yaml
 from ai_codescan.analyzer import ReviewLimits, run_analyzer
 from ai_codescan.artifact_id import project_artifact_id
 from ai_codescan.cache_state import (
-    build_scan_fingerprint,
     scan_db_stage,
     scan_db_stage_is_current,
 )
@@ -207,16 +206,9 @@ def _run_post_prep_engine(  # noqa: PLR0913 - one positional arg; scan context i
     llm: LLMConfig,
     quiet: bool,
 ) -> None:
-    fingerprint = build_scan_fingerprint(
-        repo_dir,
-        engine=engine,
-        bug_classes=bug_classes,
-        engine_config=(
-            {"llm_provider": llm.provider, "llm_model": llm.model or ""}
-            if engine == "llm-heavy"
-            else None
-        ),
-    )
+    fingerprint = snapshot.scan_fingerprint
+    if not fingerprint:
+        raise RuntimeError("post-prep engine refused: prep did not record a scan fingerprint")
     full_scan_reused = scan_db_stage_is_current(
         db_path,
         fingerprint=fingerprint,

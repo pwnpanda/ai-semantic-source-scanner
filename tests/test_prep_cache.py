@@ -26,6 +26,7 @@ from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.prep import run_prep
 from ai_codescan.repo_lock import RepoScanLockedError, repo_scan_lock
 from ai_codescan.stack_detect import Project, ProjectKind
+from ai_codescan.taxonomy.loader import resolve_classes
 
 
 def _write_node_target(target: Path, source: str) -> None:
@@ -415,6 +416,42 @@ def test_available_scip_failure_remains_retryable_without_aborting(
     assert second.skipped is True
     assert second.index_reused is False
     assert scan_db_stage(db_path) == "complete_with_gaps"
+
+
+def test_bug_class_change_records_the_new_prep_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    cache_root = tmp_path / "cache"
+    _write_node_target(target, "export const value = request.query.value;\n")
+    _patch_local_indexers(monkeypatch)
+
+    first, db_path = run_prep(
+        target,
+        cache_root=cache_root,
+        engine="hybrid",
+        bug_classes=resolve_classes(["xss"]),
+        quiet=True,
+    )
+    second, _db_path = run_prep(
+        target,
+        cache_root=cache_root,
+        engine="hybrid",
+        bug_classes=resolve_classes(["sqli"]),
+        quiet=True,
+    )
+
+    assert second.skipped is True
+    assert second.index_reused is False
+    assert second.scan_fingerprint != first.scan_fingerprint
+    conn = duckdb.connect(str(db_path), read_only=True)
+    try:
+        assert conn.execute("SELECT fingerprint FROM scan_cache_state").fetchone() == (
+            second.scan_fingerprint,
+        )
+    finally:
+        conn.close()
 
 
 def test_rule_fingerprint_change_removes_old_flow_but_preserves_review(
