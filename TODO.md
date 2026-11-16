@@ -643,6 +643,10 @@ Risk controls:
 
 Deferred work:
 
+- [ ] Standardize all reports around one finding schema and one rendering pipeline.
+  Remove duplicate summaries, evidence, remediation text, and metadata from each report.
+  Define required fields and section order before changing the report generators.
+  Add snapshot tests that reject duplicate sections and inconsistent field names.
 - Automatic rule promotion beyond the Phase 3 staged-not-merged dir (a separate `--promote` flag will move staged rules into the active dir after eval review).
 - Joern model patching and CodeQL pack extension (Phase 3 covers Semgrep only; the others have a harder edit surface).
 - Full Ghost automation. We use Ghost results only as imported comparison data.
