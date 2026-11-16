@@ -10,16 +10,27 @@ Use this report structure:
 
 1. `# Security Assessment`
 2. `## Executive Summary`
-3. `## Scope and Method`
-4. `## Findings at a Glance`
-5. `## Detailed Findings`
-6. `## Prioritized Remediation`
-7. `## Coverage and Limitations`
+3. `## Engagement Scope and Coverage`
+4. `## Method`
+5. `## Findings at a Glance`
+6. `## Detailed Findings`
+7. `## Prioritized Remediation`
+8. `## Limitations and Follow-up Work`
 
-The findings table must contain the ID, severity, title, location, and validation status.
+The coverage table must contain the component or activity, status, and evidence-based notes.
+Use only `SCANNED`, `NOT SCANNED`, or `TODO` as a coverage status.
 
-For each detailed finding, include the impact, affected location, evidence, and specific fix.
-Do not repeat the executive summary, table text, or evidence in another section.
+The findings table must contain the ID, severity, confidence, component, title, location, and
+validation status. The total must equal the number of detailed findings.
+
+For each detailed finding, include the summary, impact, affected location, evidence, reproduction
+steps, proof-of-concept text or its reason for omission, and a specific fix.
+
+Include only proof-of-concept text from the scan data. Keep it observation-only. Never operate it.
+Use uppercase placeholders for target-specific URLs, tokens, keys, and identifiers.
 
 Sort findings by severity. Preserve scanner IDs, file paths, line numbers, and validation facts.
-State missing information as a limitation. Do not infer it.
+Include every verified finding. Do not omit low-severity findings.
+
+Do not repeat the executive summary, table text, evidence, or remediation in another section.
+State missing information as a limitation or `TODO`. Do not infer it.

@@ -22,6 +22,19 @@ def test_reporter_prompt_embeds_verified_reports_as_data(tmp_path: Path) -> None
     assert "<<<AI_CODESCAN_FINAL_REPORT>>>" in prompt
 
 
+def test_reporter_prompt_includes_end_of_engagement_baseline(tmp_path: Path) -> None:
+    finding = tmp_path / "finding.md"
+    finding.write_text("# Finding\n", encoding="utf-8")
+
+    prompt = reporter.build_reporter_prompt([finding])
+
+    assert "SCANNED" in prompt
+    assert "NOT SCANNED" in prompt
+    assert "TODO" in prompt
+    assert "observation-only" in prompt
+    assert "full finding enumeration" in prompt
+
+
 def test_run_reporter_skill_writes_final_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
