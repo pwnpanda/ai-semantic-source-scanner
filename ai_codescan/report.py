@@ -382,6 +382,9 @@ def write_report(
     meta = derive_meta(finding, today=today, score_factors=factors)
     report_dir.mkdir(parents=True, exist_ok=True)
     target = report_dir / report_filename(meta)
+    finding_marker = f"- finding_id: `{finding.finding_id}`"
+    if target.is_file() and finding_marker not in target.read_text(encoding="utf-8"):
+        target = target.with_stem(f"{target.stem}--{_slug(finding.finding_id)}")
     target.write_text(
         render_report(finding, meta=meta, bundle=bundle, review_verdict=review_verdict),
         encoding="utf-8",

@@ -173,6 +173,27 @@ def test_write_report_writes_file_with_expected_name(tmp_path: Path) -> None:
     assert target.name == "2026-05-09--critical--sqli--users.md"
 
 
+def test_write_report_keeps_findings_with_the_same_slug(tmp_path: Path) -> None:
+    report_dir = tmp_path / "report"
+    first = _finding()
+    second = Finding(
+        finding_id="F-002",
+        nomination_id="N-002",
+        flow_id="flow-2",
+        cwe=first.cwe,
+        status=first.status,
+        title=first.title,
+        body=first.body,
+    )
+
+    first_path = write_report(first, report_dir=report_dir, today=_dt.date(2026, 5, 9))
+    second_path = write_report(second, report_dir=report_dir, today=_dt.date(2026, 5, 9))
+
+    assert first_path != second_path
+    assert second_path.name == "2026-05-09--critical--sqli--users--F-002.md"
+    assert len(list(report_dir.glob("*.md"))) == 2
+
+
 def test_candidate_audit_renders_scored_candidates(tmp_path: Path) -> None:
     conn = duckdb.connect(str(tmp_path / "index.duckdb"))
     apply_schema(conn)
