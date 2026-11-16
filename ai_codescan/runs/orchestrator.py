@@ -701,7 +701,8 @@ def _record_report_completion(
     finding_ids = _verified_finding_ids(run_dir)
     report_root = Path.cwd() / "report"
     files = None if finding_ids is None else _report_files_for_ids(report_root, finding_ids)
-    if finding_ids is None or files is None:
+    final_report = report_root / "final-report.md"
+    if finding_ids is None or files is None or (finding_ids and not final_report.is_file()):
         receipt_path.unlink(missing_ok=True)
         return
     artifacts = {
@@ -712,6 +713,7 @@ def _record_report_completion(
         "fingerprint": fingerprint,
         "report_root": str(report_root.resolve()),
         "artifacts": artifacts,
+        "final_report_sha256": _file_digest(final_report) if finding_ids else None,
     }
     temporary = receipt_path.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -750,9 +752,20 @@ def _report_artifacts_are_durable(
     artifacts = receipt.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != finding_ids:
         return False
-    if receipt.get("fingerprint") != fingerprint:
+    if receipt.get("fingerprint") != fingerprint or receipt.get("report_root") != str(
+        report_root.resolve()
+    ):
         return False
-    if receipt.get("report_root") != str(report_root.resolve()):
+    expected_final_digest = receipt.get("final_report_sha256")
+    final_report = report_root / "final-report.md"
+    final_report_matches = (
+        not finding_ids
+        and expected_final_digest is None
+        or bool(finding_ids)
+        and isinstance(expected_final_digest, str)
+        and _file_digest(final_report) == expected_final_digest
+    )
+    if not final_report_matches:
         return False
     entries_match = all(
         _report_entry_matches(report_root, finding_id, artifacts[finding_id])
@@ -1040,7 +1053,15 @@ def _validate_argv(opts: DriveOptions, _: str) -> list[str]:
 
 
 def _report_argv(opts: DriveOptions, _: str) -> list[str]:
-    argv = [*_base_argv(opts, "report"), "--repo-id", opts.repo_id]
+    argv = [
+        *_base_argv(opts, "report"),
+        "--repo-id",
+        opts.repo_id,
+        "--llm-provider",
+        opts.llm_provider,
+    ]
+    if opts.llm_model:
+        argv += ["--llm-model", opts.llm_model]
     if opts.bugbounty:
         argv.append("--bugbounty")
     return argv

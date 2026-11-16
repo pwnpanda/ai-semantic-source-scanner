@@ -60,6 +60,7 @@ from ai_codescan.nominator import run_nominator, write_llm_cmd_script
 from ai_codescan.prep import run_prep
 from ai_codescan.repo_lock import RepoScanLockedError, repo_scan_lock
 from ai_codescan.report import write_candidate_audit, write_report
+from ai_codescan.reporter import run_reporter_skill
 from ai_codescan.runs.orchestrator import (
     PIPELINE_STAGES,
     DriveOptions,
@@ -2161,8 +2162,67 @@ def gate_3(
         typer.echo(f"  - {fp}")
 
 
+def _write_verified_reports(
+    *,
+    findings_dir: Path,
+    run_dir: Path,
+    report_dir: Path,
+    db_path: Path,
+) -> tuple[list[Finding], list[Path]]:
+    findings: list[Finding] = []
+    report_paths: list[Path] = []
+    for finding_path in sorted(findings_dir.glob("*.md")):
+        finding = parse_finding(finding_path.read_text(encoding="utf-8"))
+        if finding.status != "verified":
+            continue
+        findings.append(finding)
+        bundle = None
+        bundle_path = run_dir / "bundles" / f"{finding.nomination_id}.json"
+        if bundle_path.is_file():
+            bundle = evidence_bundle_from_jsonable(
+                json.loads(bundle_path.read_text(encoding="utf-8"))
+            )
+        review_verdict = None
+        if db_path.is_file():
+            conn = duckdb.connect(str(db_path), read_only=True)
+            try:
+                has_verdicts = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM information_schema.tables
+                    WHERE table_name = 'review_verdicts'
+                    """
+                ).fetchone()
+                if has_verdicts and int(has_verdicts[0]) > 0:
+                    row = conn.execute(
+                        """
+                        SELECT verdict, confidence, reviewer
+                        FROM review_verdicts
+                        WHERE nomination_id = ?
+                        """,
+                        [finding.nomination_id],
+                    ).fetchone()
+                    if row:
+                        review_verdict = {
+                            "verdict": row[0],
+                            "confidence": row[1],
+                            "reviewer": row[2],
+                        }
+            finally:
+                conn.close()
+        report_paths.append(
+            write_report(
+                finding,
+                report_dir=report_dir,
+                bundle=bundle,
+                review_verdict=review_verdict,
+            )
+        )
+    return findings, report_paths
+
+
 @app.command()
-def report(  # noqa: PLR0912, PLR0913, PLR0915 - Typer option surface + per-finding render loop
+def report(  # noqa: PLR0913 - Typer option surface
     ctx: typer.Context,
     repo_id: Annotated[str, typer.Option("--repo-id")] = "",
     report_dir: Annotated[
@@ -2193,8 +2253,16 @@ def report(  # noqa: PLR0912, PLR0913, PLR0915 - Typer option surface + per-find
             help="Also write a self-contained HTML report (report.html + graph pages).",
         ),
     ] = False,
+    llm_provider: Annotated[
+        str,
+        typer.Option("--llm-provider", help="LLM CLI for the final reporter skill."),
+    ] = "claude",
+    llm_model: Annotated[
+        str,
+        typer.Option("--llm-model", help="Specific model for the final reporter skill."),
+    ] = "",
 ) -> None:
-    """Render verified findings as bug-bounty-ready markdown reports."""
+    """Render verified findings and one standardized final report."""
     cache_root: Path = ctx.obj["cache_root"]
     repo_id = _resolve_repo_id(cache_root, repo_id)
     runs_root = cache_root / repo_id / "runs"
@@ -2209,56 +2277,16 @@ def report(  # noqa: PLR0912, PLR0913, PLR0915 - Typer option surface + per-find
         # Bugbounty mode reuses ./report/ at CWD per workspace convention.
         out_dir = Path.cwd() / "report"
 
-    written = 0
-    verified_findings: list[Finding] = []
     db_path = cache_root / repo_id / "index.duckdb"
-    for fp in sorted(findings_dir.glob("*.md")):
-        f = parse_finding(fp.read_text(encoding="utf-8"))
-        if f.status != "verified":
-            continue
-        verified_findings.append(f)
-        bundle = None
-        bundle_path = last_run / "bundles" / f"{f.nomination_id}.json"
-        if bundle_path.is_file():
-            bundle = evidence_bundle_from_jsonable(
-                json.loads(bundle_path.read_text(encoding="utf-8"))
-            )
-        review_verdict = None
-        if db_path.is_file():
-            conn = duckdb.connect(str(db_path), read_only=True)
-            try:
-                has_verdicts = conn.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM information_schema.tables
-                    WHERE table_name = 'review_verdicts'
-                    """
-                ).fetchone()
-                if has_verdicts and int(has_verdicts[0]) > 0:
-                    row = conn.execute(
-                        """
-                        SELECT verdict, confidence, reviewer
-                        FROM review_verdicts
-                        WHERE nomination_id = ?
-                        """,
-                        [f.nomination_id],
-                    ).fetchone()
-                    if row:
-                        review_verdict = {
-                            "verdict": row[0],
-                            "confidence": row[1],
-                            "reviewer": row[2],
-                        }
-            finally:
-                conn.close()
-        target = write_report(
-            f,
-            report_dir=out_dir,
-            bundle=bundle,
-            review_verdict=review_verdict,
-        )
+    verified_findings, report_paths = _write_verified_reports(
+        findings_dir=findings_dir,
+        run_dir=last_run,
+        report_dir=out_dir,
+        db_path=db_path,
+    )
+    for target in report_paths:
         typer.echo(f"wrote {target}")
-        written += 1
+    written = len(report_paths)
     if include_candidate_audit and db_path.is_file():
         conn = duckdb.connect(str(db_path), read_only=True)
         try:
@@ -2278,6 +2306,20 @@ def report(  # noqa: PLR0912, PLR0913, PLR0915 - Typer option surface + per-find
             if conn is not None:
                 conn.close()
         typer.echo(f"wrote {html_path} (open in a browser)")
+    final_report = run_reporter_skill(
+        run_dir=last_run,
+        report_dir=out_dir,
+        report_paths=report_paths,
+        repo_context_path=cache_root / repo_id / "repo.md",
+        llm=_build_llm_config(llm_provider, llm_model),
+    )
+    if final_report is not None:
+        typer.echo(f"wrote {final_report}")
+    elif written > 0:
+        typer.echo(
+            f"warning: final reporter skipped because {llm_provider} is unavailable",
+            err=True,
+        )
     if written == 0:
         typer.echo("no verified findings to report (run validate first or check gate-3)")
 
@@ -2384,7 +2426,7 @@ def scan(  # noqa: PLR0913 - Typer command surface is intentionally explicit
     else:
         _stage("gate-3")
         _hitl_gate("sign-off")
-    _stage("report", "--html", "--report-dir", str(out_dir))
+    _stage("report", *llm_args, "--html", "--report-dir", str(out_dir))
     typer.echo(f"[secscan] done — open {out_dir / 'report.html'}")
 
 

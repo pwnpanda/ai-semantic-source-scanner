@@ -600,7 +600,10 @@ def test_validate_reuse_requires_log_markers_and_pocs(tmp_path: Path, damage: st
     assert calls == {"nominate": 1, "analyze": 1, "validate": 2}
 
 
-@pytest.mark.parametrize("damage", ["deleted-report", "corrupt-report", "deleted-receipt"])
+@pytest.mark.parametrize(
+    "damage",
+    ["deleted-report", "corrupt-report", "deleted-final-report", "deleted-receipt"],
+)
 def test_report_reuse_requires_hashed_output_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -622,6 +625,10 @@ def test_report_reuse_requires_hashed_output_receipt(
             "# Stored XSS\n\n## References\n\n- finding_id: `F-001`\n",
             encoding="utf-8",
         )
+        (report_path.parent / "final-report.md").write_text(
+            "# Security Assessment\n",
+            encoding="utf-8",
+        )
         return StageOutcome(rc=0, stderr="")
 
     opts = _opts(tmp_path, phases=["report"])
@@ -630,6 +637,8 @@ def test_report_reuse_requires_hashed_output_receipt(
         report_path.unlink()
     elif damage == "corrupt-report":
         report_path.write_text("truncated\n", encoding="utf-8")
+    elif damage == "deleted-final-report":
+        (report_path.parent / "final-report.md").unlink()
     else:
         (tmp_path / "repo-x" / ".orchestrator-report-artifacts.json").unlink()
 
@@ -768,6 +777,19 @@ def test_drive_pipeline_forwards_codex_config_to_llm_heavy_prep(tmp_path: Path) 
     assert seen[seen.index("--engine") + 1] == "llm-heavy"
     assert seen[seen.index("--llm-provider") + 1] == "codex"
     assert seen[seen.index("--llm-model") + 1] == "gpt-5.6"
+
+
+def test_report_stage_forwards_the_selected_llm() -> None:
+    opts = replace(
+        _opts(Path("/tmp"), phases=["report"]),
+        llm_provider="codex",
+        llm_model="gpt-5.6",
+    )
+
+    argv = orchestrator_mod._report_argv(opts, "report")
+
+    assert argv[argv.index("--llm-provider") + 1] == "codex"
+    assert argv[argv.index("--llm-model") + 1] == "gpt-5.6"
 
 
 def test_drive_pipeline_skips_completed_stages_on_resume(tmp_path: Path) -> None:

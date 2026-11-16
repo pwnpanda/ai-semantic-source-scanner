@@ -736,7 +736,22 @@ def test_report_help_advertises_flags() -> None:
     assert "--bugbounty" in out
 
 
-def test_report_writes_for_verified_finding(tmp_path: Path, fixtures_dir: Path) -> None:
+def test_report_writes_for_verified_finding(
+    tmp_path: Path,
+    fixtures_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reporter_input_counts: list[int] = []
+
+    def fake_reporter(**kwargs: object) -> Path:
+        report_paths = kwargs["report_paths"]
+        assert isinstance(report_paths, list)
+        reporter_input_counts.append(len(report_paths))
+        target = Path(str(kwargs["report_dir"])) / "final-report.md"
+        target.write_text("# Security Assessment\n", encoding="utf-8")
+        return target
+
+    monkeypatch.setattr(cli_mod, "run_reporter_skill", fake_reporter)
     cache = tmp_path / "cache"
     runner.invoke(
         app,
@@ -768,10 +783,12 @@ def test_report_writes_for_verified_finding(tmp_path: Path, fixtures_dir: Path) 
         ],
     )
     assert result.exit_code == 0, result.stdout
-    files = list(out.glob("*.md"))
+    files = [path for path in out.glob("*.md") if path.name != "final-report.md"]
     assert files, result.stdout
     assert "critical" in files[0].name
     assert "sqli" in files[0].name
+    assert reporter_input_counts == [1]
+    assert (out / "final-report.md").is_file()
 
 
 def test_visualize_help_advertises_flags() -> None:
@@ -927,6 +944,7 @@ def test_scan_skip_hitl_runs_stages_in_order(tmp_path: Path, monkeypatch) -> Non
     assert calls[7][-2:] == ["gate-3", "--yes"]
     # The report stage emits HTML.
     assert "--html" in calls[8]
+    assert calls[8][calls[8].index("--llm-provider") + 1] == "claude"
 
 
 def test_scan_forwards_codex_provider_and_model_to_llm_heavy_prep(
@@ -965,6 +983,9 @@ def test_scan_forwards_codex_provider_and_model_to_llm_heavy_prep(
     assert "--engine" in prep_call and prep_call[prep_call.index("--engine") + 1] == "llm-heavy"
     assert prep_call[prep_call.index("--llm-provider") + 1] == "codex"
     assert prep_call[prep_call.index("--llm-model") + 1] == "gpt-5.6"
+    report_call = calls[-1]
+    assert report_call[report_call.index("--llm-provider") + 1] == "codex"
+    assert report_call[report_call.index("--llm-model") + 1] == "gpt-5.6"
 
 
 def test_scan_aborts_when_a_fatal_stage_fails(tmp_path: Path, monkeypatch) -> None:
