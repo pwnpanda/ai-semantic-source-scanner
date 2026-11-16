@@ -12,6 +12,8 @@ PROMPT="$SKILL_DIR/prompts/analyzer.md"
 SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:-$RUN_DIR/../../source}"
 AICS_LLM_CONTEXT="${AI_CODESCAN_LLM_CONTEXT:-}"
 export AICS_LLM_CONTEXT
+WORKER_INDEX="${AI_CODESCAN_WORKER_INDEX:-0}"
+WORKER_COUNT="${AI_CODESCAN_WORKER_COUNT:-1}"
 # shellcheck source=/dev/null
 source "$(dirname "$SKILL_DIR")/item_cache.sh"
 
@@ -102,6 +104,9 @@ while IFS= read -r line; do
     continue
   fi
   idx=$((idx + 1))
+  if (((idx - 1) % WORKER_COUNT != WORKER_INDEX)); then
+    continue
+  fi
   nom_id="${BASH_REMATCH[1]}"
   done="$RUN_DIR/.done-analyze/${nom_id}"
   finding_id="F-${nom_id#N-}"

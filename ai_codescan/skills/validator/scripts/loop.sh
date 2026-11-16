@@ -12,6 +12,8 @@ SOURCE_ROOT="${AI_CODESCAN_SOURCE_ROOT:-$RUN_DIR/../../source}"
 REPO_MD="$RUN_DIR/inputs/repo.md"
 AICS_LLM_CONTEXT="${AI_CODESCAN_LLM_CONTEXT:-}"
 export AICS_LLM_CONTEXT
+WORKER_INDEX="${AI_CODESCAN_WORKER_INDEX:-0}"
+WORKER_COUNT="${AI_CODESCAN_WORKER_COUNT:-1}"
 # shellcheck source=/dev/null
 source "$(dirname "$SKILL_DIR")/item_cache.sh"
 
@@ -139,6 +141,9 @@ for finding in "$FINDINGS_DIR"/*.md; do
     continue
   fi
   idx=$((idx + 1))
+  if (((idx - 1) % WORKER_COUNT != WORKER_INDEX)); then
+    continue
+  fi
   done_marker="$RUN_DIR/.done-validate/${finding_id}"
 
   nom_id="${finding_id#F-}"
