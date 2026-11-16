@@ -461,6 +461,7 @@ def _stub_engines(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(semgrep_eng, "is_available", lambda: True)
     monkeypatch.setattr(semgrep_eng, "run_semgrep", fake_run_semgrep)
     monkeypatch.setattr(joern_eng, "is_available", lambda: True)
+    monkeypatch.setattr(joern_eng, "has_source_files", lambda *_args: True)
     monkeypatch.setattr(joern_eng, "run_joern", fake_run_joern)
     return captured_languages
 
@@ -650,6 +651,38 @@ def test_run_hybrid_failure_rolls_back_and_leaves_stage_incomplete(
         assert conn.execute("SELECT COUNT(*) FROM flows").fetchone() == (0,)
     finally:
         conn.close()
+
+
+def test_run_hybrid_does_not_scan_sources_when_joern_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    conn.close()
+    snapshot = tmp_path / "snap"
+    project_root = snapshot / "app"
+    project_root.mkdir(parents=True)
+    repo_dir = tmp_path / "cache"
+    repo_dir.mkdir()
+
+    monkeypatch.setattr(semgrep_eng, "is_available", lambda: False)
+    monkeypatch.setattr(joern_eng, "is_available", lambda: False)
+
+    def fail_source_scan(*_args) -> bool:
+        raise AssertionError("source scan must not run without Joern")
+
+    monkeypatch.setattr(joern_eng, "has_source_files", fail_source_scan)
+
+    stats = run_hybrid(
+        [(project_root, "app", "javascript")],
+        snapshot_root=snapshot,
+        repo_dir=repo_dir,
+        db_path=db_path,
+    )
+
+    assert stats.joern_flows == 0
 
 
 def test_run_hybrid_rejects_mismatched_or_incomplete_prep_generation(

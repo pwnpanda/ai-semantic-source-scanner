@@ -30,6 +30,14 @@ def test_is_available_returns_bool() -> None:
     assert isinstance(result, bool)
 
 
+def test_source_detection_uses_the_selected_frontend_language(tmp_path: Path) -> None:
+    (tmp_path / "app.js").write_text("const value = 1;\n", encoding="utf-8")
+
+    assert joern_eng.has_source_files(tmp_path, "javascript")
+    assert not joern_eng.has_source_files(tmp_path, "php")
+    assert not joern_eng.has_source_files(tmp_path, "perl")
+
+
 # ---------------------------------------------------------------------------
 # Real Joern integration tests for each supported language fixture
 # ---------------------------------------------------------------------------

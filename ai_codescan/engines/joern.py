@@ -95,6 +95,16 @@ def supports_language(language: str) -> bool:
     return language in _JOERN_LANGUAGE_FLAG
 
 
+def has_source_files(project_root: Path, language: str) -> bool:
+    """Return whether a project contains source files for a Joern frontend."""
+    source_exts = _SOURCE_EXTS_BY_LANGUAGE.get(language)
+    if source_exts is None:
+        return False
+    return any(
+        path.is_file() and path.suffix.lower() in source_exts for path in project_root.rglob("*")
+    )
+
+
 def _build_cpg(
     project_root: Path,
     *,

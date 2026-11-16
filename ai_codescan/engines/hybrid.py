@@ -191,27 +191,36 @@ def _run_project_engines(
             log.info(
                 "joern has no frontend for %s; skipping CPG build for %s", language, project_id
             )
-        elif joern_eng.is_available():
-            try:
-                jsonl_path = joern_eng.run_joern(
-                    project_root,
-                    cache_dir=repo_dir,
-                    project_id=project_id,
-                    language=language,
-                )
-                joern_flows += _ingest_joern_jsonl(
-                    conn,
-                    jsonl_path=jsonl_path,
-                    project_id=project_id,
-                    snapshot_root=snapshot_root,
-                    project_root=project_root,
-                )
-            except joern_eng.JoernUnavailableError as exc:
-                log.warning("joern skipped for %s: %s", project_id, exc)
-                failures.append(f"joern/{project_id}: {exc}")
-            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-                log.warning("joern failed for %s: %s", project_id, exc)
-                failures.append(f"joern/{project_id}: {exc}")
+            continue
+        if not joern_eng.is_available():
+            continue
+        if not joern_eng.has_source_files(project_root, language):
+            log.info(
+                "joern found no %s source files; skipping CPG build for %s",
+                language,
+                project_id,
+            )
+            continue
+        try:
+            jsonl_path = joern_eng.run_joern(
+                project_root,
+                cache_dir=repo_dir,
+                project_id=project_id,
+                language=language,
+            )
+            joern_flows += _ingest_joern_jsonl(
+                conn,
+                jsonl_path=jsonl_path,
+                project_id=project_id,
+                snapshot_root=snapshot_root,
+                project_root=project_root,
+            )
+        except joern_eng.JoernUnavailableError as exc:
+            log.warning("joern skipped for %s: %s", project_id, exc)
+            failures.append(f"joern/{project_id}: {exc}")
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            log.warning("joern failed for %s: %s", project_id, exc)
+            failures.append(f"joern/{project_id}: {exc}")
     return semgrep_flows, joern_flows, failures, used_mutable_semgrep
 
 
