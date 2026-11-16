@@ -39,6 +39,8 @@ outstanding.
 | Ruby | ✅ | ✅ | ✅ | `RUBYSRC` (beta — thin CPGs) | tree-sitter-ruby | — | ✅ ActiveRecord / Mysql2 / PG / SQLite3 | Rails / Sinatra / Sidekiq | tiny-sinatra |
 | PHP | ✅ | ❌ no official support | ✅ | `PHP` (needs `php` on PATH) | tree-sitter-php | — | ✅ PDO / mysqli / wpdb | Laravel / Symfony / Slim / WordPress / WP-CLI | tiny-slim |
 | C# / .NET | ✅ | ✅ `--build-mode=none` (CLI 2.18.4+) | ✅ | `CSHARPSRC` | tree-sitter-c-sharp | — | ✅ ADO.NET / Dapper / EF Core | ASP.NET attribute routing / minimal APIs / Azure Functions | tiny-aspnet |
+| Swift / iOS | ✅ Xcode, SwiftPM, CocoaPods | ✅ macOS autobuild | ✅ | No frontend | tree-sitter-swift | No | No | No mobile entrypoints | tiny-ios |
+| Objective-C / iOS | via iOS project | No official support | No bundled rules | No frontend | tree-sitter-objc | No | No | No mobile entrypoints | tiny-ios |
 | Bash | ✅ | ❌ no support | ✅ | ❌ no Joern frontend | tree-sitter-bash | — | — | `getopts` / `eval` / `source` / `bash -c` | tiny-bash |
 | YAML / GitHub Actions | ✅ | ❌ no support | ✅ | ❌ no Joern frontend | @tree-sitter-grammars/tree-sitter-yaml | — | — | `on:` triggers, `${{ github.event.* }}` interpolations | tiny-actions |
 

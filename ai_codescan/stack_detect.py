@@ -1,13 +1,13 @@
 """Detect logical projects inside a snapshot.
 
 Enumerates projects and labels their language(s), package manager, and
-detected web frameworks. Supports JS/TS (Node), Python, Java (Maven/Gradle),
-Go (modules), and HTML-only fallback.
+detected web frameworks. Supports application, mobile, and configuration languages.
 
   * Node projects: any directory with package.json.
   * Python projects: pyproject.toml / setup.py / setup.cfg / requirements.txt.
   * Java projects: pom.xml (Maven) / build.gradle / build.gradle.kts (Gradle).
   * Go projects: go.mod (single module) or go.work (multi-module workspace).
+  * iOS projects: Xcode projects, Swift packages, or CocoaPods manifests.
 
 One directory can host several projects. A Rails app that bundles its assets
 with webpack has both a Gemfile and a package.json at its root; both are
@@ -49,6 +49,7 @@ class ProjectKind(StrEnum):
     PERL = "perl"  # has cpanfile, Makefile.PL, Build.PL, or *.pl/*.pm sources
     PHP = "php"  # has composer.json, wp-config.php, or Drupal markers
     CSHARP = "csharp"  # has *.csproj, *.sln, or Directory.Build.props
+    IOS = "ios"  # has an Xcode project, Swift package, or CocoaPods manifest
     BASH = "bash"  # bare shell scripts (no manifest); detected via .sh files
     YAML = "yaml"  # YAML config (GitHub Actions / k8s / docker-compose / Helm)
     HTML_ONLY = "html"  # no package.json, but contains HTML
@@ -112,6 +113,9 @@ _LANG_BY_EXT: tuple[tuple[str, str], ...] = (
     (".cs", "csharp"),
     (".cshtml", "csharp"),
     (".razor", "csharp"),
+    (".swift", "swift"),
+    (".m", "objective-c"),
+    (".mm", "objective-c"),
     (".sh", "bash"),
     (".bash", "bash"),
     (".yml", "yaml"),
@@ -1207,6 +1211,53 @@ def _detect_php_projects(root: Path) -> list[Project]:
     return projects
 
 
+def _ios_project_candidates(root: Path) -> list[Path]:
+    manifest_dirs = {
+        path.parent
+        for name in ("Package.swift", "Podfile")
+        for path in root.rglob(name)
+        if not any(part in _SKIP_DIRS for part in path.relative_to(root).parts)
+    }
+    xcode_dirs = {
+        path.parent.parent
+        for path in root.rglob("project.pbxproj")
+        if path.parent.suffix == ".xcodeproj"
+        and not any(part in _SKIP_DIRS for part in path.relative_to(root).parts)
+    }
+    return sorted(manifest_dirs | xcode_dirs, key=lambda path: len(path.parts))
+
+
+def _ios_project(root: Path, pkg_dir: Path) -> Project | None:
+    languages = _detect_languages(pkg_dir)
+    if not languages.intersection({"swift", "objective-c"}):
+        return None
+    xcode_projects = sorted(pkg_dir.glob("*.xcodeproj"))
+    name = xcode_projects[0].stem if xcode_projects else pkg_dir.name
+    if (pkg_dir / "Podfile").is_file():
+        package_manager = "cocoapods"
+    elif (pkg_dir / "Package.swift").is_file():
+        package_manager = "swiftpm"
+    else:
+        package_manager = "xcode"
+    return Project(
+        name=name,
+        kind=ProjectKind.IOS,
+        base_path=pkg_dir.relative_to(root),
+        languages=languages,
+        frameworks={"ios"},
+        package_manager=package_manager,
+    )
+
+
+def _detect_ios_projects(root: Path) -> list[Project]:
+    """Find native Apple projects from Xcode, SwiftPM, or CocoaPods manifests."""
+    return [
+        project
+        for pkg_dir in _ios_project_candidates(root)
+        if (project := _ios_project(root, pkg_dir)) is not None
+    ]
+
+
 def _is_descendant(rel: Path, ancestor: Path) -> bool:
     if ancestor == Path("."):
         return rel != Path(".")
@@ -1263,6 +1314,7 @@ def detect_projects(root: Path) -> list[Project]:
     projects.extend(_detect_perl_projects(root))
     projects.extend(_detect_php_projects(root))
     projects.extend(_detect_csharp_projects(root))
+    projects.extend(_detect_ios_projects(root))
     # YAML stays claim-aware: CI/k8s manifests beside a package.json describe the
     # same project's plumbing, not a second codebase.
     projects.extend(_detect_yaml_projects(root, claimed_dirs))
@@ -1293,6 +1345,9 @@ _BARE_SOURCE_KIND_BY_EXT: tuple[tuple[str, ProjectKind, str], ...] = (
     (".pl", ProjectKind.PERL, "perl"),
     (".php", ProjectKind.PHP, "php"),
     (".cs", ProjectKind.CSHARP, "csharp"),
+    (".swift", ProjectKind.IOS, "swift"),
+    (".m", ProjectKind.IOS, "objective-c"),
+    (".mm", ProjectKind.IOS, "objective-c"),
     (".sh", ProjectKind.BASH, "bash"),
 )
 
@@ -1312,20 +1367,21 @@ def _detect_bare_source_projects(root: Path) -> list[Project]:
       * ``frameworks`` = empty (no manifest to draw deps from)
       * ``package_manager`` = ``"unknown"``
     """
-    projects: list[Project] = []
+    languages_by_kind: dict[ProjectKind, set[str]] = {}
     for ext, kind, lang in _BARE_SOURCE_KIND_BY_EXT:
         if any(_iter_files(root, ext)):
-            projects.append(
-                Project(
-                    name=root.name,
-                    kind=kind,
-                    base_path=Path("."),
-                    languages={lang},
-                    has_tsconfig=False,
-                    is_workspace_member=False,
-                    workspace_root=None,
-                    frameworks=set(),
-                    package_manager="unknown",
-                )
-            )
-    return projects
+            languages_by_kind.setdefault(kind, set()).add(lang)
+    return [
+        Project(
+            name=root.name,
+            kind=kind,
+            base_path=Path("."),
+            languages=languages,
+            has_tsconfig=False,
+            is_workspace_member=False,
+            workspace_root=None,
+            frameworks=set(),
+            package_manager="unknown",
+        )
+        for kind, languages in languages_by_kind.items()
+    ]

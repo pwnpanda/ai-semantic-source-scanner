@@ -67,6 +67,8 @@ class AstJob:
         "php",
         "csharp",
         "kotlin",
+        "swift",
+        "objective-c",
         "bash",
         "yaml",
         "perl",

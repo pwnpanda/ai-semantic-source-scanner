@@ -48,6 +48,14 @@ async function dispatch(job) {
       const m = await import("./extract_kotlin.mjs");
       return m.run(job);
     }
+    case "swift": {
+      const m = await import("./extract_swift.mjs");
+      return m.run(job);
+    }
+    case "objective-c": {
+      const m = await import("./extract_objective_c.mjs");
+      return m.run(job);
+    }
     case "bash": {
       const m = await import("./extract_bash.mjs");
       return m.run(job);

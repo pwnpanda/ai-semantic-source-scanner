@@ -83,6 +83,50 @@ def test_tag_filtered_suite_uses_csharp_pack(tmp_path: Path) -> None:
     assert queries_step["from"] == "codeql/csharp-queries"
 
 
+def test_tag_filtered_suite_uses_swift_pack(tmp_path: Path) -> None:
+    suite = tmp_path / "filter.qls"
+    _write_tag_filtered_suite(suite, ["security/cwe/cwe-089"], language="swift")
+    instructions = yaml.safe_load(suite.read_text(encoding="utf-8"))
+    queries_step = next(step for step in instructions if "queries" in step)
+    assert queries_step["from"] == "codeql/swift-queries"
+
+
+def test_swift_database_uses_autobuild(tmp_path: Path) -> None:
+    with (
+        patch("ai_codescan.engines.codeql.shutil.which", return_value="/usr/bin/codeql"),
+        patch("ai_codescan.engines.codeql.subprocess.run") as run,
+    ):
+        build_database(
+            tmp_path,
+            cache_dir=tmp_path / "cache",
+            project_id="swift-app",
+            language="swift",
+        )
+
+    command = run.call_args.args[0]
+    assert "--language=swift" in command
+    assert "--build-mode=autobuild" in command
+
+
+def test_database_failure_includes_stderr(tmp_path: Path) -> None:
+    error = subprocess.CalledProcessError(
+        32,
+        ["codeql"],
+        stderr=b"xcodebuild could not resolve the workspace",
+    )
+    with (
+        patch("ai_codescan.engines.codeql.shutil.which", return_value="/usr/bin/codeql"),
+        patch("ai_codescan.engines.codeql.subprocess.run", side_effect=error),
+        pytest.raises(RuntimeError, match="xcodebuild could not resolve the workspace"),
+    ):
+        build_database(
+            tmp_path,
+            cache_dir=tmp_path / "cache",
+            project_id="swift-app",
+            language="swift",
+        )
+
+
 def test_tag_filtered_suite_emits_external_cwe_tags(tmp_path: Path) -> None:
     """Queries in the official packs are tagged ``external/cwe/cwe-NNN``.
 

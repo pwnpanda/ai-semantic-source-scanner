@@ -33,6 +33,7 @@ _QUERY_SUITES: dict[str, str] = {
     "go": "codeql/go-queries:codeql-suites/go-security-extended.qls",
     "ruby": "codeql/ruby-queries:codeql-suites/ruby-security-extended.qls",
     "csharp": "codeql/csharp-queries:codeql-suites/csharp-security-extended.qls",
+    "swift": "codeql/swift-queries:codeql-suites/swift-security-extended.qls",
 }
 """Per-language default suite — security-extended is the broadest stable set.
 
@@ -48,19 +49,21 @@ _QUERY_PACKS: dict[str, str] = {
     "go": "codeql/go-queries",
     "ruby": "codeql/ruby-queries",
     "csharp": "codeql/csharp-queries",
+    "swift": "codeql/swift-queries",
 }
 
 _CODEQL_LANGUAGE_FLAG: dict[str, str] = {
     # Value passed to ``codeql database create --language=...``.
     # JS and TS share an extractor; Python is its own language; Java's
     # extractor analyses Kotlin too when present; Go is a single token;
-    # Ruby is bare-source (no toolchain on host required).
+    # Ruby is bare-source. Swift uses the macOS extractor.
     "javascript": "javascript-typescript",
     "python": "python",
     "java": "java-kotlin",
     "go": "go",
     "ruby": "ruby",
     "csharp": "csharp",
+    "swift": "swift",
 }
 
 # Languages whose extractor needs ``--build-mode=none`` to extract source
@@ -69,6 +72,7 @@ _CODEQL_LANGUAGE_FLAG: dict[str, str] = {
 # C#: GA in CodeQL CLI 2.18.4 — same shape, slightly less precision than
 #     ``autobuild`` on Razor / source-generated code.
 _CODEQL_BUILD_MODE_LANGS: frozenset[str] = frozenset({"java", "csharp"})
+_CODEQL_AUTOBUILD_LANGS: frozenset[str] = frozenset({"swift"})
 
 QUERY_SUITE = _QUERY_SUITES["javascript"]
 """Default JavaScript suite — kept as a public alias for back-compat."""
@@ -77,6 +81,15 @@ QUERY_SUITE = _QUERY_SUITES["javascript"]
 def _ensure_codeql_on_path() -> None:
     if shutil.which("codeql") is None:
         raise RuntimeError("codeql CLI not on PATH. Install from github.com/github/codeql-cli.")
+
+
+def _run_codeql_command(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, env=env)  # noqa: S603
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+        detail = stderr.strip() or "no stderr"
+        raise RuntimeError(f"codeql command failed with exit {exc.returncode}: {detail}") from exc
 
 
 def ensure_query_pack(language: str) -> None:
@@ -146,8 +159,7 @@ def build_database(
 ) -> Path:
     """Build a CodeQL DB for ``project_root`` rooted at ``cache_dir``.
 
-    ``language`` selects the extractor; one of ``javascript`` (covers JS+TS)
-    or ``python``. Returns the path to the database directory.
+    ``language`` selects a supported CodeQL extractor. Returns the database path.
     """
     _ensure_codeql_on_path()
     if language not in _CODEQL_LANGUAGE_FLAG:
@@ -175,14 +187,11 @@ def build_database(
         # annotation-processor output, no private-registry deps), but it
         # avoids requiring Maven/Gradle on the scanner host.
         cmd.append("--build-mode=none")
+    elif language in _CODEQL_AUTOBUILD_LANGS:
+        cmd.append("--build-mode=autobuild")
     # S603/S607: argv list with literal "codeql" on PATH; all arguments are
     # constructed locally (no shell) and the inputs are validated paths.
-    subprocess.run(  # noqa: S603
-        cmd,  # noqa: S607
-        check=True,
-        capture_output=True,
-        env=env,
-    )
+    _run_codeql_command(cmd, env=env)  # noqa: S607
     return db_path
 
 
@@ -288,5 +297,5 @@ def run_queries(  # noqa: PLR0913 - keyword-only knobs are clearer than packing 
 
     # S603/S607: argv list with literal "codeql" on PATH; arguments are
     # constructed locally (no shell), with validated paths and tag strings.
-    subprocess.run(cmd, check=True, capture_output=True)  # noqa: S603
+    _run_codeql_command(cmd)  # noqa: S607
     return CodeqlResult(sarif_path=sarif_path, db_path=db_path, project_id=project_id)

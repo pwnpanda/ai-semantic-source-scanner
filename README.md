@@ -1,6 +1,6 @@
 # ai-semantic-source-scanner (`ai-codescan`)
 
-AI-driven SAST pipeline for JavaScript / TypeScript / Python / Java / Kotlin / Go / Ruby / PHP / C# / Perl / Bash / YAML / HTML codebases. Combines deterministic static analysis (AST, SCIP, CodeQL, Semgrep, optional Joern) with LLM agents that nominate bug candidates, write per-finding reports, and validate exploits in a hardened Docker sandbox.
+AI-driven SAST pipeline for JavaScript / TypeScript / Python / Java / Kotlin / Go / Ruby / PHP / C# / Swift / Objective-C / Perl / Bash / YAML / HTML codebases. Combines deterministic static analysis (AST, SCIP, CodeQL, Semgrep, optional Joern) with LLM agents that nominate bug candidates, write per-finding reports, and validate exploits in a hardened Docker sandbox.
 
 Five-stage pipeline with human-in-the-loop gates between every stage. Swappable LLM provider (`claude`, `gemini`, or `codex`).
 

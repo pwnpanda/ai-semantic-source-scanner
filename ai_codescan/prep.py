@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -96,6 +97,8 @@ _CSHARP_SKIP_PARTS = IGNORED_SOURCE_DIRS | {
     ".vs",
 }
 
+_IOS_SKIP_PARTS = IGNORED_SOURCE_DIRS | {"DerivedData", "Pods", "build"}
+
 _CONFIG_SKIP_PARTS = IGNORED_SOURCE_DIRS
 
 _SOURCE_INDEX_TABLES = (
@@ -172,10 +175,12 @@ def _files_for_project(
     list[Path],
     list[Path],
     list[Path],
+    list[Path],
+    list[Path],
 ]:
     """Return per-language file lists under ``project.base_path``.
 
-    Order: ``(ts, html, python, java, go, ruby, php, csharp, kotlin, bash, yaml)``.
+    Order follows the language-specific assignments below.
     Kotlin shares JVM tooling with Java, so a JAVA-kind project that also
     contains ``.kt`` / ``.kts`` files emits both a ``java`` and a
     ``kotlin`` AST job. Bash scripts emit their own AST job whenever the
@@ -202,10 +207,37 @@ def _files_for_project(
         if not _has_skipped_subpath(path, base=base, skipped=_PHP_SKIP_SUBPATHS)
     ]
     csharp = _source_files(base, suffixes={".cs"}, skipped=_CSHARP_SKIP_PARTS)
+    swift = (
+        _source_files(base, suffixes={".swift"}, skipped=_IOS_SKIP_PARTS)
+        if project.kind is ProjectKind.IOS
+        else []
+    )
+    objective_c = (
+        _source_files(base, suffixes={".m", ".mm", ".pch"}, skipped=_IOS_SKIP_PARTS)
+        if project.kind is ProjectKind.IOS
+        else []
+    )
+    if objective_c:
+        objective_c.extend(_source_files(base, suffixes={".h"}, skipped=_IOS_SKIP_PARTS))
     bash = _source_files(base, suffixes={".sh", ".bash"}, skipped=IGNORED_SOURCE_DIRS)
     perl = _source_files(base, suffixes={".pl", ".pm", ".psgi", ".t"}, skipped=_PERL_SKIP_PARTS)
     yaml_files = _source_files(base, suffixes={".yml", ".yaml"}, skipped=_CONFIG_SKIP_PARTS)
-    return ts, html, python, java, go, ruby, php, csharp, kotlin, bash, perl, yaml_files
+    return (
+        ts,
+        html,
+        python,
+        java,
+        go,
+        ruby,
+        php,
+        csharp,
+        kotlin,
+        swift,
+        objective_c,
+        bash,
+        perl,
+        yaml_files,
+    )
 
 
 def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]:
@@ -220,6 +252,8 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
         php_files,
         csharp_files,
         kotlin_files,
+        swift_files,
+        objective_c_files,
         bash_files,
         perl_files,
         yaml_files,
@@ -235,43 +269,26 @@ def _ast_jobs_for_project(snapshot_root: Path, project: Project) -> list[AstJob]
                 tsconfig=tsconfig if tsconfig.is_file() else None,
             )
         )
-    if html_files:
-        jobs.append(AstJob(kind="html", project_root=base, files=html_files))
-    if py_files and project.kind is ProjectKind.PYTHON:
-        jobs.append(AstJob(kind="python", project_root=base, files=py_files))
-    if java_files and project.kind is ProjectKind.JAVA:
-        jobs.append(AstJob(kind="java", project_root=base, files=java_files))
-    if go_files and project.kind is ProjectKind.GO:
-        jobs.append(AstJob(kind="go", project_root=base, files=go_files))
-    if ruby_files and project.kind is ProjectKind.RUBY:
-        jobs.append(AstJob(kind="ruby", project_root=base, files=ruby_files))
-    if php_files and project.kind is ProjectKind.PHP:
-        jobs.append(AstJob(kind="php", project_root=base, files=php_files))
-    if csharp_files and project.kind is ProjectKind.CSHARP:
-        jobs.append(AstJob(kind="csharp", project_root=base, files=csharp_files))
-    # Kotlin files inside a JVM project share the project's manifest and
-    # CodeQL extractor; emit a ``kotlin`` AST job so .kt / .kts symbols
-    # land in the index alongside any .java siblings.
-    if kotlin_files and project.kind is ProjectKind.JAVA:
-        jobs.append(AstJob(kind="kotlin", project_root=base, files=kotlin_files))
-    # Bash scripts: emit a ``bash`` AST job for any project that contains
-    # them — glue scripts in polyglot repos (e.g. CI helpers in a Node
-    # repo) also benefit from xrefs and symbol indexing. Bare-source
-    # detection covers BASH-kind projects on its own.
-    if bash_files:
-        jobs.append(AstJob(kind="bash", project_root=base, files=bash_files))
-    # Perl scripts: like Bash, emit a ``perl`` AST job for any project that
-    # carries them. Legacy CGI helpers and maintenance scripts frequently sit
-    # beside a primary application in another language, and they are often the
-    # least-reviewed part of the attack surface.
-    if perl_files:
-        jobs.append(AstJob(kind="perl", project_root=base, files=perl_files))
-    # Configuration remains part of the attack surface in polyglot repos.
-    # In particular, application.yml and deployment manifests can contain
-    # credentials and insecure framework settings that are invisible if YAML
-    # is indexed only when it is the repository's primary project kind.
-    if yaml_files:
-        jobs.append(AstJob(kind="yaml", project_root=base, files=yaml_files))
+    inputs = (
+        ("html", html_files, True),
+        ("python", py_files, project.kind is ProjectKind.PYTHON),
+        ("java", java_files, project.kind is ProjectKind.JAVA),
+        ("go", go_files, project.kind is ProjectKind.GO),
+        ("ruby", ruby_files, project.kind is ProjectKind.RUBY),
+        ("php", php_files, project.kind is ProjectKind.PHP),
+        ("csharp", csharp_files, project.kind is ProjectKind.CSHARP),
+        ("kotlin", kotlin_files, project.kind is ProjectKind.JAVA),
+        ("swift", swift_files, project.kind is ProjectKind.IOS),
+        ("objective-c", objective_c_files, project.kind is ProjectKind.IOS),
+        ("bash", bash_files, True),
+        ("perl", perl_files, True),
+        ("yaml", yaml_files, True),
+    )
+    jobs.extend(
+        AstJob(kind=kind, project_root=base, files=files)
+        for kind, files, supported in inputs
+        if files and supported
+    )
     return jobs
 
 
@@ -499,6 +516,22 @@ def _codeql_language_for_project(project: Project) -> str | None:  # noqa: PLR09
         return "ruby"
     if project.kind is ProjectKind.CSHARP and "csharp" in project.languages:
         return "csharp"
+    if project.kind is ProjectKind.IOS and "swift" in project.languages:
+        return "swift"
+    return None
+
+
+def _codeql_skip_reason(project: Project, language: str | None) -> str | None:
+    if (
+        project.kind is ProjectKind.JAVA
+        and "kotlin" in project.languages
+        and "java" not in project.languages
+    ):
+        return "--build-mode=none does not extract Kotlin-only projects"
+    if language is None and project.kind is ProjectKind.IOS and "objective-c" in project.languages:
+        return "Objective-C is not supported"
+    if language == "swift" and sys.platform != "darwin":
+        return "Swift extraction requires macOS"
     return None
 
 
@@ -603,17 +636,10 @@ def _run_codeql_for_projects(  # noqa: PLR0913 - five positional data inputs; po
     )
     had_failures = False
     for project in projects:
-        if (
-            project.kind is ProjectKind.JAVA
-            and "kotlin" in project.languages
-            and "java" not in project.languages
-        ):
-            log.info(
-                "CodeQL skipped for %s: --build-mode=none does not extract Kotlin-only projects",
-                project.name,
-            )
-            continue
         language = _codeql_language_for_project(project)
+        if reason := _codeql_skip_reason(project, language):
+            log.info("CodeQL skipped for %s: %s", project.name, reason)
+            continue
         if language is None:
             continue
         try:
