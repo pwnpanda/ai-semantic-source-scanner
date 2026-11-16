@@ -130,7 +130,7 @@ if not hm:
 # distinct candidates into one and silently drop the rest. The id is ours to
 # assign: renumber to the next free slot at ingest time.
 _USED_ID_RE = re.compile(r"^- \[[ xX]\]\s*N-(\d+)", re.MULTILINE)
-_BLOCK_ID_RE = re.compile(r"^- \[[ xX]\]\s*N-(?:\d+|NNN)\b", re.MULTILINE)
+_BLOCK_ID_RE = re.compile(r"^- \[[ xX]\]\s*\S+(?=\s*\|)", re.MULTILINE)
 used = [int(n) for n in _USED_ID_RE.findall(contents)]
 next_id = max(used, default=0) + 1
 body, renumbered = _BLOCK_ID_RE.subn(

@@ -260,9 +260,18 @@ def _reset_nomination_attempt_if_needed(
     previous = ""
     if context_path.is_file():
         previous = context_path.read_text(encoding="utf-8", errors="replace").strip()
-    if reusable and previous == context_fingerprint:
-        return
     done_dir = state.run_dir / ".done"
+    queue_path = state.run_dir / "queue.jsonl"
+    queue_lines = queue_path.read_text(encoding="utf-8").splitlines()
+    queue_size = sum(1 for line in queue_lines if line)
+    done_size = (
+        sum(1 for marker in done_dir.iterdir() if marker.is_file() and marker.suffix != ".stdout")
+        if done_dir.is_dir()
+        else 0
+    )
+    partial_attempt = 0 < done_size < queue_size
+    if previous == context_fingerprint and (reusable or partial_attempt):
+        return
     if done_dir.is_dir():
         for marker in done_dir.iterdir():
             if marker.is_file() or marker.is_symlink():

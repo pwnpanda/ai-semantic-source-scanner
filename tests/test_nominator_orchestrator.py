@@ -8,7 +8,12 @@ import pytest
 
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.llm import LLMConfig
-from ai_codescan.nominator import build_queue, run_nominator, write_llm_cmd_script
+from ai_codescan.nominator import (
+    _reset_nomination_attempt_if_needed,
+    build_queue,
+    run_nominator,
+    write_llm_cmd_script,
+)
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.taxonomy.loader import resolve_classes
 
@@ -74,6 +79,38 @@ def test_codex_wrapper_streams_prompt_through_stdin(tmp_path: Path) -> None:
     content = script.read_text(encoding="utf-8")
     assert 'PROMPT="$(cat -)"' not in content
     assert "--model gpt-daybreak-blue-latest -" in content
+
+
+def test_partial_implicit_model_attempt_is_reused(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    state = load_or_create(
+        repo_dir,
+        engine="hybrid",
+        temperature=0.0,
+        target_bug_classes=[],
+    )
+    context = "same-context"
+    (state.run_dir / "queue.jsonl").write_text(
+        '{"id": "A-one"}\n{"id": "A-two"}\n',
+        encoding="utf-8",
+    )
+    (state.run_dir / ".nominate-context").write_text(context, encoding="utf-8")
+    done_dir = state.run_dir / ".done"
+    done_dir.mkdir()
+    (done_dir / "A-one").touch()
+    nominations = state.run_dir / "nominations.md"
+    nominations.write_text("# Nominations\n\npartial output\n", encoding="utf-8")
+
+    _reset_nomination_attempt_if_needed(
+        state,
+        nominations_path=nominations,
+        context_fingerprint=context,
+        reusable=False,
+    )
+
+    assert (done_dir / "A-one").is_file()
+    assert "partial output" in nominations.read_text(encoding="utf-8")
 
 
 def test_build_queue_hashes_unsafe_scip_symbol_ids(tmp_path: Path) -> None:

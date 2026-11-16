@@ -129,3 +129,26 @@ def test_placeholder_nomination_id_is_assigned(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     body = (run_dir / "nominations.md").read_text(encoding="utf-8")
     assert "- [ ] N-001 | proj | authz | Auth.kt:7" in body
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_candidate_nomination_id_is_assigned(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "inputs").mkdir(parents=True)
+    (run_dir / "queue.jsonl").write_text('{"id": "A-only"}\n', encoding="utf-8")
+    stub = tmp_path / "stub_llm.sh"
+    _write_stub_llm(
+        stub,
+        block=(
+            "<<<AI_CODESCAN_NOMINATION:STREAM=A>>>\n"
+            "- [ ] A-joern-44110123fa077190 | proj | logging | src/a.cs:1 | rec: med | y/n:\n"
+            "    Summary: request data can reach a warning log\n"
+            "<<<AI_CODESCAN_NOMINATION:END>>>"
+        ),
+    )
+
+    result = _run_loop(run_dir, stub)
+
+    assert result.returncode == 0, result.stderr
+    body = (run_dir / "nominations.md").read_text(encoding="utf-8")
+    assert "- [ ] N-001 | proj | logging | src/a.cs:1" in body
