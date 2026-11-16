@@ -34,7 +34,7 @@ outstanding.
 | JavaScript / TypeScript | ✅ | ✅ | ✅ | `javascript` | TS grammar | scip-typescript | ✅ | Express / Fastify / Nest / Next / Remix | tiny-vuln, tiny-express, tiny-react, monorepo-pnpm |
 | Python | ✅ | ✅ | ✅ | `pythonsrc` | tree-sitter-python | scip-python (opt-in) | ✅ | Flask / FastAPI / Django / Starlette / Celery | tiny-flask, tiny-fastapi |
 | Java | ✅ | ✅ `--build-mode=none` | ✅ | `JAVASRC` | tree-sitter-java | scip-java | ✅ | Spring / JAX-RS / Kafka / Scheduled | tiny-spring |
-| Kotlin (JVM-shared) | via `JAVA` kind | ✅ `java-kotlin` extractor | ✅ | `KOTLIN` (file-mix heuristic) | tree-sitter-kotlin | scip-java (semanticdb) | ✅ Exposed | Ktor + Spring-on-Kotlin | tiny-ktor |
+| Kotlin (JVM-shared) | via `JAVA` kind | Java projects only. Kotlin-only projects are skipped. | ✅ | `KOTLIN` (file-mix heuristic) | tree-sitter-kotlin | scip-java for Kotlin 2.2. Android is skipped. | ✅ Exposed | Ktor + Spring-on-Kotlin | tiny-ktor |
 | Go | ✅ | ✅ (autobuild) | ✅ | `GOLANG` | tree-sitter-go | scip-go | ✅ database/sql / sqlx / go-redis | net/http, Gin, Echo, Chi, Fiber | tiny-gin |
 | Ruby | ✅ | ✅ | ✅ | `RUBYSRC` (beta — thin CPGs) | tree-sitter-ruby | — | ✅ ActiveRecord / Mysql2 / PG / SQLite3 | Rails / Sinatra / Sidekiq | tiny-sinatra |
 | PHP | ✅ | ❌ no official support | ✅ | `PHP` (needs `php` on PATH) | tree-sitter-php | — | ✅ PDO / mysqli / wpdb | Laravel / Symfony / Slim / WordPress / WP-CLI | tiny-slim |

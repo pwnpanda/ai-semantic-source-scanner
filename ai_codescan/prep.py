@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -45,6 +46,32 @@ log = logging.getLogger(__name__)
 
 _SCIP_SINGLE_LINE_RANGE_LENGTH = 3
 _SCIP_MULTI_LINE_RANGE_LENGTH = 4
+_SCIP_JAVA_KOTLIN_VERSION = (2, 2)
+
+_ANDROID_GRADLE_PLUGIN_IDS = ("com.android.application", "com.android.library")
+_GRADLE_CONFIGURATION_NAMES = (
+    "build.gradle",
+    "build.gradle.kts",
+    "gradle.properties",
+    "libs.versions.toml",
+    "settings.gradle",
+    "settings.gradle.kts",
+)
+_KOTLIN_VERSION_PATTERNS = (
+    re.compile(
+        r"(?:kotlin\([\"'][^\"']+[\"']\)|"
+        r"id\([\"']org\.jetbrains\.kotlin[^\"']*[\"']\))"
+        r"\s*version\s*[\"'](?P<major>\d+)\.(?P<minor>\d+)"
+    ),
+    re.compile(
+        r"(?im)^\s*(?:ext\.)?kotlin(?:Version|_version|\.version)?\b[^\n]*?"
+        r"[\"']?(?P<major>\d+)\.(?P<minor>\d+)"
+    ),
+    re.compile(
+        r"org\.jetbrains\.kotlin:kotlin-gradle-plugin:"
+        r"(?P<major>\d+)\.(?P<minor>\d+)"
+    ),
+)
 
 _PYTHON_SKIP_PARTS = IGNORED_SOURCE_DIRS | {"env"}
 
@@ -284,6 +311,56 @@ def _scip_language_for_project(project: Project) -> str | None:
     return None
 
 
+def _gradle_configuration_files(project_root: Path) -> list[Path]:
+    files = {
+        path
+        for name in _GRADLE_CONFIGURATION_NAMES
+        for path in project_root.rglob(name)
+        if path.is_file()
+    }
+    return sorted(files)
+
+
+def _read_gradle_configuration(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        log.debug("cannot read Gradle configuration %s: %s", path, exc)
+        return ""
+
+
+def _is_android_gradle_project(project_root: Path) -> bool:
+    for path in _gradle_configuration_files(project_root):
+        if path.name not in {"build.gradle", "build.gradle.kts"}:
+            continue
+        configuration = _read_gradle_configuration(path)
+        if any(plugin_id in configuration for plugin_id in _ANDROID_GRADLE_PLUGIN_IDS):
+            return True
+    return False
+
+
+def _detected_kotlin_version(project_root: Path) -> tuple[int, int] | None:
+    versions: set[tuple[int, int]] = set()
+    for path in _gradle_configuration_files(project_root):
+        configuration = _read_gradle_configuration(path)
+        for pattern in _KOTLIN_VERSION_PATTERNS:
+            versions.update(
+                (int(match.group("major")), int(match.group("minor")))
+                for match in pattern.finditer(configuration)
+            )
+    return min(versions) if versions else None
+
+
+def _scip_java_skip_reason(project_root: Path) -> str | None:
+    if _is_android_gradle_project(project_root):
+        return "Android Gradle application and library modules are not supported"
+    kotlin_version = _detected_kotlin_version(project_root)
+    if kotlin_version is None or kotlin_version == _SCIP_JAVA_KOTLIN_VERSION:
+        return None
+    version = ".".join(str(part) for part in kotlin_version)
+    return f"Kotlin {version} does not match the Kotlin 2.2 compiler used by scip-java"
+
+
 def _scip_occurrence_line_range(
     occurrence: scip_pb2.Occurrence,
 ) -> tuple[int, int] | None:
@@ -368,12 +445,16 @@ def _build_scip_lookup_with_dependencies(
         scip_language = _scip_language_for_project(project)
         if scip_language is None:
             continue
+        project_root = snapshot_root / project.base_path
+        if scip_language == "java" and (reason := _scip_java_skip_reason(project_root)):
+            log.warning("scip-java skipped for %s: %s", project.name, reason)
+            continue
         if not _scip_tool_is_available(scip_language):
             log.warning("scip index unavailable for %s (%s)", project.name, scip_language)
             continue
         try:
             result = build_scip_index(
-                snapshot_root / project.base_path,
+                project_root,
                 cache_dir=cache_dir,
                 project_id=project_artifact_id(project.name, project.base_path),
                 language=scip_language,
@@ -410,10 +491,7 @@ def _codeql_language_for_project(project: Project) -> str | None:  # noqa: PLR09
         return "javascript"
     if project.kind is ProjectKind.PYTHON and "python" in project.languages:
         return "python"
-    if project.kind is ProjectKind.JAVA and project.languages.intersection({"java", "kotlin"}):
-        # CodeQL's ``java-kotlin`` extractor analyses both .java and .kt
-        # source, so a Kotlin-only Gradle project (build.gradle.kts +
-        # ``src/main/kotlin/...``) still wants the Java pipeline.
+    if project.kind is ProjectKind.JAVA and "java" in project.languages:
         return "java"
     if project.kind is ProjectKind.GO and "go" in project.languages:
         return "go"
@@ -525,6 +603,16 @@ def _run_codeql_for_projects(  # noqa: PLR0913 - five positional data inputs; po
     )
     had_failures = False
     for project in projects:
+        if (
+            project.kind is ProjectKind.JAVA
+            and "kotlin" in project.languages
+            and "java" not in project.languages
+        ):
+            log.info(
+                "CodeQL skipped for %s: --build-mode=none does not extract Kotlin-only projects",
+                project.name,
+            )
+            continue
         language = _codeql_language_for_project(project)
         if language is None:
             continue
