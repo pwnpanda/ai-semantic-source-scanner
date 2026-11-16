@@ -7,7 +7,8 @@ import duckdb
 import pytest
 
 from ai_codescan.index.duckdb_schema import apply_schema
-from ai_codescan.nominator import build_queue, run_nominator
+from ai_codescan.llm import LLMConfig
+from ai_codescan.nominator import build_queue, run_nominator, write_llm_cmd_script
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.taxonomy.loader import resolve_classes
 
@@ -62,6 +63,17 @@ def test_build_queue_serialises_as_jsonl(tmp_path: Path) -> None:
     out.write_text("\n".join(json.dumps(q) for q in queue))
     parsed = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
     assert parsed == queue
+
+
+def test_codex_wrapper_streams_prompt_through_stdin(tmp_path: Path) -> None:
+    script = write_llm_cmd_script(
+        tmp_path / "codex-wrapper.sh",
+        LLMConfig(provider="codex", model="gpt-daybreak-blue-latest"),
+    )
+
+    content = script.read_text(encoding="utf-8")
+    assert 'PROMPT="$(cat -)"' not in content
+    assert "--model gpt-daybreak-blue-latest -" in content
 
 
 def test_build_queue_hashes_unsafe_scip_symbol_ids(tmp_path: Path) -> None:
