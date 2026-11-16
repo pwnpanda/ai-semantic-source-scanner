@@ -25,7 +25,12 @@ from ai_codescan.entrypoints.ingest import ingest_entrypoints
 from ai_codescan.entrypoints.render import render_entrypoints_md
 from ai_codescan.index.duckdb_ingest import ingest as duckdb_ingest
 from ai_codescan.index.duckdb_schema import apply_schema
-from ai_codescan.index.scip import build_scip_index
+from ai_codescan.index.scip import (
+    ScipDependenciesUnavailableError,
+    ScipWorkspace,
+    build_scip_index,
+    isolated_node_dependency_workspace,
+)
 from ai_codescan.ingest.sarif import ingest_sarif
 from ai_codescan.manifest import IGNORED_SOURCE_DIRS
 from ai_codescan.repo_lock import repo_scan_lock
@@ -317,6 +322,45 @@ def _build_scip_lookup(
     snapshot_root: Path,
     projects: list[Project],
     cache_dir: Path,
+    dependency_root: Path,
+) -> tuple[dict, bool]:
+    needs_node_dependencies = any(
+        _scip_language_for_project(project) in {"javascript", "java"} for project in projects
+    )
+    if not needs_node_dependencies:
+        return _build_scip_lookup_with_dependencies(
+            snapshot_root,
+            projects,
+            cache_dir,
+            dependency_root,
+        )
+    try:
+        with isolated_node_dependency_workspace(
+            dependency_root,
+            cache_dir=cache_dir,
+        ) as installed_dependency_root:
+            return _build_scip_lookup_with_dependencies(
+                snapshot_root,
+                projects,
+                cache_dir,
+                installed_dependency_root,
+            )
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        log.warning("isolated Node dependency install failed: %s", exc)
+        lookup, _had_failures = _build_scip_lookup_with_dependencies(
+            snapshot_root,
+            projects,
+            cache_dir,
+            dependency_root,
+        )
+        return lookup, True
+
+
+def _build_scip_lookup_with_dependencies(
+    snapshot_root: Path,
+    projects: list[Project],
+    cache_dir: Path,
+    dependency_root: Path,
 ) -> tuple[dict, bool]:
     lookup: dict = {}
     had_failures = False
@@ -333,7 +377,16 @@ def _build_scip_lookup(
                 cache_dir=cache_dir,
                 project_id=project_artifact_id(project.name, project.base_path),
                 language=scip_language,
+                workspace=ScipWorkspace(
+                    snapshot_root=snapshot_root,
+                    project_base_path=project.base_path,
+                    dependency_root=dependency_root,
+                ),
             )
+        except ScipDependenciesUnavailableError as exc:
+            log.warning("scip index deferred for %s: %s", project.name, exc)
+            had_failures = True
+            continue
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             log.warning("scip index failed for %s: %s", project.name, exc)
             had_failures = True
@@ -441,7 +494,7 @@ def _run_codeql_project(
         context.conn,
         sarif_path=result.sarif_path,
         project_id=project_id,
-        snapshot_root=context.snapshot_root,
+        snapshot_root=context.snapshot_root / project.base_path,
         engine="codeql",
     )
 
@@ -606,9 +659,15 @@ def _rebuild_source_index(  # noqa: PLR0913 - one positional arg; scan context i
     repo_dir: Path,
     bug_classes: list[BugClass] | None,
     engine: str,
+    dependency_root: Path,
 ) -> bool:
     _clear_source_index(conn)
-    scip_lookup, had_gaps = _build_scip_lookup(snapshot_root, projects, repo_dir)
+    scip_lookup, had_gaps = _build_scip_lookup(
+        snapshot_root,
+        projects,
+        repo_dir,
+        dependency_root,
+    )
     _index_projects(
         conn,
         snapshot_root=snapshot_root,
@@ -645,6 +704,7 @@ def _prepare_index(  # noqa: PLR0913 - transaction inputs are keyword-only orche
     bug_classes: list[BugClass] | None,
     artifact_root: Path,
     quiet: bool,
+    dependency_root: Path,
 ) -> bool:
     conn = duckdb.connect(str(db_path))
     try:
@@ -681,6 +741,7 @@ def _prepare_index(  # noqa: PLR0913 - transaction inputs are keyword-only orche
                 repo_dir=repo_dir,
                 bug_classes=bug_classes,
                 engine=engine,
+                dependency_root=dependency_root,
             )
             _emit_index_artifacts(
                 conn,
@@ -756,6 +817,7 @@ def run_prep(  # noqa: PLR0913 - keyword-only orchestration knobs
                 bug_classes=bug_classes,
                 artifact_root=artifact_root,
                 quiet=quiet,
+                dependency_root=target.resolve(),
             )
             _promote_index_artifacts(artifact_root, repo_dir)
         finally:

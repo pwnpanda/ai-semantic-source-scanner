@@ -21,8 +21,11 @@ from ai_codescan.cache_state import (
     set_scan_stage,
 )
 from ai_codescan.config import compute_repo_id
+from ai_codescan.engines.codeql import CodeqlResult
+from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.prep import run_prep
 from ai_codescan.repo_lock import RepoScanLockedError, repo_scan_lock
+from ai_codescan.stack_detect import Project, ProjectKind
 
 
 def _write_node_target(target: Path, source: str) -> None:
@@ -60,6 +63,87 @@ def _insert_review(conn: duckdb.DuckDBPyConnection, review_id: str) -> None:
         """,
         [review_id],
     )
+
+
+@pytest.mark.parametrize("base_path", (Path("."), Path("apps/web")))
+def test_codeql_ingests_paths_relative_to_each_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    base_path: Path,
+) -> None:
+    snapshot_root = tmp_path / "snapshot"
+    project_root = snapshot_root / base_path
+    source = project_root / "src/lib/__tests__/request-headers.test.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("export const header = 'test';\n", encoding="utf-8")
+    sarif_path = tmp_path / "result.sarif"
+    sarif_path.write_text(
+        json.dumps(
+            {
+                "version": "2.1.0",
+                "runs": [
+                    {
+                        "tool": {"driver": {"name": "CodeQL", "rules": []}},
+                        "results": [
+                            {
+                                "ruleId": "js/test-rule",
+                                "message": {"text": "test finding"},
+                                "locations": [
+                                    {
+                                        "physicalLocation": {
+                                            "artifactLocation": {
+                                                "uri": "src/lib/__tests__/request-headers.test.ts"
+                                            },
+                                            "region": {"startLine": 1},
+                                        }
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db_path))
+    apply_schema(conn)
+    project = Project(
+        name="web-app",
+        kind=ProjectKind.NODE,
+        base_path=base_path,
+        languages={"javascript"},
+    )
+    context = prep_mod._CodeQLRunContext(
+        snapshot_root=snapshot_root,
+        repo_dir=tmp_path / "cache",
+        tags=[],
+        extension_packs=None,
+        conn=conn,
+    )
+
+    def fake_build_database(root: Path, **_kwargs: object) -> Path:
+        assert root == project_root
+        return tmp_path / "codeql-db"
+
+    monkeypatch.setattr(prep_mod, "build_database", fake_build_database)
+    monkeypatch.setattr(
+        prep_mod,
+        "run_queries",
+        lambda *_args, **_kwargs: CodeqlResult(
+            sarif_path=sarif_path,
+            db_path=tmp_path / "codeql-db",
+            project_id="web-app",
+        ),
+    )
+
+    prep_mod._run_codeql_project(project, "javascript", context)
+
+    steps = conn.execute("SELECT steps_json FROM flows").fetchone()
+    assert steps is not None
+    assert json.loads(steps[0]) == [[source.as_posix(), 1, 1]]
+    conn.close()
 
 
 def test_failed_rebuild_rolls_back_and_retry_rebuilds_matching_snapshot(
