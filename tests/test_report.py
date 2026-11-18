@@ -111,17 +111,22 @@ def test_render_report_includes_required_sections() -> None:
     md = render_report(_finding())
     for section in (
         "## Summary",
-        "## Severity",
-        "## Environment",
-        "## Prerequisites",
-        "## Reproduction Steps",
-        "## Expected vs Actual",
-        "## Evidence",
+        "## Classification",
+        "## Affected Location",
         "## Impact",
+        "## Evidence",
+        "## Scanner Evidence",
+        "## Validation",
+        "## Reproduction",
+        "## Proof of Concept",
+        "## Prerequisites",
         "## Remediation",
+        "## Open Questions",
         "## References",
     ):
         assert section in md
+    assert "_Document" not in md
+    assert "_Numbered" not in md
 
 
 def test_render_report_labels_latent_exploitability() -> None:
@@ -139,8 +144,7 @@ def test_render_report_labels_latent_exploitability() -> None:
 
     markdown = render_report(finding)
 
-    assert "## Current Exploitability" in markdown
-    assert "- State: `latent`" in markdown
+    assert "- Exploitability: `latent`" in markdown
     assert "- A sensitive same-origin endpoint becomes reachable." in markdown
 
 
@@ -183,8 +187,8 @@ def test_render_report_includes_bundle_and_review_verdict() -> None:
     assert "## Scanner Evidence" in md
     assert "codeql+joern" in md
     assert "sqli.bound-parameter" in md
-    assert "## Review Verdict" in md
-    assert "true-positive" in md
+    assert "- Review verdict: `true-positive`" in md
+    assert "- Reviewer: `deep_analyzer`" in md
 
 
 def test_write_report_writes_file_with_expected_name(tmp_path: Path) -> None:
@@ -301,3 +305,43 @@ def test_scanner_evidence_omits_empty_fields() -> None:
     assert "- Source: src/a.ts:1" in md
     assert "- Engine:" not in md
     assert "``" not in md.split("## Evidence")[0]
+
+
+def test_standard_report_matches_snapshot() -> None:
+    finding = Finding(
+        finding_id="F-101",
+        nomination_id="N-101",
+        flow_id="flow-101",
+        cwe="CWE-89",
+        status="verified",
+        title="SQL injection in account lookup",
+        body=(
+            "## Summary\nThe account lookup concatenates an untrusted identifier.\n\n"
+            "## Path\n- src/accounts.ts:42\n\n"
+            "## Evidence\n`accountId` reaches `db.query` without a bound parameter.\n\n"
+            "## Why-real\nAn attacker can change the query and read another account.\n\n"
+            "## Mitigation\nUse a bound parameter for `accountId`.\n\n"
+            "## Open questions\nDoes a database role limit access to other tenants?\n\n"
+            "## Validation evidence\nThe observation-only test caused a SQL parser error.\n"
+        ),
+    )
+    meta = ReportMeta(
+        severity="critical",
+        component="accounts",
+        vuln_class="sqli",
+        date="2026-11-18",
+    )
+    expected_path = Path(__file__).parent / "snapshots" / "standard-finding-report.md"
+
+    actual = render_report(
+        finding,
+        meta=meta,
+        review_verdict={
+            "verdict": "true-positive",
+            "confidence": "high",
+            "reviewer": "deep_analyzer",
+        },
+    )
+
+    assert actual == expected_path.read_text(encoding="utf-8")
+    assert actual.count("The account lookup concatenates an untrusted identifier.") == 1

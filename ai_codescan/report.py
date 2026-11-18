@@ -1,4 +1,4 @@
-"""Render verified findings as bug-bounty-ready markdown reports."""
+"""Normalize and render security finding reports."""
 
 from __future__ import annotations
 
@@ -20,6 +20,35 @@ class ReportMeta:
     component: str
     vuln_class: str
     date: str  # YYYY-MM-DD
+
+
+@dataclass(frozen=True, slots=True)
+class FindingReport:
+    """Store normalized fields shared by all finding report renderers."""
+
+    finding_id: str
+    title: str
+    summary: str
+    severity: str
+    cwe: str
+    vuln_class: str
+    confidence: str
+    validation_status: str
+    exploitability: str
+    review_verdict: str
+    reviewer: str
+    affected_location: str
+    impact: str
+    evidence: str
+    scanner_evidence: str
+    validation: str
+    reproduction: str
+    proof_of_concept: str
+    prerequisites: tuple[str, ...]
+    remediation: str
+    open_questions: str
+    nomination_id: str
+    flow_id: str
 
 
 _CWE_SEVERITY: dict[str, str] = {
@@ -252,7 +281,7 @@ def report_filename(meta: ReportMeta) -> str:
     )
 
 
-def _render_bundle_evidence(bundle: EvidenceBundle | None) -> str:
+def _bundle_evidence(bundle: EvidenceBundle | None) -> str:
     if bundle is None:
         return ""
     # Stream B (AI-discovered) candidates have no static flow behind them, so
@@ -274,66 +303,49 @@ def _render_bundle_evidence(bundle: EvidenceBundle | None) -> str:
         ("Sink", sink),
         ("Parameterization", bundle.parameterization or ""),
     ]
-    lines = ["## Scanner Evidence", ""]
-    lines.extend(f"- {label}: {value}" for label, value in rows if value)
-    lines.append("")
+    lines = [f"- {label}: {value}" for label, value in rows if value]
     if bundle.score_factors:
-        lines.extend(["### Score Factors", ""])
+        lines.extend(["", "### Score Factors", ""])
         for factor in bundle.score_factors:
             lines.append(
                 f"- `{factor.get('name', '')}` {factor.get('value', '')}: "
                 f"{factor.get('reason', '')}"
             )
-        lines.append("")
     if bundle.mitigations:
-        lines.extend(["### Mitigation Signals", ""])
+        lines.extend(["", "### Mitigation Signals", ""])
         for signal in bundle.mitigations:
             lines.append(
                 f"- `{signal.get('kind', '')}` {signal.get('confidence', '')}: "
                 f"{signal.get('reason', '')}"
             )
-        lines.append("")
     if bundle.entrypoints:
-        lines.extend(["### Entrypoints", ""])
+        lines.extend(["", "### Entrypoints", ""])
         for entrypoint in bundle.entrypoints:
             lines.append(
                 f"- `{entrypoint.kind}` {entrypoint.file}:{entrypoint.line} {entrypoint.signature}"
             )
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n\n"
+    return "\n".join(lines).strip()
 
 
-def _render_verdict(verdict: dict[str, Any] | None) -> str:
-    if not verdict:
-        return ""
-    return (
-        "## Review Verdict\n\n"
-        f"- Verdict: `{verdict.get('verdict', '')}`\n"
-        f"- Confidence: `{verdict.get('confidence', '')}`\n"
-        f"- Reviewer: `{verdict.get('reviewer', '')}`\n\n"
-    )
-
-
-def _render_exploitability(finding: Finding) -> str:
-    if finding.exploitability == "unknown":
-        return ""
-    lines = [
-        "## Current Exploitability",
-        "",
-        f"- State: `{finding.exploitability}`",
-    ]
-    if finding.exploitability == "latent":
-        lines.append(
-            "- The finding describes a security primitive, but material impact is not proven."
-        )
-    lines.append("")
-    return "\n".join(lines) + "\n"
-
-
-def _render_prerequisites(finding: Finding) -> str:
-    if not finding.unmet_prerequisites:
-        return "_Document any setup needed to reproduce._"
-    return "\n".join(f"- {item}" for item in finding.unmet_prerequisites)
+def _body_sections(body: str) -> dict[str, str]:
+    sections: dict[str, str] = {}
+    current: str | None = None
+    content: list[str] = []
+    in_fence = False
+    for line in body.splitlines():
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+        if not in_fence and line.startswith("## "):
+            if current is not None:
+                sections[current] = "\n".join(content).strip()
+            current = line.removeprefix("## ").strip().lower()
+            content = []
+            continue
+        if current is not None:
+            content.append(line)
+    if current is not None:
+        sections[current] = "\n".join(content).strip()
+    return sections
 
 
 def summary_from_body(body: str, *, fallback: str) -> str:
@@ -361,6 +373,112 @@ def summary_from_body(body: str, *, fallback: str) -> str:
     return " ".join(paragraph) if paragraph else fallback
 
 
+def build_finding_report(
+    finding: Finding,
+    *,
+    meta: ReportMeta | None = None,
+    bundle: EvidenceBundle | None = None,
+    review_verdict: dict[str, Any] | None = None,
+) -> FindingReport:
+    """Normalize scanner data into the shared finding report schema.
+
+    Args:
+        finding: Scanner finding to normalize.
+        meta: Optional derived report metadata.
+        bundle: Optional static-analysis evidence.
+        review_verdict: Optional analyzer verdict metadata.
+
+    Returns:
+        A normalized finding report.
+    """
+    resolved_meta = meta or derive_meta(finding)
+    sections = _body_sections(finding.body)
+    verdict = review_verdict or {}
+    confidence = str(
+        verdict.get("confidence") or (bundle.confidence if bundle else "") or "unknown"
+    )
+    affected_location = sections.get("path") or (bundle.source_loc if bundle else "")
+    return FindingReport(
+        finding_id=finding.finding_id,
+        title=finding.title,
+        summary=sections.get("summary") or summary_from_body(finding.body, fallback=finding.title),
+        severity=resolved_meta.severity,
+        cwe=finding.cwe or "unknown",
+        vuln_class=resolved_meta.vuln_class,
+        confidence=confidence,
+        validation_status=finding.status,
+        exploitability=finding.exploitability,
+        review_verdict=str(verdict.get("verdict") or "not recorded"),
+        reviewer=str(verdict.get("reviewer") or "not recorded"),
+        affected_location=affected_location or "No source location was recorded.",
+        impact=sections.get("why-real") or "No separate impact statement was recorded.",
+        evidence=sections.get("evidence") or finding.body.strip() or "No evidence was recorded.",
+        scanner_evidence=_bundle_evidence(bundle) or "No scanner evidence was recorded.",
+        validation=sections.get("validation evidence") or "No validation evidence was recorded.",
+        reproduction=sections.get("reproduction steps") or "No reproduction steps were recorded.",
+        proof_of_concept="Not included because this report uses the recorded validation evidence.",
+        prerequisites=finding.unmet_prerequisites,
+        remediation=sections.get("mitigation") or "No remediation was recorded.",
+        open_questions=sections.get("open questions") or "No open questions were recorded.",
+        nomination_id=finding.nomination_id,
+        flow_id=finding.flow_id,
+    )
+
+
+def _append_section(lines: list[str], heading: str, body: str) -> None:
+    lines.extend([f"## {heading}", "", body.strip(), ""])
+
+
+def render_finding_report(report: FindingReport) -> str:
+    """Render the shared finding report schema as Markdown.
+
+    Args:
+        report: Normalized finding report.
+
+    Returns:
+        The Markdown report.
+    """
+    classification = [
+        f"- Finding ID: `{report.finding_id}`",
+        f"- Severity: `{report.severity}`",
+        f"- CWE: `{report.cwe}`",
+        f"- Vulnerability class: `{report.vuln_class}`",
+        f"- Confidence: `{report.confidence}`",
+        f"- Validation status: `{report.validation_status}`",
+        f"- Exploitability: `{report.exploitability}`",
+        f"- Review verdict: `{report.review_verdict}`",
+        f"- Reviewer: `{report.reviewer}`",
+    ]
+    prerequisites = (
+        "\n".join(f"- {item}" for item in report.prerequisites)
+        if report.prerequisites
+        else "No unmet prerequisites were recorded."
+    )
+    references = (
+        f"- Nomination ID: `{report.nomination_id}`\n"
+        f"- Flow ID: `{report.flow_id or 'not recorded'}`"
+    )
+    lines = [f"# {report.title}", ""]
+    sections = (
+        ("Summary", report.summary),
+        ("Classification", "\n".join(classification)),
+        ("Affected Location", report.affected_location),
+        ("Impact", report.impact),
+        ("Evidence", report.evidence),
+        ("Scanner Evidence", report.scanner_evidence),
+        ("Validation", report.validation),
+        ("Reproduction", report.reproduction),
+        ("Proof of Concept", report.proof_of_concept),
+        ("Prerequisites", prerequisites),
+        ("Remediation", report.remediation),
+        ("Open Questions", report.open_questions),
+        ("References", references),
+    )
+    for heading, body in sections:
+        _append_section(lines, heading, body)
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_report(
     finding: Finding,
     *,
@@ -369,29 +487,13 @@ def render_report(
     review_verdict: dict[str, Any] | None = None,
 ) -> str:
     """Render the markdown report body."""
-    m = meta or derive_meta(finding)
-    cwe = finding.cwe or "unknown"
-    enriched = _render_bundle_evidence(bundle) + _render_verdict(review_verdict)
-    summary = summary_from_body(finding.body, fallback=finding.title)
-    exploitability = _render_exploitability(finding)
-    prerequisites = _render_prerequisites(finding)
-    return (
-        f"# {finding.title}\n\n"
-        f"## Summary\n\n{summary}\n\n"
-        f"## Severity\n\n- Rating: **{m.severity}**\n- CWE: {cwe}\n- Vuln class: {m.vuln_class}\n\n"
-        f"{exploitability}"
-        "## Environment\n\n_Document target version, OS, and configuration here._\n\n"
-        f"## Prerequisites\n\n{prerequisites}\n\n"
-        "## Reproduction Steps\n\n_Numbered, exact commands._\n\n"
-        "## Expected vs Actual\n\n_What should happen vs what does._\n\n"
-        f"{enriched}"
-        f"## Evidence\n\n{finding.body}\n\n"
-        "## Impact\n\n_Concrete outcome + blast radius._\n\n"
-        "## Remediation\n\n_Concrete code change._\n\n"
-        f"## References\n\n- finding_id: `{finding.finding_id}`\n"
-        f"- nomination_id: `{finding.nomination_id}`\n"
-        f"- flow_id: `{finding.flow_id}`\n"
+    report = build_finding_report(
+        finding,
+        meta=meta,
+        bundle=bundle,
+        review_verdict=review_verdict,
     )
+    return render_finding_report(report)
 
 
 def write_report(
@@ -407,7 +509,7 @@ def write_report(
     meta = derive_meta(finding, today=today, score_factors=factors)
     report_dir.mkdir(parents=True, exist_ok=True)
     target = report_dir / report_filename(meta)
-    finding_marker = f"- finding_id: `{finding.finding_id}`"
+    finding_marker = f"- Finding ID: `{finding.finding_id}`"
     if target.is_file() and finding_marker not in target.read_text(encoding="utf-8"):
         target = target.with_stem(f"{target.stem}--{_slug(finding.finding_id)}")
     target.write_text(
