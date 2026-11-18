@@ -221,6 +221,71 @@ def test_safe_child_process_commands_are_not_gadgets(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_filesystem_path_gadget_links_to_prototype_pollution(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    path = _seed_file(
+        conn,
+        source_root,
+        name="download.js",
+        text=(
+            'const { readFileSync } = require("node:fs");\n'
+            "const request = {};\n"
+            "merge(settings, req.body);\n"
+            'const body = readFileSync(request.path, "utf8");\n'
+        ),
+    )
+    _seed_prototype_pollution_flow(conn, path)
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    candidates = [
+        candidate
+        for candidate in analysis.candidates
+        if candidate.gadget_class == "inherited-filesystem-path"
+    ]
+    assert len(candidates) == 1
+    assert candidates[0].capability == "arbitrary-file-read"
+    assert len(analysis.links) == 1
+    assert analysis.links[0].relationship == "impact-amplifier"
+    conn.close()
+
+
+def test_safe_filesystem_paths_are_not_gadgets(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    _seed_file(
+        conn,
+        source_root,
+        name="safe-download.js",
+        text=(
+            'import { readFileSync } from "node:fs";\n'
+            "const request = Object.create(null);\n"
+            'readFileSync(request.path, "utf8");\n'
+        ),
+    )
+    _seed_file(
+        conn,
+        source_root,
+        name="owned-path-download.js",
+        text=(
+            'const fs = require("node:fs");\n'
+            "const request = {};\n"
+            'request.path = "/srv/public/index.html";\n'
+            'fs.readFileSync(request.path, "utf8");\n'
+        ),
+    )
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    assert analysis.candidates == ()
+    conn.close()
+
+
 @pytest.mark.parametrize(
     ("target_name", "expected_count"),
     (("express-proto-pollution", 1), ("express-proto-pollution-safe", 0)),
@@ -251,6 +316,31 @@ def test_prototype_pollution_eval_targets_cover_gadget_shapes(
     (("node-proto-child-process-gadget", 1), ("node-proto-child-process-gadget-safe", 0)),
 )
 def test_child_process_gadget_eval_targets(
+    tmp_path: Path,
+    target_name: str,
+    expected_count: int,
+) -> None:
+    source_root = Path(__file__).resolve().parents[1] / "eval-targets" / target_name
+    source_file = source_root / "server.js"
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    conn.execute(
+        "INSERT INTO files VALUES (?, 'sha', 'javascript', 'app', ?)",
+        [str(source_file), source_file.stat().st_size],
+    )
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    assert len(analysis.candidates) == expected_count
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("target_name", "expected_count"),
+    (("node-proto-file-read-gadget", 1), ("node-proto-file-read-gadget-safe", 0)),
+)
+def test_file_read_gadget_eval_targets(
     tmp_path: Path,
     target_name: str,
     expected_count: int,

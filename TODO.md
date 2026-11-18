@@ -662,6 +662,8 @@ Deferred work:
   - [x] Add positive and negative prototype-pollution gadget evaluation shapes.
   - [x] Detect inherited `child_process` commands that can amplify prototype pollution.
   - [x] Add positive and negative `child_process` gadget evaluation shapes.
+  - [x] Detect inherited filesystem paths that can amplify prototype pollution.
+  - [x] Add positive and negative file-read gadget evaluation shapes.
   - [x] Keep exploitability separate from validation status.
   - [x] Surface latent findings in `latent-findings.md` and `latent-findings.jsonl`.
   - [x] Record exact prerequisites that can make a latent finding exploitable.

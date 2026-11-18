@@ -53,9 +53,23 @@ _CHILD_PROCESS_NAMESPACE_RE = re.compile(
     rf"\bimport\s*\*\s*as\s+(?P<import_name>{_IDENTIFIER})\s+from\s*"
     r"['\"](?:node:)?child_process['\"])"
 )
+_FILESYSTEM_METHODS = ("createReadStream", "readFile", "readFileSync")
+_FILESYSTEM_IMPORT_RE = re.compile(
+    r"(?:\b(?:const|let|var)\s*\{(?P<require_names>[^}]+)\}\s*=\s*"
+    r"require\(\s*['\"](?:node:)?fs(?:/promises)?['\"]\s*\)|"
+    r"\bimport\s*\{(?P<import_names>[^}]+)\}\s*from\s*"
+    r"['\"](?:node:)?fs(?:/promises)?['\"])"
+)
+_FILESYSTEM_NAMESPACE_RE = re.compile(
+    rf"(?:\b(?:const|let|var)\s+(?P<require_name>{_IDENTIFIER})\s*=\s*"
+    r"require\(\s*['\"](?:node:)?fs(?:/promises)?['\"]\s*\)|"
+    rf"\bimport\s*\*\s*as\s+(?P<import_name>{_IDENTIFIER})\s+from\s*"
+    r"['\"](?:node:)?fs(?:/promises)?['\"])"
+)
 _GADGET_RELATIONSHIPS = {
     "inherited-authorization-flag": "bypass",
     "inherited-child-process-command": "impact-amplifier",
+    "inherited-filesystem-path": "impact-amplifier",
 }
 
 
@@ -193,6 +207,23 @@ def _child_process_call_names(text: str) -> set[str]:
     return names
 
 
+def _filesystem_call_names(text: str) -> set[str]:
+    names: set[str] = set()
+    for match in _FILESYSTEM_IMPORT_RE.finditer(text):
+        imported = match.group("require_names") or match.group("import_names") or ""
+        for method in _FILESYSTEM_METHODS:
+            binding = re.search(
+                rf"(?:^|,)\s*{method}\s*(?:(?:as|:)\s*(?P<alias>{_IDENTIFIER}))?\s*(?=,|$)",
+                imported,
+            )
+            if binding:
+                names.add(binding.group("alias") or method)
+    for match in _FILESYSTEM_NAMESPACE_RE.finditer(text):
+        namespace = match.group("require_name") or match.group("import_name")
+        names.update(f"{namespace}.{method}" for method in _FILESYSTEM_METHODS)
+    return names
+
+
 def _sets_own_property(
     text: str,
     *,
@@ -262,6 +293,56 @@ def _child_process_command_gadgets_in_text(
     return gadgets
 
 
+def _filesystem_path_gadgets_in_text(
+    text: str,
+    *,
+    file: str,
+    project_id: str,
+) -> list[GadgetCandidate]:
+    initializations = {
+        match.group("receiver"): match.start() for match in _PLAIN_OBJECT_RE.finditer(text)
+    }
+    gadgets: list[GadgetCandidate] = []
+    for call_name in sorted(_filesystem_call_names(text)):
+        call_re = re.compile(
+            rf"\b{re.escape(call_name)}\s*\(\s*"
+            rf"(?P<receiver>{_IDENTIFIER})(?:\?\.|\.)"
+            r"(?P<property>path|file|filename)\b"
+        )
+        for match in call_re.finditer(text):
+            receiver = match.group("receiver")
+            property_name = match.group("property")
+            initialization_offset = initializations.get(receiver, match.start() + 1)
+            if initialization_offset >= match.start() or _sets_own_property(
+                text,
+                receiver=receiver,
+                property_name=property_name,
+                initialization_offset=initialization_offset,
+                use_offset=match.start(),
+            ):
+                continue
+            line = _line_number(text, match.start())
+            evidence = text.splitlines()[line - 1].strip()
+            gadgets.append(
+                GadgetCandidate(
+                    gadget_id=_stable_id("G", file, line, call_name, receiver, property_name),
+                    gadget_class="inherited-filesystem-path",
+                    capability="arbitrary-file-read",
+                    project_id=project_id,
+                    file=file,
+                    line=line,
+                    evidence=evidence,
+                    prerequisites=(
+                        f"An attacker can set the inherited {property_name} property.",
+                        "The process reaches this file read after the mutation.",
+                        "The process identity can read the selected file.",
+                    ),
+                    detector="js-inherited-filesystem-path-v1",
+                )
+            )
+    return gadgets
+
+
 def discover_gadgets(
     conn: duckdb.DuckDBPyConnection,
     *,
@@ -284,6 +365,7 @@ def discover_gadgets(
         gadgets.extend(
             _child_process_command_gadgets_in_text(text, file=file, project_id=project_id)
         )
+        gadgets.extend(_filesystem_path_gadgets_in_text(text, file=file, project_id=project_id))
     return gadgets
 
 
