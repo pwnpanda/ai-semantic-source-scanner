@@ -22,7 +22,7 @@ def _seed_storage_taint_and_write(  # noqa: PLR0913 - test-helper plumbing, inte
     *,
     storage_id: str = "table.comments",
     source_tid: str = "T-http-1",
-    source_loc: str = "server.js:7",
+    source_loc: str = "server.js:7:4",
     derived_tid: str = "T-stored-aa11",
     write_fid: str = "f-write-1",
     write_file: str = "server.js",
@@ -91,6 +91,7 @@ def test_synthesizes_stored_xss_flow_for_same_file_render(tmp_path: Path) -> Non
     assert len(steps) == 4
     # First step credits the original request source.
     assert steps[0][0] == "server.js"
+    assert steps[0][1] == 7
     # Last step is the XSS sink line.
     assert steps[3][2] == 22
 

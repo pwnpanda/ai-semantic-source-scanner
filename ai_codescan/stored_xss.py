@@ -37,6 +37,7 @@ import duckdb
 log = logging.getLogger(__name__)
 
 SYNTHETIC_ENGINE = "stored-xss-r3"
+_LOCATION_COLUMN_PARTS = 3
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -122,6 +123,9 @@ def _origin_step(conn: duckdb.DuckDBPyConnection, contributing_tids: list[str]) 
     if not (row and row[0]):
         return ["<unknown source>", 0, 0]
     loc = str(row[0])
+    parts = loc.rsplit(":", 2)
+    if len(parts) == _LOCATION_COLUMN_PARTS and parts[1].isdigit() and parts[2].isdigit():
+        return [parts[0], int(parts[1]), int(parts[1])]
     file, _, line = loc.rpartition(":")
     try:
         line_no = int(line) if line else 0

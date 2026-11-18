@@ -19,6 +19,7 @@ from ai_codescan.engines.hybrid import run_hybrid
 from ai_codescan.miss_finder import build_miss_candidates
 from ai_codescan.prep import run_prep
 from ai_codescan.stack_detect import ProjectKind, detect_projects
+from ai_codescan.storage_taint import run_full_fixpoint
 from ai_codescan.taxonomy.loader import list_classes
 
 EvalStatus = Literal["pass", "partial", "miss", "false_positive", "error"]
@@ -382,6 +383,15 @@ def _run_hybrid_case(
         repo_dir=repo_dir,
         db_path=db_path,
     )
+    conn = duckdb.connect(str(db_path))
+    try:
+        run_full_fixpoint(
+            conn,
+            snapshot_root=snap.snapshot_dir,
+            schema_path=repo_dir / "schema.taint.yml",
+        )
+    finally:
+        conn.close()
     flows = flows_from_db(db_path)
     if include_miss_candidates:
         flows.extend(miss_candidates_from_db(db_path))

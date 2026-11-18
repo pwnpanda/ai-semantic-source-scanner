@@ -32,8 +32,15 @@ from ai_codescan.source_paths import SourcePathError, resolve_contained_file
 
 _SQL_WRITE_VERBS = {"insert", "update"}
 _SQL_READ_VERBS = {"select"}
+_SQL_STRING = re.compile(
+    r"(?P<quote>['\"`])(?P<sql>\s*(?:SELECT|INSERT|UPDATE)\b.*?)(?P=quote)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 _FIXPOINT_MAX_ROUNDS = 5
+_MIN_FLOW_STEP_FIELDS = 2
+_LOCATION_LINE_PARTS = 2
+_LOCATION_COLUMN_PARTS = 3
 
 # Heuristic detection of storage operations by callee text. Patterns cover
 # JS/TS idioms (``db.query``, ``redis.set``), Python idioms (``cursor.execute``,
@@ -179,6 +186,24 @@ def classify_sql_op(sql_text: str) -> str | None:
     return None
 
 
+def _detect_sql_write_storage_ids(sql_text: str) -> list[str]:
+    try:
+        tree = sqlglot.parse_one(sql_text)
+    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError):
+        return []
+    if not isinstance(tree, sqlglot.exp.Update):
+        return detect_sql_storage_ids(sql_text)
+    table = tree.this
+    if not isinstance(table, sqlglot.exp.Table):
+        return []
+    storage_ids: list[str] = []
+    for assignment in tree.expressions:
+        column = assignment.this
+        if isinstance(column, sqlglot.exp.Column) and column.name:
+            storage_ids.append(f"sql:{table.name.lower()}.{column.name.lower()}")
+    return sorted(set(storage_ids))
+
+
 def classify_call(callee_text: str) -> tuple[str, str] | None:
     """Classify a function-call callee by storage kind + op, or return None.
 
@@ -218,7 +243,43 @@ class FixpointStats:
     storage_locations: int
 
 
-def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
+def _normalize_sql_candidate(sql: str) -> str:
+    return re.sub(r"(?:\$|#)\{[^}]+\}", "value", sql).strip()
+
+
+def _sql_from_flow_steps(steps: list[list[Any]], snapshot_root: Path | None) -> str:
+    for step in steps:
+        direct = str(step[0]) if step else ""
+        if classify_sql_op(_normalize_sql_candidate(direct)) is not None:
+            return _normalize_sql_candidate(direct)
+    if snapshot_root is None:
+        return ""
+    for step in steps:
+        if len(step) < _MIN_FLOW_STEP_FIELDS:
+            continue
+        try:
+            path = resolve_contained_file(snapshot_root, str(step[0]))
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            start_line = max(1, int(step[1]))
+            end_line = min(
+                len(lines),
+                int(step[2]) if len(step) > _MIN_FLOW_STEP_FIELDS else start_line,
+            )
+        except (OSError, SourcePathError, TypeError, ValueError):
+            continue
+        source = "\n".join(lines[start_line - 1 : end_line])
+        for match in _SQL_STRING.finditer(source):
+            candidate = _normalize_sql_candidate(match.group("sql"))
+            if classify_sql_op(candidate) is not None:
+                return candidate
+    return ""
+
+
+def run_fixpoint(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    snapshot_root: Path | None = None,
+) -> FixpointStats:
     """Compute storage taint to fixpoint over the existing ``flows`` table.
 
     Phase 2D minimal viable implementation:
@@ -245,14 +306,7 @@ def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
 
     for fid, tid, sid, steps_json in flow_rows:
         steps: list[list] = json.loads(steps_json or "[]")
-        sql_step_text = next(
-            (
-                str(s[0])
-                for s in steps
-                if len(s) >= 1 and isinstance(s[0], str) and " " in str(s[0])
-            ),
-            "",
-        )
+        sql_step_text = _sql_from_flow_steps(steps, snapshot_root)
         # Heuristic: the step "code" string isn't always the SQL itself.
         # MVP just records the sink without SQL parsing when text isn't recognisable.
         if not sql_step_text:
@@ -262,7 +316,11 @@ def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
             )
             continue
         op = classify_sql_op(sql_step_text)
-        ids = detect_sql_storage_ids(sql_step_text)
+        ids = (
+            _detect_sql_write_storage_ids(sql_step_text)
+            if op == "write"
+            else detect_sql_storage_ids(sql_step_text)
+        )
         for storage_id in ids:
             storage_locations[storage_id] = "sql_column"
             if op == "write":
@@ -274,23 +332,48 @@ def run_fixpoint(conn: duckdb.DuckDBPyConnection) -> FixpointStats:
             [(sid, kind, "fixpoint-mvp") for sid, kind in storage_locations.items()],
         )
     if storage_writes:
-        conn.executemany(
-            "INSERT INTO storage_writes VALUES (?, ?, ?, ?, ?)",
-            storage_writes,
-        )
+        existing_writes = {
+            (str(row[0]), str(row[1]), str(row[2]))
+            for row in conn.execute(
+                "SELECT storage_id, flow_id, source_tid FROM storage_writes"
+            ).fetchall()
+        }
+        new_writes = [
+            row
+            for row in storage_writes
+            if (str(row[0]), str(row[1]), str(row[2])) not in existing_writes
+        ]
+        if new_writes:
+            conn.executemany(
+                "INSERT INTO storage_writes VALUES (?, ?, ?, ?, ?)",
+                new_writes,
+            )
         # Mark each location dirty with the union of contributing tids.
         rows: list[tuple[str, str, str, str]] = []
+        existing_taint = {
+            (str(row[0]), str(row[1]))
+            for row in conn.execute("SELECT storage_id, derived_tid FROM storage_taint").fetchall()
+        }
         for storage_id in storage_locations:
             tids = sorted({w[2] for w in storage_writes if w[0] == storage_id and w[2] is not None})
-            if tids:
-                rows.append(
-                    (
-                        storage_id,
-                        f"T-stored:{storage_id}",
-                        json.dumps(tids),
-                        "definite",
-                    )
+            derived_tid = _derived_tid_for_storage(storage_id)
+            if not tids:
+                continue
+            if (storage_id, derived_tid) in existing_taint:
+                conn.execute(
+                    "UPDATE storage_taint SET contributing_tids_json = ?, confidence = ? "
+                    "WHERE storage_id = ? AND derived_tid = ?",
+                    [json.dumps(tids), "definite", storage_id, derived_tid],
                 )
+                continue
+            rows.append(
+                (
+                    storage_id,
+                    derived_tid,
+                    json.dumps(tids),
+                    "definite",
+                )
+            )
         if rows:
             conn.executemany("INSERT INTO storage_taint VALUES (?, ?, ?, ?)", rows)
 
@@ -328,10 +411,6 @@ _JS_TS_GLOBS = (
     "**/*.pl",
     "**/*.pm",
     "**/*.psgi",
-)
-_SELECT_STRING = re.compile(
-    r"(?P<quote>['\"`])(?P<sql>\s*SELECT\b[^'\"`]*?)(?P=quote)",
-    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -412,7 +491,7 @@ def detect_storage_reads(conn: duckdb.DuckDBPyConnection, *, snapshot_root: Path
                 text = source_file.read_text(encoding="utf-8", errors="replace")
             except (OSError, SourcePathError):
                 continue
-            for match in _SELECT_STRING.finditer(text):
+            for match in _SQL_STRING.finditer(text):
                 sql = match.group("sql").strip()
                 if not sql:
                     continue
@@ -535,18 +614,28 @@ def _pick_dominant_cwe(conn: duckdb.DuckDBPyConnection, contributing_tids: list[
     return counts.most_common(1)[0][0]
 
 
-def _origin_step(conn: duckdb.DuckDBPyConnection, contributing_tids: list[str]) -> str:
-    """Return a representative source location for the contributing tids."""
+def _location_step(location: str) -> list[Any]:
+    parts = location.rsplit(":", 2)
+    if len(parts) == _LOCATION_COLUMN_PARTS and parts[1].isdigit() and parts[2].isdigit():
+        return [parts[0], int(parts[1]), int(parts[1])]
+    if len(parts) >= _LOCATION_LINE_PARTS and parts[-1].isdigit():
+        file = ":".join(parts[:-1])
+        return [file, int(parts[-1]), int(parts[-1])]
+    return [location, 0, 0]
+
+
+def _origin_step(conn: duckdb.DuckDBPyConnection, contributing_tids: list[str]) -> list[Any]:
+    """Return a representative source step for the contributing tids."""
     if not contributing_tids:
-        return ""
+        return ["<unknown source>", 0, 0]
     row = conn.execute(
         "SELECT evidence_loc FROM taint_sources WHERE tid = ? AND evidence_loc IS NOT NULL",
         [contributing_tids[0]],
     ).fetchone()
-    return row[0] if row and row[0] else ""
+    return _location_step(str(row[0])) if row and row[0] else ["<unknown source>", 0, 0]
 
 
-def _write_step(conn: duckdb.DuckDBPyConnection, storage_id: str) -> str:
+def _write_step(conn: duckdb.DuckDBPyConnection, storage_id: str) -> list[Any]:
     """Return a representative write-site step for ``storage_id``."""
     row = conn.execute(
         """
@@ -561,12 +650,12 @@ def _write_step(conn: duckdb.DuckDBPyConnection, storage_id: str) -> str:
         try:
             steps = json.loads(row[0])
         except json.JSONDecodeError:
-            return f"write:{storage_id}"
+            return [f"write:{storage_id}", 0, 0]
         if steps:
             first = steps[-1]
             if isinstance(first, list) and first:
-                return str(first[0])
-    return f"write:{storage_id}"
+                return list(first)
+    return [f"write:{storage_id}", 0, 0]
 
 
 def synthesize_round2_flows(conn: duckdb.DuckDBPyConnection) -> int:
@@ -613,10 +702,16 @@ def synthesize_round2_flows(conn: duckdb.DuckDBPyConnection) -> int:
         )
 
         reads = conn.execute(
-            "SELECT symbol_id FROM storage_reads WHERE storage_id = ?",
+            """
+            SELECT sr.symbol_id, COALESCE(s.file, ''),
+                   COALESCE(s.range_start, 0), COALESCE(s.range_end, 0)
+            FROM storage_reads sr
+            LEFT JOIN symbols s ON s.id = sr.symbol_id
+            WHERE sr.storage_id = ?
+            """,
             [storage_id],
         ).fetchall()
-        for (read_symbol,) in reads:
+        for read_symbol, read_file, read_start, read_end in reads:
             sid = _stable_id("S-r2-", storage_id, str(read_symbol))
             _ensure_taint_sink(
                 conn,
@@ -631,9 +726,9 @@ def synthesize_round2_flows(conn: duckdb.DuckDBPyConnection) -> int:
             existing_fids.add(fid)
             steps = json.dumps(
                 [
-                    [origin or storage_id, 0, 0],
-                    [write_site, 0, 0],
-                    [str(read_symbol), 0, 0],
+                    origin,
+                    write_site,
+                    [str(read_file or read_symbol), int(read_start), int(read_end)],
                 ]
             )
             conn.execute(
@@ -695,7 +790,7 @@ def run_full_fixpoint(
         prior_writes = conn.execute("SELECT COUNT(*) FROM storage_writes").fetchone()
         prior_writes_n = prior_writes[0] if prior_writes else 0
 
-        round1 = run_fixpoint(conn)
+        round1 = run_fixpoint(conn, snapshot_root=snapshot_root)
         reads_added = detect_storage_reads(conn, snapshot_root=snapshot_root)
         derived_added = derive_storage_taint(conn)
         flows_added = synthesize_round2_flows(conn)

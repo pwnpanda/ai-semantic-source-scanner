@@ -168,6 +168,32 @@ def test_run_fixpoint_records_storage_locations(tmp_path: Path) -> None:
     assert ("sql:users.bio",) in locs or ("sql:users.id",) in locs or len(locs) >= 1
 
 
+def test_run_fixpoint_reads_sql_from_flow_source_coordinates(tmp_path: Path) -> None:
+    conn = duckdb.connect(str(tmp_path / "x.duckdb"))
+    apply_schema(conn)
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source_file = source_root / "server.js"
+    source_file.write_text(
+        "const bio = req.body.bio;\ndb.query(`UPDATE profiles SET bio = '${bio}' WHERE id = 1`);\n",
+        encoding="utf-8",
+    )
+    conn.execute("INSERT INTO taint_sources VALUES ('T1', NULL, 'http.body', 'bio', 'server.js:1')")
+    conn.execute(
+        "INSERT INTO taint_sinks VALUES ('K1', NULL, 'sql.exec', 'db.query', 'call', '[]')"
+    )
+    conn.execute(
+        "INSERT INTO flows VALUES (?, 'T1', 'K1', 'CWE-89', 'joern', ?, NULL, 'likely')",
+        ["F1", json.dumps([["server.js", 1, 1], ["server.js", 2, 2]])],
+    )
+
+    run_fixpoint(conn, snapshot_root=source_root)
+
+    writes = conn.execute("SELECT storage_id FROM storage_writes").fetchall()
+    assert ("sql:profiles.bio",) in writes
+    assert ("sql:profiles.id",) not in writes
+
+
 # ---------------------------------------------------------------------------
 # Round-2 tests
 # ---------------------------------------------------------------------------
@@ -300,7 +326,7 @@ def test_run_full_fixpoint_terminates_within_3_rounds(tmp_path: Path) -> None:
     assert stats["rounds_run"] >= 1
     assert stats["new_flows"] >= 1
     assert stats["storage_reads"] >= 1
-    assert stats["storage_taint_derived"] >= 1
+    assert conn.execute("SELECT COUNT(*) FROM storage_taint").fetchone() == (1,)
     # Synthetic round-2 flow row exists.
     r2 = conn.execute("SELECT COUNT(*) FROM flows WHERE engine = 'storage-taint-r2'").fetchone()
     assert r2 is not None and r2[0] >= 1

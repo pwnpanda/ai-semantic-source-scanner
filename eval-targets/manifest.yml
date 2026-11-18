@@ -120,6 +120,24 @@ cases:
     allowed_false_positives:
       - cwe: CWE-352
         file: server.js
+  - id: express-stored-xss
+    target: express-stored-xss
+    language: javascript
+    engine: hybrid
+    expected_findings:
+      - id: EXPRESS-STORED-XSS-001
+        cwe: CWE-79
+        file: server.js
+        source_line: 8
+        sink_line: 16
+        line_tolerance: 2
+    allowed_false_positives:
+      - cwe: CWE-79
+        file: server.js
+      - cwe: CWE-89
+        file: server.js
+      - cwe: CWE-352
+        file: server.js
   - id: express-ssrf
     target: express-ssrf
     language: javascript
