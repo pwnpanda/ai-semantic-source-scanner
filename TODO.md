@@ -660,6 +660,9 @@ Deferred work:
   - [x] Add the first detector for prototype pollution linked to inherited authorization flags.
   - [x] Surface unpaired gadgets in `gadgets.md` and `gadget-candidates.jsonl`.
   - [x] Add positive and negative prototype-pollution gadget evaluation shapes.
+  - [x] Keep exploitability separate from validation status.
+  - [x] Surface latent findings in `latent-findings.md` and `latent-findings.jsonl`.
+  - [x] Record exact prerequisites that can make a latent finding exploitable.
 - [ ] Standardize all reports around one finding schema and one rendering pipeline.
   Remove duplicate summaries, evidence, remediation text, and metadata from each report.
   Define required fields and section order before changing the report generators.

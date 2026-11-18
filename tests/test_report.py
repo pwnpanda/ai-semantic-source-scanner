@@ -124,6 +124,26 @@ def test_render_report_includes_required_sections() -> None:
         assert section in md
 
 
+def test_render_report_labels_latent_exploitability() -> None:
+    finding = Finding(
+        finding_id="F-ssrf",
+        nomination_id="N-ssrf",
+        flow_id="flow-ssrf",
+        cwe="CWE-918",
+        status="verified",
+        title="Same-origin request primitive",
+        body="The request can reach another path on the configured host.",
+        exploitability="latent",
+        unmet_prerequisites=("A sensitive same-origin endpoint becomes reachable.",),
+    )
+
+    markdown = render_report(finding)
+
+    assert "## Current Exploitability" in markdown
+    assert "- State: `latent`" in markdown
+    assert "- A sensitive same-origin endpoint becomes reachable." in markdown
+
+
 def test_render_report_includes_bundle_and_review_verdict() -> None:
     bundle = EvidenceBundle(
         bundle_id="E-N-001",

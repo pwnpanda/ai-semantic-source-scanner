@@ -800,6 +800,14 @@ def test_report_writes_for_verified_finding(
         "Concrete details about the bug.\n",
         encoding="utf-8",
     )
+    (findings_dir / "F-002.md").write_text(
+        "---\nfinding_id: F-002\nnomination_id: N-002\nflow_id: F2\n"
+        "cwe: CWE-918\nstatus: unverified\nexploitability: latent\n"
+        "unmet_prerequisites:\n  - A sensitive same-origin route becomes reachable.\n"
+        "title: Same-origin request primitive\n---\n\n"
+        "The primitive lacks a current impact path.\n",
+        encoding="utf-8",
+    )
     out = tmp_path / "out"
     result = runner.invoke(
         app,
@@ -815,14 +823,20 @@ def test_report_writes_for_verified_finding(
     )
     assert result.exit_code == 0, result.stdout
     files = [
-        path for path in out.glob("*.md") if path.name not in {"final-report.md", "gadgets.md"}
+        path
+        for path in out.glob("*.md")
+        if path.name not in {"final-report.md", "gadgets.md", "latent-findings.md"}
     ]
     assert files, result.stdout
     assert "critical" in files[0].name
     assert "sqli" in files[0].name
-    assert reporter_input_counts == [1]
+    assert reporter_input_counts == [2]
     assert (out / "final-report.md").is_file()
     assert (out / "gadgets.md").is_file()
+    assert (out / "latent-findings.md").is_file()
+    assert "Same-origin request primitive" in (out / "latent-findings.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_visualize_help_advertises_flags() -> None:

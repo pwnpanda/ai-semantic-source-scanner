@@ -8,7 +8,9 @@ from typing import Literal, cast, get_args
 import yaml
 
 Status = Literal["unverified", "verified", "rejected", "poc_inconclusive"]
+Exploitability = Literal["unknown", "demonstrated", "latent"]
 _STATUS_VALUES: frozenset[str] = frozenset(get_args(Status))
+_EXPLOITABILITY_VALUES: frozenset[str] = frozenset(get_args(Exploitability))
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +23,16 @@ class Finding:
     title: str
     body: str
     candidate_id: str = ""
+    exploitability: Exploitability = "unknown"
+    unmet_prerequisites: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(item, str) or not item.strip() for item in self.unmet_prerequisites):
+            raise ValueError("unmet_prerequisites must contain non-empty strings")
+        if self.exploitability == "latent" and not self.unmet_prerequisites:
+            raise ValueError("a latent finding must record at least one unmet prerequisite")
+        if self.exploitability != "latent" and self.unmet_prerequisites:
+            raise ValueError("only a latent finding can record unmet prerequisites")
 
 
 def render_finding(f: Finding) -> str:
@@ -33,6 +45,8 @@ def render_finding(f: Finding) -> str:
         "status": f.status,
         "title": f.title,
         "candidate_id": f.candidate_id,
+        "exploitability": f.exploitability,
+        "unmet_prerequisites": list(f.unmet_prerequisites),
     }
     yaml_block = yaml.safe_dump(front, sort_keys=True).strip()
     return f"---\n{yaml_block}\n---\n\n{f.body}"
@@ -62,6 +76,18 @@ def parse_finding(md: str) -> Finding:
     if raw_status not in _STATUS_VALUES:
         raise ValueError(f"unknown status {raw_status!r}; expected one of {sorted(_STATUS_VALUES)}")
     status = cast(Status, raw_status)
+    raw_exploitability = str(front.get("exploitability", "unknown"))
+    if raw_exploitability not in _EXPLOITABILITY_VALUES:
+        raise ValueError(
+            f"unknown exploitability {raw_exploitability!r}; "
+            f"expected one of {sorted(_EXPLOITABILITY_VALUES)}"
+        )
+    exploitability = cast(Exploitability, raw_exploitability)
+    raw_prerequisites = front.get("unmet_prerequisites") or []
+    if not isinstance(raw_prerequisites, list) or not all(
+        isinstance(item, str) for item in raw_prerequisites
+    ):
+        raise ValueError("unmet_prerequisites must be a list of strings")
     return Finding(
         finding_id=str(front.get("finding_id", "")),
         nomination_id=str(front.get("nomination_id", "")),
@@ -71,4 +97,6 @@ def parse_finding(md: str) -> Finding:
         title=str(front.get("title", "")),
         body=body,
         candidate_id=str(front.get("candidate_id", "")),
+        exploitability=exploitability,
+        unmet_prerequisites=tuple(item.strip() for item in raw_prerequisites if item.strip()),
     )

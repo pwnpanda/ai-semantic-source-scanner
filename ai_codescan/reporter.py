@@ -26,7 +26,7 @@ def build_reporter_prompt(
     """Build the final reporter prompt from trusted instructions and report data.
 
     Args:
-        report_paths: Verified per-finding reports to combine.
+        report_paths: Verified reports and an optional latent finding inventory.
         repo_context_path: Optional scanner repository context.
 
     Returns:
@@ -40,10 +40,13 @@ def build_reporter_prompt(
     ]
     if repo_context_path is not None and repo_context_path.is_file():
         sections.append(_embedded_file(repo_context_path, heading="Repository context"))
-    sections.extend(
-        _embedded_file(path, heading=f"Verified finding {index}")
-        for index, path in enumerate(report_paths, start=1)
-    )
+    verified_index = 0
+    for path in report_paths:
+        if path.name == "latent-findings.md":
+            sections.append(_embedded_file(path, heading="Latent finding inventory"))
+            continue
+        verified_index += 1
+        sections.append(_embedded_file(path, heading=f"Verified finding {verified_index}"))
     return "\n\n---\n\n".join(sections)
 
 
@@ -72,7 +75,7 @@ def run_reporter_skill(
     Args:
         run_dir: Active scanner run directory.
         report_dir: Destination for the final report.
-        report_paths: Verified reports that the final report summarizes.
+        report_paths: Verified reports and an optional latent finding inventory.
         repo_context_path: Optional scanner repository context.
         llm: Selected LLM command configuration.
 

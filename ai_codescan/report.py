@@ -314,6 +314,28 @@ def _render_verdict(verdict: dict[str, Any] | None) -> str:
     )
 
 
+def _render_exploitability(finding: Finding) -> str:
+    if finding.exploitability == "unknown":
+        return ""
+    lines = [
+        "## Current Exploitability",
+        "",
+        f"- State: `{finding.exploitability}`",
+    ]
+    if finding.exploitability == "latent":
+        lines.append(
+            "- The finding describes a security primitive, but material impact is not proven."
+        )
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _render_prerequisites(finding: Finding) -> str:
+    if not finding.unmet_prerequisites:
+        return "_Document any setup needed to reproduce._"
+    return "\n".join(f"- {item}" for item in finding.unmet_prerequisites)
+
+
 def summary_from_body(body: str, *, fallback: str) -> str:
     """First prose paragraph of a finding body.
 
@@ -351,12 +373,15 @@ def render_report(
     cwe = finding.cwe or "unknown"
     enriched = _render_bundle_evidence(bundle) + _render_verdict(review_verdict)
     summary = summary_from_body(finding.body, fallback=finding.title)
+    exploitability = _render_exploitability(finding)
+    prerequisites = _render_prerequisites(finding)
     return (
         f"# {finding.title}\n\n"
         f"## Summary\n\n{summary}\n\n"
         f"## Severity\n\n- Rating: **{m.severity}**\n- CWE: {cwe}\n- Vuln class: {m.vuln_class}\n\n"
+        f"{exploitability}"
         "## Environment\n\n_Document target version, OS, and configuration here._\n\n"
-        "## Prerequisites\n\n_List any setup needed to reproduce._\n\n"
+        f"## Prerequisites\n\n{prerequisites}\n\n"
         "## Reproduction Steps\n\n_Numbered, exact commands._\n\n"
         "## Expected vs Actual\n\n_What should happen vs what does._\n\n"
         f"{enriched}"

@@ -43,6 +43,7 @@ from ai_codescan.gadgets import run_gadget_analysis
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.ingest.sarif import ingest_sarif
+from ai_codescan.latent import LatentRunResult, write_latent_artifacts
 from ai_codescan.lineage import (
     refresh_candidate_lineage,
     write_report_manifest,
@@ -2275,6 +2276,42 @@ def _write_gadget_report(
     return result.report_path
 
 
+def _write_supplemental_reports(
+    *,
+    db_path: Path,
+    source_root: Path,
+    run_dir: Path,
+    findings_dir: Path,
+    report_dir: Path,
+) -> tuple[LatentRunResult, list[Path]]:
+    gadget_report = _write_gadget_report(
+        db_path=db_path,
+        source_root=source_root,
+        run_dir=run_dir,
+        report_dir=report_dir,
+    )
+    typer.echo(f"wrote {gadget_report}")
+    latent_result = write_latent_artifacts(
+        findings_dir=findings_dir,
+        run_dir=run_dir,
+        report_dir=report_dir,
+    )
+    typer.echo(f"wrote {latent_result.report_path}")
+    reporter_paths = [latent_result.report_path] if latent_result.findings else []
+    return latent_result, reporter_paths
+
+
+def _echo_empty_report_summary(*, verified_count: int, latent_count: int) -> None:
+    if verified_count:
+        return
+    suffix = (
+        f"; {latent_count} latent finding(s) remain in the report"
+        if latent_count
+        else " (run validate first or review gate 3)"
+    )
+    typer.echo("no verified findings to report" + suffix)
+
+
 @app.command()
 def report(  # noqa: PLR0913 - Typer option surface
     ctx: typer.Context,
@@ -2332,13 +2369,13 @@ def report(  # noqa: PLR0913 - Typer option surface
         out_dir = Path.cwd() / "report"
 
     db_path = cache_root / repo_id / "index.duckdb"
-    gadget_report = _write_gadget_report(
+    latent_result, supplemental_paths = _write_supplemental_reports(
         db_path=db_path,
         source_root=cache_root / repo_id / "source",
+        findings_dir=findings_dir,
         run_dir=last_run,
         report_dir=out_dir,
     )
-    typer.echo(f"wrote {gadget_report}")
     verified_findings, report_paths = _write_verified_reports(
         findings_dir=findings_dir,
         run_dir=last_run,
@@ -2371,10 +2408,11 @@ def report(  # noqa: PLR0913 - Typer option surface
             if conn is not None:
                 conn.close()
         typer.echo(f"wrote {html_path} (open in a browser)")
+    reporter_paths = [*report_paths, *supplemental_paths]
     final_report = run_reporter_skill(
         run_dir=last_run,
         report_dir=out_dir,
-        report_paths=report_paths,
+        report_paths=reporter_paths,
         repo_context_path=cache_root / repo_id / "repo.md",
         llm=_build_llm_config(llm_provider, llm_model),
     )
@@ -2385,8 +2423,10 @@ def report(  # noqa: PLR0913 - Typer option surface
             f"warning: final reporter skipped because {llm_provider} is unavailable",
             err=True,
         )
-    if written == 0:
-        typer.echo("no verified findings to report (run validate first or check gate-3)")
+    _echo_empty_report_summary(
+        verified_count=written,
+        latent_count=len(latent_result.findings),
+    )
 
 
 def _hitl_gate(label: str) -> None:

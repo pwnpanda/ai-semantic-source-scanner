@@ -15,6 +15,8 @@ def test_render_then_parse_roundtrips() -> None:
         title="SQL injection in users.ts:42",
         body="The handler concatenates `req.params.id` into a SQL query.",
         candidate_id="A-flow-17",
+        exploitability="latent",
+        unmet_prerequisites=("An internal administration route becomes reachable.",),
     )
     md = render_finding(f)
     parsed = parse_finding(md)
@@ -37,6 +39,52 @@ def test_parse_extracts_status_from_frontmatter() -> None:
     assert f.status == "verified"
     assert f.cwe == "CWE-639"
     assert f.flow_id == ""
+
+
+def test_parse_rejects_unknown_exploitability() -> None:
+    md = "---\nstatus: unverified\nexploitability: future\n---\n\nBody\n"
+
+    with pytest.raises(ValueError, match="unknown exploitability"):
+        parse_finding(md)
+
+
+def test_finding_requires_a_prerequisite_for_latent_exploitability() -> None:
+    with pytest.raises(ValueError, match="at least one unmet prerequisite"):
+        Finding(
+            finding_id="F-1",
+            nomination_id="N-1",
+            flow_id="flow-1",
+            cwe="CWE-918",
+            status="unverified",
+            title="title",
+            body="body",
+            exploitability="latent",
+        )
+
+
+def test_finding_rejects_prerequisite_without_latent_exploitability() -> None:
+    with pytest.raises(ValueError, match="only a latent finding"):
+        Finding(
+            finding_id="F-1",
+            nomination_id="N-1",
+            flow_id="flow-1",
+            cwe="CWE-918",
+            status="unverified",
+            title="title",
+            body="body",
+            unmet_prerequisites=("A route becomes reachable.",),
+        )
+
+
+@pytest.mark.parametrize(
+    "prerequisites",
+    ["one condition", {"condition": "value"}, ["valid", 2]],
+)
+def test_parse_rejects_invalid_prerequisites(prerequisites: object) -> None:
+    md = f"---\nstatus: unverified\nunmet_prerequisites: {prerequisites!r}\n---\n\nBody\n"
+
+    with pytest.raises(ValueError, match="list of strings"):
+        parse_finding(md)
 
 
 @pytest.mark.parametrize(

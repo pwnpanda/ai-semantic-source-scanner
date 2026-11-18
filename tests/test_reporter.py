@@ -35,6 +35,18 @@ def test_reporter_prompt_includes_end_of_engagement_baseline(tmp_path: Path) -> 
     assert "full finding enumeration" in prompt
 
 
+def test_reporter_prompt_includes_latent_finding_inventory(tmp_path: Path) -> None:
+    finding = tmp_path / "finding.md"
+    finding.write_text("# Finding\n", encoding="utf-8")
+    latent = tmp_path / "latent-findings.md"
+    latent.write_text("# Latent findings\n\n## F-ssrf\n", encoding="utf-8")
+
+    prompt = reporter.build_reporter_prompt([finding, latent])
+
+    assert "## Latent finding inventory" in prompt
+    assert "## F-ssrf" in prompt
+
+
 def test_run_reporter_skill_writes_final_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -319,6 +319,8 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
             title=finding.title,
             body=body,
             candidate_id=finding.candidate_id,
+            exploitability=finding.exploitability,
+            unmet_prerequisites=finding.unmet_prerequisites,
         )
         finding_path.write_text(render_finding(updated), encoding="utf-8")
         log_rows.append(_validation_log_row(finding.finding_id, new_status, result, verdict))

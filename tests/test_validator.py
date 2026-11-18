@@ -298,6 +298,8 @@ def test_run_validator_retries_inconclusive_finding(
                 title="t",
                 body="b",
                 candidate_id="A-source",
+                exploitability="latent",
+                unmet_prerequisites=("A sensitive same-origin endpoint becomes reachable.",),
             )
         ),
         encoding="utf-8",
@@ -316,6 +318,8 @@ def test_run_validator_retries_inconclusive_finding(
     finding = parse_finding(finding_path.read_text(encoding="utf-8"))
     assert finding.status == "verified"
     assert finding.candidate_id == "A-source"
+    assert finding.exploitability == "latent"
+    assert finding.unmet_prerequisites == ("A sensitive same-origin endpoint becomes reachable.",)
 
 
 def test_hints_for_cwe_returns_taxonomy_hints() -> None:

@@ -14,8 +14,9 @@ Use this report structure:
 4. `## Method`
 5. `## Findings at a Glance`
 6. `## Detailed Findings`
-7. `## Prioritized Remediation`
-8. `## Limitations and Follow-up Work`
+7. `## Latent Findings and Unmet Prerequisites`
+8. `## Prioritized Remediation`
+9. `## Limitations and Follow-up Work`
 
 The coverage table must contain the component or activity, status, and evidence-based notes.
 Use only `SCANNED`, `NOT SCANNED`, or `TODO` as a coverage status.
@@ -31,6 +32,11 @@ Use uppercase placeholders for target-specific URLs, tokens, keys, and identifie
 
 Sort findings by severity. Preserve scanner IDs, file paths, line numbers, and validation facts.
 Include every verified finding. Do not omit low-severity findings.
+Include every item from the latent finding inventory, even when validation is incomplete.
+Put latent findings only in the latent findings section. Do not repeat them in detailed findings.
+Do not count an unverified latent finding as a verified finding.
+Do not describe a latent finding as currently exploitable.
+List its unmet prerequisites exactly as the scan data records them.
 
 Do not repeat the executive summary, table text, evidence, or remediation in another section.
 State missing information as a limitation or `TODO`. Do not infer it.

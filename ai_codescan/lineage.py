@@ -166,6 +166,8 @@ def _load_findings(run_dir: Path) -> dict[str, dict[str, str]]:
             "analysis_verdict": verdict.verdict if verdict else "",
             "analysis_confidence": verdict.confidence if verdict else "",
             "finding_title": finding.title,
+            "exploitability": finding.exploitability,
+            "unmet_prerequisites": " | ".join(finding.unmet_prerequisites),
         }
     return findings
 
@@ -184,13 +186,16 @@ def _load_validation(run_dir: Path) -> dict[str, str]:
 
 def _finding_outcome(finding: dict[str, str], report_path: str) -> tuple[str, str]:
     status = finding["finding_status"]
-    if status == "verified" and report_path:
-        return "reported", "verified-and-reported"
-    if status == "verified":
-        return "verified", "report-not-produced"
     if status == "rejected":
         reason = finding["analysis_verdict"] or "analysis-rejected"
         return "rejected", reason
+    if finding.get("exploitability") == "latent":
+        reason = finding.get("unmet_prerequisites") or "impact-prerequisite-unmet"
+        return "latent", reason
+    if status == "verified":
+        final_state = "reported" if report_path else "verified"
+        reason = "verified-and-reported" if report_path else "report-not-produced"
+        return final_state, reason
     if status == "poc_inconclusive":
         return "inconclusive", "validation-inconclusive"
     validation_status = finding.get("validation_status", "")
@@ -297,6 +302,8 @@ def _lineage_record(
         "analysis_verdict": finding["analysis_verdict"] if finding else "",
         "analysis_confidence": finding["analysis_confidence"] if finding else "",
         "finding_status": finding["finding_status"] if finding else "",
+        "exploitability": finding["exploitability"] if finding else "",
+        "unmet_prerequisites": finding["unmet_prerequisites"] if finding else "",
         "validation_status": validation_status,
         "report_path": report_path,
         "final_state": final_state,

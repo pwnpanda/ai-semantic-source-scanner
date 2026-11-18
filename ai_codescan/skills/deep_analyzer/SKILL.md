@@ -22,6 +22,8 @@ cwe: CWE-Y
 status: unverified
 analysis_verdict: true-positive
 confidence: medium
+exploitability: demonstrated
+unmet_prerequisites: []
 title: "<one-line title>"
 ---
 
@@ -29,3 +31,7 @@ title: "<one-line title>"
 ```
 
 4. Do not mutate other findings or the queue.
+
+Use `exploitability: latent` when the primitive exists but impact needs a specific future condition.
+List that condition under `unmet_prerequisites`. Keep latent findings separate from exploit gadgets.
+Use `unmet_prerequisites: []` when the exploitability is `demonstrated` or `unknown`.

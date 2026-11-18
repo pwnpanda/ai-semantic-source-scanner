@@ -18,3 +18,5 @@ For each finding with `status: unverified` or `status: poc_inconclusive`:
    - Print `BENIGN` and exit 0 if the path turns out to be safe (sanitiser detected, etc.).
    - Avoid any network access — the sandbox blocks it anyway.
 5. Stop after writing the file. The orchestrator runs the PoC inside the sandbox.
+
+For a latent finding, validate the security primitive without requiring its future prerequisite.

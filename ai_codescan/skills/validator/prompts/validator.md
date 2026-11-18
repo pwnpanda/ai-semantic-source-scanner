@@ -52,6 +52,10 @@ The runner parses this. `vulnerable` flips the finding to `verified`,
 `not_vulnerable` to `rejected`, `inconclusive` to `poc_inconclusive`.
 The runner accepts `not_vulnerable` only when `evidence` contains a concrete observation.
 
+If the finding has `exploitability: latent`, validate the security primitive itself.
+Do not require an unmet future condition to occur during validation.
+Return `not_vulnerable` only when the evidence disproves the primitive, not its current impact.
+
 `evidence` should reference observable facts from the run, e.g.
 `"response body contains 'You have an error in your SQL syntax'"` or
 `"PoC wrote /tmp/marker after triggering the dangerous sink"`.

@@ -90,3 +90,89 @@ def test_lineage_marks_selected_miss_candidates_without_main_queue(tmp_path: Pat
     assert records["B-miss-selected"]["reason"] == "miss-review-output-missing"
     assert records["B-miss-limited"]["analysis_selected"] is False
     assert records["B-miss-limited"]["reason"] == "review-limit"
+
+
+def test_lineage_keeps_latent_state_separate_from_validation(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "run-latent"
+    findings_dir = run_dir / "findings"
+    findings_dir.mkdir(parents=True)
+    record_candidates(
+        run_dir,
+        run_id="run-latent",
+        candidates=[{"id": "A-latent", "stream": "A", "score": 0.8}],
+        selected_candidate_ids={"A-latent"},
+        origin="nominator",
+    )
+    (run_dir / "nominations.md").write_text(
+        "# Nominations\n\n## Stream A\n\n"
+        "- [ ] N-latent | api | ssrf | src/a.ts:1 | rec: high | y/n: y\n"
+        "    Candidate: A-latent\n",
+        encoding="utf-8",
+    )
+    (run_dir / "findings_queue.md").write_text(
+        "# Findings queue\n\n- [ ] N-latent | api | ssrf | src/a.ts:1 | candidate: A-latent\n",
+        encoding="utf-8",
+    )
+    finding = Finding(
+        finding_id="F-latent",
+        nomination_id="N-latent",
+        flow_id="flow-latent",
+        cwe="CWE-918",
+        status="verified",
+        title="Same-origin request primitive",
+        body="Evidence.",
+        candidate_id="A-latent",
+        exploitability="latent",
+        unmet_prerequisites=("A sensitive same-origin endpoint becomes reachable.",),
+    )
+    (findings_dir / "F-latent.md").write_text(render_finding(finding), encoding="utf-8")
+
+    result = refresh_candidate_lineage(run_dir)
+
+    assert result is not None
+    record = _read_records(result[0])["A-latent"]
+    assert record["finding_status"] == "verified"
+    assert record["final_state"] == "latent"
+    assert record["reason"] == "A sensitive same-origin endpoint becomes reachable."
+
+
+def test_lineage_does_not_surface_rejected_finding_as_latent(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "run-rejected"
+    findings_dir = run_dir / "findings"
+    findings_dir.mkdir(parents=True)
+    record_candidates(
+        run_dir,
+        run_id="run-rejected",
+        candidates=[{"id": "A-rejected", "stream": "A", "score": 0.8}],
+        selected_candidate_ids={"A-rejected"},
+        origin="nominator",
+    )
+    (run_dir / "nominations.md").write_text(
+        "# Nominations\n\n## Stream A\n\n"
+        "- [ ] N-rejected | api | ssrf | src/a.ts:1 | rec: high | y/n: y\n"
+        "    Candidate: A-rejected\n",
+        encoding="utf-8",
+    )
+    (run_dir / "findings_queue.md").write_text(
+        "# Findings queue\n\n- [ ] N-rejected | api | ssrf | src/a.ts:1 | candidate: A-rejected\n",
+        encoding="utf-8",
+    )
+    finding = Finding(
+        finding_id="F-rejected",
+        nomination_id="N-rejected",
+        flow_id="flow-rejected",
+        cwe="CWE-918",
+        status="rejected",
+        title="Rejected request primitive",
+        body="Evidence disproved the primitive.",
+        candidate_id="A-rejected",
+        exploitability="latent",
+        unmet_prerequisites=("A sensitive same-origin endpoint becomes reachable.",),
+    )
+    (findings_dir / "F-rejected.md").write_text(render_finding(finding), encoding="utf-8")
+
+    result = refresh_candidate_lineage(run_dir)
+
+    assert result is not None
+    record = _read_records(result[0])["A-rejected"]
+    assert record["final_state"] == "rejected"
