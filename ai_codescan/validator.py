@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -119,6 +120,7 @@ def _run_poc(
     work_dir: Path,
     profile: LanguageProfile,
     no_sandbox: bool,
+    read_only_mounts: Sequence[tuple[Path, Path]] = (),
 ) -> SandboxResult:
     if no_sandbox:
         # Local execution — used when runtime=none or the user passes --no-sandbox.
@@ -162,6 +164,7 @@ def _run_poc(
         _container_argv(profile, poc_path),
         image=profile.image,
         work_dir=work_dir,
+        read_only_mounts=read_only_mounts,
     )
 
 
@@ -249,11 +252,16 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
             )
             continue
         try:
+            source_root = repo_dir / "source"
             result = _run_poc(
                 poc_path,
                 work_dir=poc_path.parent,
                 profile=profile,
                 no_sandbox=no_sandbox,
+                read_only_mounts=(
+                    (source_root, source_root),
+                    (state.run_dir, state.run_dir),
+                ),
             )
         except SandboxUnavailableError:
             log_rows.append(f"| {finding.finding_id} | sandbox-unavailable | -- | -- | -- |")

@@ -56,14 +56,14 @@ invoke_llm() {
 # shellcheck disable=SC2016
 render_prompt() {
   local finding_path="$1"
-  local slice_file="$2"
+  local evidence_file="$2"
   local hints_path="$3"
   local target_lang="$4"
   cat "$PROMPT"
   printf '\n\n---\n\n## This iteration\n\n'
   printf 'Reference paths (for Read/Grep — do not write):\n\n'
   printf -- '- Finding: `%s`\n' "$finding_path"
-  printf -- '- Slice JSON: `%s`\n' "$slice_file"
+  printf -- '- Evidence JSON: `%s`\n' "$evidence_file"
   printf -- '- Source snapshot root: `%s`\n' "$SOURCE_ROOT"
   printf -- '- repo.md: `%s`\n' "$REPO_MD"
   if [[ -n "$hints_path" && -f "$hints_path" ]]; then
@@ -78,9 +78,9 @@ render_prompt() {
     cat "$finding_path"
     printf '\n```\n\n'
   fi
-  if [[ -f "$slice_file" ]]; then
-    printf '## Embedded slice JSON\n\n```json\n'
-    cat "$slice_file"
+  if [[ -f "$evidence_file" ]]; then
+    printf '## Embedded evidence JSON\n\n```json\n'
+    cat "$evidence_file"
     printf '\n```\n\n'
   fi
   if [[ -n "$hints_path" && -f "$hints_path" ]]; then
@@ -148,6 +148,9 @@ for finding in "$FINDINGS_DIR"/*.md; do
 
   nom_id="${finding_id#F-}"
   slice_file="$RUN_DIR/slices/N-${nom_id}.json"
+  if [[ ! -f "$slice_file" ]]; then
+    slice_file="$RUN_DIR/bundles/N-${nom_id}.json"
+  fi
   hints_path="$HINTS_DIR/${finding_id}.md"
   poc_dir="$RUN_DIR/sandbox/${finding_id}"
   mkdir -p "$poc_dir"

@@ -139,6 +139,48 @@ def test_validator_marker_binds_model_and_finding(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_validator_uses_bundle_when_static_slice_is_missing(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    findings_dir = run_dir / "findings"
+    bundles_dir = run_dir / "bundles"
+    findings_dir.mkdir(parents=True)
+    bundles_dir.mkdir()
+    (findings_dir / "F-001.md").write_text(
+        "status: unverified\ntitle: first\n",
+        encoding="utf-8",
+    )
+    (bundles_dir / "N-001.json").write_text(
+        '{"evidence":"bundle fallback"}\n',
+        encoding="utf-8",
+    )
+    captured_prompt = tmp_path / "validator-prompt"
+    stub = tmp_path / "validator.sh"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f'cat - > "{captured_prompt}"\n'
+        "printf '%s\\n' '<<<AI_CODESCAN_POC:EXT=py>>>'\n"
+        "printf '%s\\n' 'print(\"BENIGN\")'\n"
+        "printf '%s\\n' '<<<AI_CODESCAN_POC:END>>>'\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    env = {
+        "AI_CODESCAN_RUN_DIR": str(run_dir),
+        "AI_CODESCAN_SKILL_DIR": str(SKILLS_ROOT / "validator"),
+        "AI_CODESCAN_LLM_CMD": str(stub),
+        "AI_CODESCAN_LLM_CONTEXT": "codex:gpt:source-v1",
+    }
+
+    result = _run_loop("validator", env=env)
+
+    assert result.returncode == 0, result.stderr
+    prompt = captured_prompt.read_text(encoding="utf-8")
+    assert "bundle fallback" in prompt
+    assert str(bundles_dir / "N-001.json") in prompt
+
+
 def _write_resolver_stub(path: Path, attempts: Path) -> None:
     path.write_text(
         "#!/usr/bin/env bash\n"

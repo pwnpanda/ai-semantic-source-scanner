@@ -16,7 +16,7 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -207,16 +207,24 @@ def run_in_sandbox(  # noqa: PLR0913 - kw-only args mirror the CLI surface
     timeout: int = DEFAULT_TIMEOUT_SEC,
     signal_pattern: str = DEFAULT_SIGNAL,
     runtime: str | None = None,
+    read_only_mounts: Sequence[tuple[Path, Path]] = (),
 ) -> SandboxResult:
     """Run ``argv`` inside a hardened container using the configured runtime.
 
-    ``work_dir`` is mounted read-only at ``/work``. ``argv`` is passed straight
-    to the entrypoint. Stdout is scanned for ``signal_pattern``; presence
-    flips :class:`SandboxResult.signal_seen` to ``True``. ``runtime`` defaults
-    to the value stored at install time.
+    ``work_dir`` is mounted read-only at ``/work``. Extra mounts keep their
+    requested container paths. ``argv`` is passed straight to the entrypoint.
+    Stdout is scanned for ``signal_pattern``. ``runtime`` defaults to the
+    value stored at install time.
     """
     chosen = runtime or configured_runtime()
     binary = runtime_binary(chosen)
+
+    extra_mount_args: list[str] = []
+    for source, target in read_only_mounts:
+        if not target.is_absolute():
+            raise ValueError(f"container mount target must be absolute: {target}")
+        resolved_source = source.resolve(strict=True)
+        extra_mount_args.extend(["-v", f"{resolved_source}:{target}:ro"])
 
     container_argv = [
         binary,
@@ -224,6 +232,7 @@ def run_in_sandbox(  # noqa: PLR0913 - kw-only args mirror the CLI surface
         *_HARDENING_FLAGS,
         "-v",
         f"{work_dir}:/work:ro",
+        *extra_mount_args,
         "--workdir",
         "/work",
         image,

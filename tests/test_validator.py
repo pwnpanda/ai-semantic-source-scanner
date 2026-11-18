@@ -260,6 +260,30 @@ def test_run_poc_routes_javascript_to_node_image(
     assert argv[image_idx + 2] == "poc.js"
 
 
+def test_run_poc_mounts_source_and_run_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _capture_subprocess(monkeypatch)
+    source_root = tmp_path / "source"
+    run_dir = tmp_path / "run"
+    source_root.mkdir()
+    run_dir.mkdir()
+    poc = _write_poc(tmp_path, ".py", "print('BENIGN')\n")
+    profile = profile_for_extension(".py")
+
+    _run_poc(
+        poc,
+        work_dir=tmp_path,
+        profile=profile,
+        no_sandbox=False,
+        read_only_mounts=((source_root, source_root), (run_dir, run_dir)),
+    )
+
+    argv = calls[0]
+    assert f"{source_root}:{source_root}:ro" in argv
+    assert f"{run_dir}:{run_dir}:ro" in argv
+
+
 def test_run_poc_routes_go_to_golang_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _capture_subprocess(monkeypatch)
     poc = _write_poc(tmp_path, ".go")

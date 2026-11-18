@@ -144,6 +144,37 @@ def test_run_in_sandbox_raises_when_runtime_missing(
         run_in_sandbox(["echo", "hi"], image="alpine:3.20", work_dir=tmp_path, runtime="docker")
 
 
+def test_run_in_sandbox_adds_read_only_reference_mounts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work_dir = tmp_path / "work"
+    source_root = tmp_path / "repo" / "source"
+    run_dir = tmp_path / "repo" / "runs" / "one"
+    work_dir.mkdir()
+    source_root.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="BENIGN", stderr="")
+
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    run_in_sandbox(
+        ["python3", "poc.py"],
+        image="python:3.13-slim",
+        work_dir=work_dir,
+        runtime="docker",
+        read_only_mounts=((source_root, source_root), (run_dir, run_dir)),
+    )
+
+    argv = calls[0]
+    assert f"{source_root}:{source_root}:ro" in argv
+    assert f"{run_dir}:{run_dir}:ro" in argv
+
+
 def test_run_in_sandbox_uses_available_credential_helper_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
