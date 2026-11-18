@@ -224,6 +224,7 @@ def test_analyze_auto_invokes_miss_review_by_default(
     )
 
     assert result.exit_code == 0, result.output
+    assert "storage fixpoint:" in result.output
     assert "[miss-review]" in result.output
     # Miss-finder regenerated the queue instead of reusing the stale cache.
     assert (repo / "miss_candidates.jsonl").is_file()
@@ -972,23 +973,24 @@ def test_scan_skip_hitl_runs_stages_in_order(tmp_path: Path, monkeypatch) -> Non
     stages = [c[c.index("--cache-dir") + 2] for c in calls]
     assert stages == [
         "prep",
+        "taint-schema",
         "nominate",
         "gate-1",
         "analyze",
         "gate-2",
-        "taint-schema",  # Phase 17: storage_taint fixpoint -> stored XSS
         "validate",
         "gate-3",
         "report",
     ]
+    assert calls[1][-2:] == ["taint-schema", "--run"]
     assert calls[0][-2:] == ["--engine", "hybrid"]
     assert calls[0][calls[0].index("--llm-provider") : calls[0].index("--llm-provider") + 2] == [
         "--llm-provider",
         "claude",
     ]
     # Gates auto-accept under --skip-hitl.
-    assert calls[2][-2:] == ["gate-1", "--yes"]
-    assert calls[4][-2:] == ["gate-2", "--yes"]
+    assert calls[3][-2:] == ["gate-1", "--yes"]
+    assert calls[5][-2:] == ["gate-2", "--yes"]
     assert calls[7][-2:] == ["gate-3", "--yes"]
     # The report stage emits HTML.
     assert "--html" in calls[8]

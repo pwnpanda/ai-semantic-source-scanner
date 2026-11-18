@@ -560,7 +560,7 @@ Deliverables:
 
 Follow-ups (intentionally deferred):
 - [ ] Stored-XSS eval target. Needs a JS/Python target whose DB-write pattern `storage_taint.run_fixpoint` already understands; building one + tuning the pattern is its own debugging cycle.
-- [ ] Wire `run_full_fixpoint` into `analyze` / `scan` so stored XSS runs by default. Today only `taint-schema` triggers it.
+- [x] Run the storage fixpoint before scan nomination and at standalone analysis startup.
 - [ ] Tighter same-function (not same-file) proximity gate once the call graph is wired into the heuristic.
 - [x] Detect template output bypasses in Jinja, Django, JSP, and Razor templates.
 

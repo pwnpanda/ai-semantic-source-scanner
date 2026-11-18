@@ -2059,6 +2059,18 @@ def run(  # noqa: PLR0913 - flag plumbing matches user-visible CLI surface
         raise typer.Exit(code=rc)
 
 
+def _run_cached_storage_fixpoint(repo_dir: Path, db_path: Path) -> dict[str, Any]:
+    conn = duckdb.connect(str(db_path))
+    try:
+        return run_full_fixpoint(
+            conn,
+            snapshot_root=repo_dir / "source",
+            schema_path=repo_dir / "schema.taint.yml",
+        )
+    finally:
+        conn.close()
+
+
 @app.command()
 def analyze(  # noqa: PLR0913 - Typer command options are intentionally explicit.
     ctx: typer.Context,
@@ -2126,6 +2138,12 @@ def analyze(  # noqa: PLR0913 - Typer command options are intentionally explicit
     if not runs_root.is_dir() or not any(runs_root.iterdir()):
         typer.echo("No runs. Run nominate + gate-1 first.", err=True)
         raise typer.Exit(code=1)
+    fixpoint_stats = _run_cached_storage_fixpoint(repo_dir, db_path)
+    typer.echo(
+        f"storage fixpoint: rounds={fixpoint_stats['rounds_run']} "
+        f"new_flows={fixpoint_stats['new_flows']} "
+        f"stored_xss={fixpoint_stats['stored_xss_flows']}"
+    )
     last_run = max(runs_root.iterdir(), key=lambda p: p.stat().st_mtime)
     state = load_or_create(
         repo_dir,
@@ -2589,6 +2607,7 @@ def scan(  # noqa: PLR0913 - Typer command surface is intentionally explicit
         return False
 
     _stage("prep", str(target), *llm_args, "--engine", engine)
+    _stage("taint-schema", "--run", fatal=False)
     _stage("nominate", *llm_args)
     if skip_hitl:
         _stage("gate-1", "--yes")
@@ -2601,10 +2620,6 @@ def scan(  # noqa: PLR0913 - Typer command surface is intentionally explicit
     else:
         _stage("gate-2")  # opens findings/ in $EDITOR
         _hitl_gate("findings")
-    # Phase 17: run the storage_taint fixpoint so stored-XSS / stored-injection
-    # synthetic flows land in the index before the validator picks findings up.
-    # Non-fatal — a repo without SQL/cache patterns simply yields zero rounds.
-    _stage("taint-schema", fatal=False)
     _stage("validate", *llm_args, fatal=False)
     if skip_hitl:
         _stage("gate-3", "--yes")
