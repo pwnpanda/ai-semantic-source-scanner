@@ -55,6 +55,7 @@ from ai_codescan.model_proposals import (
     apply_proposal_to_semgrep,
     link_eval_targets,
     list_model_proposals,
+    promote_semgrep_rule,
     proposal_decision_counts,
     proposal_path_for,
     proposals_from_verdicts,
@@ -1328,8 +1329,12 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
                 record_proposal_decision(
                     conn,
                     proposal_id=proposal.proposal_id,
-                    decision="applied",
-                    engine=f"joern-extension:{entry.sink_class}",
+                    decision="applied" if promote else "pending",
+                    engine=(
+                        f"joern-extension:{entry.sink_class}"
+                        if promote
+                        else f"joern-extension-staged:{entry.sink_class}"
+                    ),
                     eval_positive=proposal.eval_positive,
                     eval_negative=proposal.eval_negative,
                     applied_path=str(written_path),
@@ -1374,8 +1379,12 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
                 record_proposal_decision(
                     conn,
                     proposal_id=proposal.proposal_id,
-                    decision="applied",
-                    engine=f"codeql-extension:{codeql_entry.language}",
+                    decision="applied" if promote else "pending",
+                    engine=(
+                        f"codeql-extension:{codeql_entry.language}"
+                        if promote
+                        else f"codeql-extension-staged:{codeql_entry.language}"
+                    ),
                     eval_positive=proposal.eval_positive,
                     eval_negative=proposal.eval_negative,
                     applied_path=str(written_path),
@@ -1411,8 +1420,8 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
             record_proposal_decision(
                 conn,
                 proposal_id=proposal.proposal_id,
-                decision="applied",
-                engine=engine,
+                decision="applied" if promote else "pending",
+                engine=engine if promote else f"{engine}-staged",
                 eval_positive=proposal.eval_positive,
                 eval_negative=proposal.eval_negative,
                 applied_path=str(rule_path),
@@ -1422,8 +1431,55 @@ def model_proposals_apply(  # noqa: PLR0912, PLR0913, PLR0915 - Typer command su
     typer.echo(f"wrote {'promoted' if promote else 'staged'} Semgrep rule: {rule_path}")
 
 
+def _mark_proposal_promoted(
+    repo_dir: Path,
+    proposal_id: str,
+    engine: str,
+    active_path: Path,
+) -> None:
+    db_path = repo_dir / "index.duckdb"
+    if not db_path.is_file():
+        return
+    conn = duckdb.connect(str(db_path))
+    try:
+        apply_schema(conn)
+        previous = conn.execute(
+            "SELECT eval_positive, eval_negative FROM proposal_decisions WHERE proposal_id = ?",
+            [proposal_id],
+        ).fetchone()
+        record_proposal_decision(
+            conn,
+            proposal_id=proposal_id,
+            decision="applied",
+            engine=engine,
+            eval_positive=str(previous[0] or "") if previous else "",
+            eval_negative=str(previous[1] or "") if previous else "",
+            applied_path=str(active_path),
+        )
+    finally:
+        conn.close()
+
+
+def _promote_semgrep_proposal(
+    cache_root: Path,
+    repo_id: str,
+    proposal_id: str,
+    rules_root: Path,
+) -> None:
+    repo_dir = cache_root / repo_id
+    effective_root = repo_dir / ".semgrep" if rules_root == Path(".semgrep") else rules_root
+    try:
+        active_path = promote_semgrep_rule(proposal_id, rules_root=effective_root)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    register_rules_root(repo_dir, effective_root)
+    _mark_proposal_promoted(repo_dir, proposal_id, "semgrep", active_path)
+    typer.echo(f"promoted Semgrep rule for proposal {proposal_id}: {active_path}")
+
+
 @model_proposals_app.command("promote")
-def model_proposals_promote(
+def model_proposals_promote(  # noqa: PLR0913 - Typer exposes independent CLI options
     ctx: typer.Context,
     proposal_id: Annotated[
         str,
@@ -1431,27 +1487,41 @@ def model_proposals_promote(
     ] = "",
     engine: Annotated[
         str,
-        typer.Option(
-            "--engine",
-            help="Which engine's staged area to promote from (currently: joern).",
-        ),
+        typer.Option("--engine", help="Engine target: semgrep | joern."),
     ] = "joern",
     all_staged: Annotated[
         bool,
-        typer.Option(
-            "--all",
-            help="Promote every staged Joern extension at once.",
-        ),
+        typer.Option("--all", help="Promote every staged Joern extension at once."),
     ] = False,
     repo_id: Annotated[str, typer.Option("--repo-id", help="Which cached repo.")] = "",
+    *,
+    rules_root: Annotated[
+        Path,
+        typer.Option(
+            "--rules-root",
+            help="Semgrep rules root. The default uses the repository cache.",
+        ),
+    ] = Path(".semgrep"),
 ) -> None:
-    """Promote staged Joern extensions into the active file Joern reads."""
+    """Move a reviewed staged rule into the active scanner configuration."""
     if proposal_id and not all_staged:
         proposal_id = _validated_model_proposal_id(proposal_id)
+    engine = _validated_model_proposal_engine(engine)
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    if engine == "semgrep":
+        if all_staged:
+            typer.echo("Semgrep promotion requires one proposal id", err=True)
+            raise typer.Exit(code=1)
+        if not proposal_id:
+            typer.echo("must pass a proposal id", err=True)
+            raise typer.Exit(code=1)
+        _promote_semgrep_proposal(cache_root, repo_id, proposal_id, rules_root)
+        return
     if engine != "joern":
         typer.echo(
             f"engine '{engine}' has no separate staged/promoted distinction; "
-            "only 'joern' supports promote.",
+            "use 'semgrep' or 'joern'.",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -1461,8 +1531,6 @@ def model_proposals_promote(
         staged_path_for,
     )
 
-    cache_root: Path = ctx.obj["cache_root"]
-    repo_id = _resolve_repo_id(cache_root, repo_id)
     ext_path = cache_root / repo_id / "aics-joern-extension-packs.json"
     if all_staged:
         staged_entries = load_joern_extensions(staged_path_for(ext_path))
@@ -1476,6 +1544,12 @@ def model_proposals_promote(
             moved = promote_joern_extension(entry.proposal_id, extension_path=ext_path)
             if moved is not None:
                 promoted_ids.append(moved.proposal_id)
+                _mark_proposal_promoted(
+                    cache_root / repo_id,
+                    moved.proposal_id,
+                    f"joern-extension:{moved.sink_class}",
+                    ext_path,
+                )
         typer.echo(
             f"promoted {len(promoted_ids)} Joern extension(s) into {ext_path}: "
             + ", ".join(promoted_ids)
@@ -1488,6 +1562,12 @@ def model_proposals_promote(
     if moved is None:
         typer.echo(f"no staged Joern extension found for proposal {proposal_id}", err=True)
         raise typer.Exit(code=1)
+    _mark_proposal_promoted(
+        cache_root / repo_id,
+        moved.proposal_id,
+        f"joern-extension:{moved.sink_class}",
+        ext_path,
+    )
     typer.echo(
         f"promoted Joern extension (proposal={proposal_id} pattern={moved.pattern}) into {ext_path}"
     )

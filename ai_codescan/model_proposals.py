@@ -346,12 +346,9 @@ def apply_proposal_to_semgrep(
 ) -> Path:
     """Render a Semgrep YAML rule from a model proposal.
 
-    Phase 3 staged-not-merged gate: by default the rule lands under
-    ``rules_root / "rules.staged"``. A follow-up `--promote` flow (not in
-    Phase 3) will move it to ``rules_root / "rules"`` after a paired eval
-    run confirms no recall regression. When ``sink_pattern`` is empty the
-    rule still lands but its `pattern` field carries a `TODO:` so a human
-    (or another LLM pass) refines it before promotion.
+    By default, the rule lands under ``rules_root / "rules.staged"``.
+    ``promote_semgrep_rule`` moves the reviewed file into the active directory.
+    A rule without ``sink_pattern`` contains a placeholder and cannot be promoted.
     """
     rule_id = _semgrep_rule_id(proposal)
     target_dir = rules_root / (_STAGED_DIR_NAME if staged else "rules")
@@ -393,3 +390,80 @@ def apply_proposal_to_semgrep(
         encoding="utf-8",
     )
     return target_path
+
+
+def _load_semgrep_rule_file(path: Path) -> tuple[dict[str, Any], list[Any]] | None:
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid staged Semgrep rule {path}: {exc}") from exc
+    if not isinstance(document, dict):
+        return None
+    rules = document.get("rules")
+    if not isinstance(rules, list):
+        return None
+    return document, rules
+
+
+def _semgrep_promotion_candidates(
+    staged_dir: Path,
+    proposal_id: str,
+) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+    candidates: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
+    staged_paths = sorted((*staged_dir.glob("*.yml"), *staged_dir.glob("*.yaml")))
+    for staged_path in staged_paths:
+        loaded = _load_semgrep_rule_file(staged_path)
+        if loaded is None:
+            continue
+        document, rules = loaded
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            metadata = rule.get("metadata")
+            if isinstance(metadata, dict) and metadata.get("proposal_id") == proposal_id:
+                candidates.append((staged_path, document, rule))
+    return candidates
+
+
+def promote_semgrep_rule(proposal_id: str, *, rules_root: Path) -> Path:
+    """Move one reviewed Semgrep rule from the staged directory to the active directory.
+
+    Args:
+        proposal_id: Proposal identifier stored in the rule metadata.
+        rules_root: Directory that contains ``rules.staged`` and ``rules``.
+
+    Returns:
+        The active rule path.
+
+    Raises:
+        ValueError: If the staged rule is missing, ambiguous, invalid, or incomplete.
+    """
+    proposal_id = validate_proposal_id(proposal_id)
+    staged_dir = rules_root / _STAGED_DIR_NAME
+    candidates = _semgrep_promotion_candidates(staged_dir, proposal_id)
+    if not candidates:
+        raise ValueError(f"no staged Semgrep rule found for proposal {proposal_id}")
+    if len(candidates) != 1:
+        raise ValueError(f"multiple staged Semgrep rules found for proposal {proposal_id}")
+    staged_path, document, rule = candidates[0]
+    rules = document.get("rules")
+    if not isinstance(rules, list) or len(rules) != 1:
+        raise ValueError(f"staged Semgrep file must contain one rule: {staged_path}")
+    pattern = str(rule.get("pattern") or "")
+    if not pattern or pattern.startswith("TODO:"):
+        raise ValueError(f"staged Semgrep rule has a placeholder pattern: {staged_path}")
+    metadata = rule.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError(f"staged Semgrep rule lacks metadata: {staged_path}")
+    active_dir = rules_root / "rules"
+    active_path = active_dir / staged_path.name
+    if active_path.exists():
+        raise ValueError(f"active Semgrep rule already exists: {active_path}")
+    metadata["stage"] = "promoted"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    active_path.write_text(
+        yaml.safe_dump(document, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+    staged_path.unlink()
+    return active_path

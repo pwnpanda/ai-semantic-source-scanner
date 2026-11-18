@@ -675,7 +675,7 @@ Deferred work:
   - [x] Remove repeated analyzer text and empty Markdown template sections.
   - [x] Add a Markdown snapshot that fixes the field names and section order.
   - [x] Render HTML finding cards from the same normalized record.
-- Automatic rule promotion beyond the Phase 3 staged-not-merged dir (a separate `--promote` flag will move staged rules into the active dir after eval review).
+- [x] Promote reviewed Semgrep rules from `rules.staged/` into the active rule directory.
 - Joern model patching and CodeQL pack extension (Phase 3 covers Semgrep only; the others have a harder edit surface).
 - Full Ghost automation. We use Ghost results only as imported comparison data.
 - Live DAST validation changes.

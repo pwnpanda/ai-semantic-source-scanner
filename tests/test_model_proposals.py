@@ -21,6 +21,7 @@ from ai_codescan.model_proposals import (
     apply_proposal_to_semgrep,
     link_eval_targets,
     list_model_proposals,
+    promote_semgrep_rule,
     proposal_decision_counts,
     proposal_path_for,
     proposals_from_verdicts,
@@ -398,6 +399,34 @@ def test_apply_proposal_to_semgrep_writes_staged_yaml(tmp_path: Path) -> None:
     assert rule["pattern"] == "requests.get($URL)"
 
 
+def test_promote_semgrep_rule_moves_reviewed_yaml_to_active_dir(tmp_path: Path) -> None:
+    rules_root = tmp_path / ".semgrep"
+    staged_path = apply_proposal_to_semgrep(_proposal(), rules_root=rules_root)
+    reviewed = yaml.safe_load(staged_path.read_text(encoding="utf-8"))
+    reviewed["rules"][0]["message"] = "Reviewed message"
+    staged_path.write_text(yaml.safe_dump(reviewed, sort_keys=False), encoding="utf-8")
+
+    promoted_path = promote_semgrep_rule("proposal-test", rules_root=rules_root)
+
+    assert promoted_path == rules_root / "rules" / staged_path.name
+    assert not staged_path.exists()
+    promoted = yaml.safe_load(promoted_path.read_text(encoding="utf-8"))
+    assert promoted["rules"][0]["message"] == "Reviewed message"
+    assert promoted["rules"][0]["metadata"]["stage"] == "promoted"
+
+
+def test_promote_semgrep_rule_refuses_placeholder_pattern(tmp_path: Path) -> None:
+    proposal = replace(_proposal(), sink_pattern="")
+    rules_root = tmp_path / ".semgrep"
+    staged_path = apply_proposal_to_semgrep(proposal, rules_root=rules_root)
+
+    with pytest.raises(ValueError, match="placeholder pattern"):
+        promote_semgrep_rule(proposal.proposal_id, rules_root=rules_root)
+
+    assert staged_path.is_file()
+    assert not (rules_root / "rules").exists()
+
+
 def test_accept_refuses_without_paired_eval_targets(tmp_path: Path) -> None:
     """Phase 3 paired-target gate (Invariant 5): apply refuses unless the
     proposal has BOTH a positive and a negative eval target linked."""
@@ -511,9 +540,7 @@ def test_apply_proposal_to_semgrep_emits_placeholder_when_pattern_empty(tmp_path
 
 
 def test_model_proposals_cli_apply_engine_joern_writes_extension(tmp_path: Path) -> None:
-    """Phase 5: `model-proposals apply --engine joern` writes a sink entry
-    into aics-joern-extension-packs.json in the repo cache and records
-    the decision as engine=joern-extension:<class>."""
+    """The Joern apply command stages a sink and records a pending decision."""
     cache = tmp_path / "cache"
     repo_dir = cache / "repo-1"
     run_dir = repo_dir / "runs" / "run-1"
@@ -572,18 +599,18 @@ def test_model_proposals_cli_apply_engine_joern_writes_extension(tmp_path: Path)
     assert staged_path.is_file()
     payload = json.loads(staged_path.read_text(encoding="utf-8"))
     assert payload["sinks"][0]["pattern"] == "(?i)^(my_custom_fetch)$"
-    # Decision recorded with the joern-extension prefix.
     conn = duckdb.connect(str(repo_dir / "index.duckdb"), read_only=True)
     try:
         row = conn.execute(
-            "SELECT engine, applied_path FROM proposal_decisions "
+            "SELECT decision, engine, applied_path FROM proposal_decisions "
             "WHERE proposal_id = 'proposal-joern'"
         ).fetchone()
     finally:
         conn.close()
     assert row is not None
-    assert row[0].startswith("joern-extension:")
-    assert row[1] == str(staged_path)
+    assert row[0] == "pending"
+    assert row[1].startswith("joern-extension-staged:")
+    assert row[2] == str(staged_path)
 
 
 def test_model_proposals_cli_promote_moves_staged_to_active(tmp_path: Path) -> None:
@@ -665,6 +692,19 @@ def test_model_proposals_cli_promote_moves_staged_to_active(tmp_path: Path) -> N
     assert promoted["sinks"][0]["pattern"] == "(?i)^(promote_fetch)$"
     staged = json.loads(staged_path.read_text(encoding="utf-8"))
     assert staged["sinks"] == []
+    conn = duckdb.connect(str(repo_dir / "index.duckdb"), read_only=True)
+    try:
+        decision = conn.execute(
+            "SELECT decision, engine, applied_path FROM proposal_decisions "
+            "WHERE proposal_id = 'proposal-prom'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert decision == (
+        "applied",
+        "joern-extension:ssrf",
+        str(promoted_path),
+    )
 
 
 def test_model_proposals_cli_promote_all_bulk_moves_every_staged(tmp_path: Path) -> None:
@@ -861,8 +901,12 @@ def test_model_proposals_cli_link_targets_then_apply(tmp_path: Path) -> None:
 
 def test_model_proposals_promote_registers_external_semgrep_root(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
-    proposals_dir = cache / "repo-1" / "runs" / "run-1" / "model_proposals"
+    repo_dir = cache / "repo-1"
+    proposals_dir = repo_dir / "runs" / "run-1" / "model_proposals"
     write_model_proposals([_proposal()], proposals_dir=proposals_dir)
+    conn = duckdb.connect(str(repo_dir / "index.duckdb"))
+    apply_schema(conn)
+    conn.close()
     positive = tmp_path / "positive-target"
     positive.mkdir()
     negative = tmp_path / "negative-target"
@@ -885,7 +929,7 @@ def test_model_proposals_promote_registers_external_semgrep_root(tmp_path: Path)
         ],
     )
 
-    promoted = runner.invoke(
+    staged = runner.invoke(
         app,
         [
             "--cache-dir",
@@ -897,11 +941,34 @@ def test_model_proposals_promote_registers_external_semgrep_root(tmp_path: Path)
             "repo-1",
             "--rules-root",
             str(rules_root),
-            "--promote",
         ],
     )
-
     assert linked.exit_code == 0, linked.stdout + linked.stderr
+    assert staged.exit_code == 0, staged.stdout + staged.stderr
+    conn = duckdb.connect(str(repo_dir / "index.duckdb"), read_only=True)
+    try:
+        staged_decision = conn.execute(
+            "SELECT decision FROM proposal_decisions WHERE proposal_id = 'proposal-test'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert staged_decision == ("pending",)
+    promoted = runner.invoke(
+        app,
+        [
+            "--cache-dir",
+            str(cache),
+            "model-proposals",
+            "promote",
+            "proposal-test",
+            "--repo-id",
+            "repo-1",
+            "--engine",
+            "semgrep",
+            "--rules-root",
+            str(rules_root),
+        ],
+    )
     assert promoted.exit_code == 0, promoted.stdout + promoted.stderr
     assert any((rules_root / "rules").glob("aics-cwe-639-*.yml"))
     registry = json.loads(
@@ -909,6 +976,17 @@ def test_model_proposals_promote_registers_external_semgrep_root(tmp_path: Path)
     )
     assert registry == {"rules_root": str(rules_root.resolve())}
     assert (rules_root / "rules").resolve() in active_rule_dirs(cache / "repo-1")
+    conn = duckdb.connect(str(repo_dir / "index.duckdb"), read_only=True)
+    try:
+        promoted_decision = conn.execute(
+            "SELECT decision, engine, applied_path FROM proposal_decisions "
+            "WHERE proposal_id = 'proposal-test'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert promoted_decision is not None
+    assert promoted_decision[0:2] == ("applied", "semgrep")
+    assert Path(promoted_decision[2]).parent == rules_root / "rules"
 
 
 def test_model_proposals_apply_refuses_without_paired_targets(tmp_path: Path) -> None:
