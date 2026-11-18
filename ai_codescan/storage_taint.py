@@ -20,7 +20,7 @@ import hashlib
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -335,6 +335,34 @@ _SELECT_STRING = re.compile(
 )
 
 
+@dataclass(slots=True)
+class _StorageReadAccumulator:
+    known_locations: set[str]
+    existing_reads: set[tuple[str, str]]
+    existing_symbols: set[str]
+    rows: list[tuple[str, str, str | None]] = field(default_factory=list)
+    symbols: list[tuple[str, str, str, str, int, int, str | None, str]] = field(
+        default_factory=list
+    )
+
+    def add(self, sql: str, *, file: str, line: int) -> None:
+        symbol_id = f"read:{file}:{line}"
+        storage_ids = set(detect_sql_storage_ids(sql)) & self.known_locations
+        if not storage_ids:
+            return
+        if symbol_id not in self.existing_symbols:
+            self.existing_symbols.add(symbol_id)
+            self.symbols.append(
+                (symbol_id, "storage_read", "storage_read", file, line, line, None, sql)
+            )
+        for storage_id in sorted(storage_ids):
+            key = (storage_id, symbol_id)
+            if key in self.existing_reads:
+                continue
+            self.existing_reads.add(key)
+            self.rows.append((storage_id, symbol_id, None))
+
+
 def _stable_id(prefix: str, *parts: str) -> str:
     """Return ``<prefix><sha1[:12]>`` deterministic from ``parts``."""
     digest = hashlib.sha1("\x1f".join(parts).encode("utf-8"), usedforsecurity=False).hexdigest()
@@ -365,15 +393,16 @@ def detect_storage_reads(conn: duckdb.DuckDBPyConnection, *, snapshot_root: Path
     if not snapshot_root.is_dir():
         return 0
 
-    known_locations = {
-        row[0] for row in conn.execute("SELECT storage_id FROM storage_locations").fetchall()
-    }
-    existing_reads = {
-        (row[0], row[1])
-        for row in conn.execute("SELECT storage_id, symbol_id FROM storage_reads").fetchall()
-    }
-
-    new_rows: list[tuple[str, str, str | None]] = []
+    accumulator = _StorageReadAccumulator(
+        known_locations={
+            row[0] for row in conn.execute("SELECT storage_id FROM storage_locations").fetchall()
+        },
+        existing_reads={
+            (row[0], row[1])
+            for row in conn.execute("SELECT storage_id, symbol_id FROM storage_reads").fetchall()
+        },
+        existing_symbols={row[0] for row in conn.execute("SELECT id FROM symbols").fetchall()},
+    )
     for pattern in _JS_TS_GLOBS:
         for src_path in snapshot_root.glob(pattern):
             if not src_path.is_file():
@@ -391,22 +420,19 @@ def detect_storage_reads(conn: duckdb.DuckDBPyConnection, *, snapshot_root: Path
                     continue
                 line = text.count("\n", 0, match.start()) + 1
                 rel = source_file.relative_to(snapshot_root.resolve()).as_posix()
-                symbol_id = f"read:{rel}:{line}"
-                for storage_id in detect_sql_storage_ids(sql):
-                    if storage_id not in known_locations:
-                        continue
-                    key = (storage_id, symbol_id)
-                    if key in existing_reads:
-                        continue
-                    existing_reads.add(key)
-                    new_rows.append((storage_id, symbol_id, None))
+                accumulator.add(sql, file=rel, line=line)
 
-    if new_rows:
+    if accumulator.symbols:
+        conn.executemany(
+            "INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            accumulator.symbols,
+        )
+    if accumulator.rows:
         conn.executemany(
             "INSERT INTO storage_reads VALUES (?, ?, ?)",
-            new_rows,
+            accumulator.rows,
         )
-    return len(new_rows)
+    return len(accumulator.rows)
 
 
 def derive_storage_taint(conn: duckdb.DuckDBPyConnection) -> int:

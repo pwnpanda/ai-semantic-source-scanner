@@ -1,5 +1,6 @@
 """Tests for ai_codescan.storage_taint."""
 
+import json
 from pathlib import Path
 
 import duckdb
@@ -22,6 +23,7 @@ from ai_codescan.storage_taint import (
     save_schema_yaml,
     synthesize_round2_flows,
 )
+from ai_codescan.stored_xss import SYNTHETIC_ENGINE
 
 
 def test_detect_sql_storage_ids_simple_select() -> None:
@@ -203,6 +205,11 @@ def test_detect_storage_reads_from_select_statements(tmp_path: Path) -> None:
     assert inserted >= 1
     rows = conn.execute("SELECT storage_id, symbol_id FROM storage_reads").fetchall()
     assert any(storage_id == "sql:users.bio" for storage_id, _ in rows)
+    symbol = conn.execute(
+        "SELECT file, range_start, range_end FROM symbols WHERE id = ?",
+        ["read:reader.js:1"],
+    ).fetchone()
+    assert symbol == ("reader.js", 1, 1)
     # Re-running is idempotent.
     second = detect_storage_reads(conn, snapshot_root=snapshot_root)
     assert second == 0
@@ -297,6 +304,40 @@ def test_run_full_fixpoint_terminates_within_3_rounds(tmp_path: Path) -> None:
     # Synthetic round-2 flow row exists.
     r2 = conn.execute("SELECT COUNT(*) FROM flows WHERE engine = 'storage-taint-r2'").fetchone()
     assert r2 is not None and r2[0] >= 1
+
+
+def test_run_full_fixpoint_emits_stored_xss_from_discovered_read(tmp_path: Path) -> None:
+    conn = duckdb.connect(str(tmp_path / "x.duckdb"))
+    _seed_round1_users_bio(conn)
+    snapshot_root = tmp_path / "source"
+    snapshot_root.mkdir()
+    (snapshot_root / "reader.js").write_text(
+        "const rows = await db.query('SELECT bio FROM users WHERE id = 1');\n"
+        "res.send(rows[0].bio);\n",
+        encoding="utf-8",
+    )
+    conn.execute(
+        "INSERT INTO flows VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            "F-XSS",
+            "T1",
+            "K1",
+            "CWE-79",
+            "joern",
+            json.dumps([["reader.js", 2, 2]]),
+            None,
+            "likely",
+        ],
+    )
+
+    stats = run_full_fixpoint(conn, snapshot_root=snapshot_root, max_rounds=3)
+
+    assert stats["stored_xss_flows"] == 1
+    stored = conn.execute(
+        "SELECT cwe, confidence FROM flows WHERE engine = ?",
+        [SYNTHETIC_ENGINE],
+    ).fetchone()
+    assert stored == ("CWE-79", "inferred")
 
 
 def test_run_full_fixpoint_no_snapshot_still_runs(tmp_path: Path) -> None:
