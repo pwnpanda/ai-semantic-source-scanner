@@ -667,14 +667,14 @@ Deferred work:
   - [x] Keep exploitability separate from validation status.
   - [x] Surface latent findings in `latent-findings.md` and `latent-findings.jsonl`.
   - [x] Record exact prerequisites that can make a latent finding exploitable.
-- [ ] Standardize all reports around one finding schema and one rendering pipeline.
+- [x] Standardize all reports around one finding schema and one rendering pipeline.
   Remove duplicate summaries, evidence, remediation text, and metadata from each report.
   Define required fields and section order before changing the report generators.
   Add snapshot tests that reject duplicate sections and inconsistent field names.
   - [x] Define one normalized finding record and one Markdown section order.
   - [x] Remove repeated analyzer text and empty Markdown template sections.
   - [x] Add a Markdown snapshot that fixes the field names and section order.
-  - [ ] Render HTML finding cards from the same normalized record.
+  - [x] Render HTML finding cards from the same normalized record.
 - Automatic rule promotion beyond the Phase 3 staged-not-merged dir (a separate `--promote` flag will move staged rules into the active dir after eval review).
 - Joern model patching and CodeQL pack extension (Phase 3 covers Semgrep only; the others have a harder edit surface).
 - Full Ghost automation. We use Ghost results only as imported comparison data.

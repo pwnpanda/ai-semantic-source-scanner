@@ -33,7 +33,12 @@ def test_render_empty_report(tmp_path: Path) -> None:
 
 
 def test_render_findings_have_title_badge_summary_detail(tmp_path: Path) -> None:
-    body = "This endpoint concatenates request input into SQL.\nNo parameterization."
+    body = (
+        "## Summary\nThis endpoint concatenates request input into SQL.\n\n"
+        "## Evidence\nNo parameterization protects the query.\n\n"
+        "## Why-real\nAn attacker can change the query.\n\n"
+        "## Mitigation\nUse a bound parameter.\n"
+    )
     path = render_html_report([_finding(body=body)], out_dir=tmp_path / "report")
     text = path.read_text(encoding="utf-8")
     # Title.
@@ -44,7 +49,11 @@ def test_render_findings_have_title_badge_summary_detail(tmp_path: Path) -> None
     assert "concatenates request input into SQL" in text
     # Full detail behind a <details> toggle.
     assert "<details>" in text
-    assert "No parameterization." in text
+    assert "No parameterization protects the query." in text
+    assert "Use a bound parameter." in text
+    assert "No reproduction steps were recorded." in text
+    assert "Nomination ID: N-1" in text
+    assert text.count("This endpoint concatenates request input into SQL.") == 1
 
 
 def test_render_escapes_html_in_finding_body(tmp_path: Path) -> None:

@@ -412,7 +412,7 @@ def build_finding_report(
         reviewer=str(verdict.get("reviewer") or "not recorded"),
         affected_location=affected_location or "No source location was recorded.",
         impact=sections.get("why-real") or "No separate impact statement was recorded.",
-        evidence=sections.get("evidence") or finding.body.strip() or "No evidence was recorded.",
+        evidence=sections.get("evidence") or "No separate evidence statement was recorded.",
         scanner_evidence=_bundle_evidence(bundle) or "No scanner evidence was recorded.",
         validation=sections.get("validation evidence") or "No validation evidence was recorded.",
         reproduction=sections.get("reproduction steps") or "No reproduction steps were recorded.",

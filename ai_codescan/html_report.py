@@ -27,7 +27,7 @@ import duckdb
 
 from ai_codescan.call_graph import build_call_graph
 from ai_codescan.findings.model import Finding
-from ai_codescan.report import derive_meta
+from ai_codescan.report import FindingReport, build_finding_report
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ main { max-width: 960px; margin: 0 auto; padding: 24px 32px 64px; }
 .finding-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px;
                 border-bottom: 1px solid #f0f0f0; }
 .finding-head h2 { margin: 0; font-size: 16px; flex: 1; }
+.finding-id { color: #6b7280; font: 12px ui-monospace, monospace; }
 .badge { font-size: 11px; font-weight: 700; text-transform: uppercase;
          padding: 3px 9px; border-radius: 12px; color: #fff; white-space: nowrap; }
 .badge.critical { background: #b91c1c; }
@@ -59,6 +60,7 @@ main { max-width: 960px; margin: 0 auto; padding: 24px 32px 64px; }
 .badge.informational { background: #6b7280; }
 .cwe { font-size: 12px; color: #6b7280; }
 .summary { padding: 12px 18px; margin: 0; color: #374151; }
+.finding-meta { padding: 0 18px 10px; color: #6b7280; font-size: 12px; }
 details { padding: 0 18px 14px; }
 details summary { cursor: pointer; font-size: 13px; color: #2563eb; padding: 6px 0; }
 details pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 6px;
@@ -69,27 +71,32 @@ details pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius:
 """
 
 
-def _summary_lines(body: str, *, max_lines: int = 4) -> str:
-    """First few non-empty, non-heading lines of a finding body."""
-    out: list[str] = []
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("```"):
-            continue
-        out.append(line)
-        if len(out) >= max_lines:
-            break
-    return " ".join(out) if out else "(no summary available)"
-
-
-def _finding_card(finding: Finding, severity: str, *, has_flow: bool) -> str:
-    sev = severity if severity in _SEVERITY_ORDER else "informational"
-    cwe = html.escape(finding.cwe or "—")
-    title = html.escape(finding.title or finding.finding_id)
-    summary = html.escape(_summary_lines(finding.body))
-    detail = html.escape(finding.body or "(no detail)")
+def _finding_card(report: FindingReport, *, has_flow: bool) -> str:
+    severity = report.severity if report.severity in _SEVERITY_ORDER else "informational"
+    prerequisites = (
+        "\n".join(f"- {item}" for item in report.prerequisites)
+        if report.prerequisites
+        else "No unmet prerequisites were recorded."
+    )
+    references = (
+        f"Nomination ID: {report.nomination_id}\nFlow ID: {report.flow_id or 'not recorded'}"
+    )
+    detail_sections = (
+        ("Affected location", report.affected_location),
+        ("Impact", report.impact),
+        ("Evidence", report.evidence),
+        ("Scanner evidence", report.scanner_evidence),
+        ("Validation", report.validation),
+        ("Reproduction", report.reproduction),
+        ("Proof of concept", report.proof_of_concept),
+        ("Prerequisites", prerequisites),
+        ("Remediation", report.remediation),
+        ("Open questions", report.open_questions),
+        ("References", references),
+    )
+    detail = html.escape("\n\n".join(f"{heading}\n{body}" for heading, body in detail_sections))
     flow_link = (
-        f'<div class="finding-foot"><a href="flow-{html.escape(finding.finding_id)}.html">'
+        f'<div class="finding-foot"><a href="flow-{html.escape(report.finding_id)}.html">'
         "View data-flow graph &rarr;</a></div>"
         if has_flow
         else ""
@@ -97,13 +104,19 @@ def _finding_card(finding: Finding, severity: str, *, has_flow: bool) -> str:
     return f"""\
 <section class="finding">
   <div class="finding-head">
-    <span class="badge {sev}">{sev}</span>
-    <h2>{title}</h2>
-    <span class="cwe">{cwe}</span>
+    <span class="badge {severity}">{severity}</span>
+    <span class="finding-id">{html.escape(report.finding_id)}</span>
+    <h2>{html.escape(report.title or report.finding_id)}</h2>
+    <span class="cwe">{html.escape(report.cwe)}</span>
   </div>
-  <p class="summary">{summary}</p>
+  <p class="summary">{html.escape(report.summary)}</p>
+  <div class="finding-meta">Class: {html.escape(report.vuln_class)} | \
+Confidence: {html.escape(report.confidence)} | \
+Validation: {html.escape(report.validation_status)} | \
+Exploitability: {html.escape(report.exploitability)} | \
+Review: {html.escape(report.review_verdict)} by {html.escape(report.reviewer)}</div>
   <details>
-    <summary>Full detail &mdash; source, evidence, analysis</summary>
+    <summary>Source, evidence, validation, and remediation</summary>
     <pre>{detail}</pre>
   </details>
   {flow_link}
@@ -271,21 +284,21 @@ def render_html_report(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ranked: list[tuple[int, Finding, str]] = []
+    ranked: list[tuple[int, Finding, FindingReport]] = []
     for finding in findings:
-        severity = derive_meta(finding).severity
-        ranked.append((_SEVERITY_ORDER.get(severity, 4), finding, severity))
+        report = build_finding_report(finding)
+        ranked.append((_SEVERITY_ORDER.get(report.severity, 4), finding, report))
     ranked.sort(key=lambda t: (t[0], t[1].finding_id))
 
     cards: list[str] = []
-    for _, finding, severity in ranked:
+    for _, finding, report in ranked:
         steps = _flow_steps(conn, finding.flow_id) if conn is not None else []
         has_flow = bool(steps)
         if has_flow and conn is not None:
             (out_dir / f"flow-{finding.finding_id}.html").write_text(
                 _flow_graph_page(finding, steps), encoding="utf-8"
             )
-        cards.append(_finding_card(finding, severity, has_flow=has_flow))
+        cards.append(_finding_card(report, has_flow=has_flow))
 
     nav_links = ['<a href="report.html">Findings</a>']
     if conn is not None:
