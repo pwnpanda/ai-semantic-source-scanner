@@ -7,7 +7,7 @@ license: apache-2.0
 
 # Validator
 
-For each finding still `status: unverified`:
+For each finding with `status: unverified` or `status: poc_inconclusive`:
 
 1. Read the finding markdown from `$AI_CODESCAN_FINDING_PATH`.
 2. Read the slice JSON from `$AI_CODESCAN_SLICE_FILE` (same as the analyzer received).

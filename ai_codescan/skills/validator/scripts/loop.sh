@@ -120,15 +120,17 @@ PY
 HINTS_DIR="${AI_CODESCAN_HINTS_DIR:-$RUN_DIR/validation_hints}"
 TARGET_LANG="${AI_CODESCAN_TARGET_LANG:-}"
 
-# Count only findings still ``unverified`` — everything else is skipped.
+# Count findings that need a first attempt or a new inconclusive attempt.
 total=0
 for finding in "$FINDINGS_DIR"/*.md; do
   [[ -f "$finding" ]] || continue
   status_line="$(grep -E '^status:' "$finding" | head -1 || true)"
-  [[ "$status_line" == *"unverified"* ]] && total=$((total + 1))
+  if [[ "$status_line" == *"unverified"* || "$status_line" == *"poc_inconclusive"* ]]; then
+    total=$((total + 1))
+  fi
 done
 done_count=$(find "$RUN_DIR/.done-validate" -maxdepth 1 -type f ! -name '*.stdout' 2>/dev/null | wc -l | tr -d ' ')
-echo "[validate] queue: $total unverified findings ($done_count already done)" >&2
+echo "[validate] queue: $total reviewable findings ($done_count already done)" >&2
 
 idx=0
 failures=0
@@ -137,7 +139,7 @@ for finding in "$FINDINGS_DIR"/*.md; do
   finding_id="$(basename "$finding" .md)"
 
   status_line="$(grep -E '^status:' "$finding" | head -1 || true)"
-  if [[ "$status_line" != *"unverified"* ]]; then
+  if [[ "$status_line" != *"unverified"* && "$status_line" != *"poc_inconclusive"* ]]; then
     continue
   fi
   idx=$((idx + 1))

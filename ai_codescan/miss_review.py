@@ -14,6 +14,11 @@ from typing import Any, Literal, TypeGuard, get_args
 import duckdb
 
 from ai_codescan.findings.model import Finding, render_finding
+from ai_codescan.lineage import (
+    record_candidates,
+    refresh_candidate_lineage,
+    write_miss_review_results,
+)
 from ai_codescan.llm import LLMConfig, is_available
 from ai_codescan.model_proposals import proposals_from_verdicts, write_model_proposals
 from ai_codescan.nominator import write_llm_cmd_script
@@ -153,6 +158,7 @@ def ingest_miss_reviews(
                 status="unverified",
                 title=f"Exploratory finding: {review.proposal.get('cwe', 'unknown CWE')}",
                 body=f"{review.rationale}\n\nEvidence:\n{evidence_lines}",
+                candidate_id=review.candidate_id,
             )
             (findings_dir / f"{finding_id}.md").write_text(
                 render_finding(finding),
@@ -495,6 +501,14 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
     staged = stage_miss_review_queue(
         candidates, queue_path=queue_path, max_candidates=max_candidates
     )
+    record_candidates(
+        run_dir,
+        run_id=run_dir.name,
+        candidates=candidates,
+        selected_candidate_ids={str(candidate.get("id") or "") for candidate in staged},
+        origin="miss-finder",
+    )
+    write_miss_review_results(run_dir, [])
     _remove_obsolete_miss_artifacts(
         repo_dir=repo_dir,
         run_dir=run_dir,
@@ -506,6 +520,7 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
         candidate_cache_keys=candidate_cache_keys,
     )
     if not is_available(effective.provider):
+        refresh_candidate_lineage(run_dir)
         return {
             "queue": str(queue_path),
             "staged": len(staged),
@@ -537,12 +552,14 @@ def run_miss_review(  # noqa: PLR0913 - keyword-only fan-in mirrors run_analyzer
         findings_dir=findings_dir,
         candidate_ids=staged_candidate_ids,
     )
+    write_miss_review_results(run_dir, reviews)
     routing = _persist_reviews_and_route(
         db_path=db_path,
         reviews=reviews,
         proposals_dir=proposals_dir,
         repo_dir=repo_dir,
     )
+    refresh_candidate_lineage(run_dir)
 
     return {
         "queue": str(queue_path),

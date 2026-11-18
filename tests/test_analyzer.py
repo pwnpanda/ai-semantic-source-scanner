@@ -159,6 +159,25 @@ def test_limit_review_items_caps_by_score(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_limit_review_items_uses_source_candidate_score(tmp_path: Path) -> None:
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO candidate_scores
+          (candidate_id, flow_id, stream, score, label, factors_json, scorer)
+        VALUES ('A-source', NULL, 'A', 0.9, 'high', '[]', 'test')
+        """
+    )
+    items = [QueueItem("N-001", "api", "sqli", "/x:1", candidate_id="A-source")]
+
+    filtered = _limit_review_items(conn, items, min_score=0.5)
+
+    assert filtered == items
+    conn.close()
+
+
 def test_run_analyzer_writes_queue_and_slices(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -178,9 +197,15 @@ def test_run_analyzer_writes_queue_and_slices(
     state = load_or_create(repo_dir, engine="codeql", temperature=0.0, target_bug_classes=["sqli"])
     # The QueueItem.loc field carries the exact source_loc (file:line).
     nomination_loc = f"{src_file}:2"
+    (state.run_dir / "queue.jsonl").write_text(
+        '{"id":"A-source","stream":"A","fid":"F1",'
+        f'"source_loc":"{nomination_loc}","score":0.9}}\n',
+        encoding="utf-8",
+    )
     (state.run_dir / "nominations.md").write_text(
         "# Nominations\n\n## Stream A\n\n"
-        f"- [ ] N-001 | api | sqli | {nomination_loc} | rec: high | y/n: y\n",
+        f"- [ ] N-001 | api | sqli | {nomination_loc} | rec: high | y/n: y\n"
+        "    Candidate: A-source\n",
         encoding="utf-8",
     )
 
@@ -193,6 +218,7 @@ def test_run_analyzer_writes_queue_and_slices(
     assert slice_file.is_file()
     bundle_file = state.run_dir / "bundles" / "N-001.json"
     assert bundle_file.is_file()
+    assert '"candidate_id": "A-source"' in bundle_file.read_text(encoding="utf-8")
     findings_dir = state.run_dir / "findings"
     assert findings_dir.is_dir()
 

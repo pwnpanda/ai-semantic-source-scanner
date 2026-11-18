@@ -9,7 +9,8 @@ from ai_codescan.gate import parse_nominations
 
 _QUEUE_LINE = re.compile(
     r"^- \[(?P<state>[ x!])\] (?P<id>N-[\w-]+) \| (?P<project>[^|]+) \| "
-    r"(?P<vector>[^|]+) \| (?P<loc>[^|]+)\s*$"
+    r"(?P<vector>[^|]+) \| (?P<loc>[^|]+?)"
+    r"(?: \| candidate: (?P<candidate_id>[A-Za-z0-9_-]+))?\s*$"
 )
 
 
@@ -19,6 +20,7 @@ class QueueItem:
     project: str
     vector: str
     loc: str
+    candidate_id: str = ""
 
 
 def accepted_nominations_to_queue(nominations_md: str) -> list[QueueItem]:
@@ -29,6 +31,7 @@ def accepted_nominations_to_queue(nominations_md: str) -> list[QueueItem]:
             project=n.project,
             vector=n.vector,
             loc=n.loc,
+            candidate_id=n.candidate_id,
         )
         for n in parse_nominations(nominations_md)
         if n.decision == "y"
@@ -39,7 +42,8 @@ def render_queue(items: list[QueueItem]) -> str:
     """Render a list of queue items as the findings_queue.md body."""
     lines = ["# Findings queue", ""]
     for it in items:
-        lines.append(f"- [ ] {it.nomination_id} | {it.project} | {it.vector} | {it.loc}")
+        suffix = f" | candidate: {it.candidate_id}" if it.candidate_id else ""
+        lines.append(f"- [ ] {it.nomination_id} | {it.project} | {it.vector} | {it.loc}{suffix}")
     return "\n".join(lines) + "\n"
 
 
@@ -56,6 +60,7 @@ def parse_queue(md: str) -> list[QueueItem]:
                 project=m.group("project").strip(),
                 vector=m.group("vector").strip(),
                 loc=m.group("loc").strip(),
+                candidate_id=(m.group("candidate_id") or "").strip(),
             )
         )
     return out

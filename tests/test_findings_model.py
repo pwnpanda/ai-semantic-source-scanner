@@ -14,6 +14,7 @@ def test_render_then_parse_roundtrips() -> None:
         status="unverified",
         title="SQL injection in users.ts:42",
         body="The handler concatenates `req.params.id` into a SQL query.",
+        candidate_id="A-flow-17",
     )
     md = render_finding(f)
     parsed = parse_finding(md)

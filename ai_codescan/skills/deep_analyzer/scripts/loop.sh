@@ -61,6 +61,7 @@ render_prompt() {
   cat "$PROMPT"
   printf '\n\n---\n\n## This iteration\n\n'
   printf 'Nomination id: `%s`\n' "$nom_id"
+  printf 'Candidate id: `%s`\n' "$candidate_id"
   printf 'Finding id: `%s`\n\n' "$finding_id"
   printf 'Nomination block (from `nominations.md`):\n\n```\n%s\n```\n\n' "$nomination"
   printf 'Reference paths (for Read/Grep — do not write):\n\n'
@@ -76,19 +77,36 @@ render_prompt() {
 write_finding_from_stdout() {
   local llm_out="$1"
   local finding_path="$2"
-  python3 - "$llm_out" "$finding_path" <<'PY'
+  local candidate_id="$3"
+  python3 - "$llm_out" "$finding_path" "$candidate_id" <<'PY'
 import re
 import sys
 from pathlib import Path
 
 raw = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
 out_path = Path(sys.argv[2])
+candidate_id = sys.argv[3]
 start = re.search(r"<<<AI_CODESCAN_FINDING:STATUS=([a-z_]+)>>>", raw)
 end = re.search(r"<<<AI_CODESCAN_FINDING:END>>>", raw[start.end():]) if start else None
 if not start or not end:
     print("no finding block in LLM output", file=sys.stderr)
     sys.exit(2)
 body = raw[start.end():start.end() + end.start()].strip("\n")
+if not body.startswith("---\n"):
+    print("finding block has no YAML frontmatter", file=sys.stderr)
+    sys.exit(3)
+frontmatter_end = body.find("\n---\n", 4)
+if frontmatter_end == -1:
+    print("finding block has unterminated YAML frontmatter", file=sys.stderr)
+    sys.exit(4)
+frontmatter = body[4:frontmatter_end]
+frontmatter = re.sub(r"(?m)^candidate_id:\s*.*\n?", "", frontmatter).rstrip()
+body = (
+    "---\n"
+    + frontmatter
+    + f"\ncandidate_id: {candidate_id}\n---\n"
+    + body[frontmatter_end + 5:].lstrip("\n")
+)
 out_path.write_text(body + "\n", encoding="utf-8")
 PY
 }
@@ -108,6 +126,10 @@ while IFS= read -r line; do
     continue
   fi
   nom_id="${BASH_REMATCH[1]}"
+  candidate_id="${line##* | candidate: }"
+  if [[ "$candidate_id" == "$line" ]]; then
+    candidate_id="$nom_id"
+  fi
   done="$RUN_DIR/.done-analyze/${nom_id}"
   finding_id="F-${nom_id#N-}"
   finding_path="$RUN_DIR/findings/${finding_id}.md"
@@ -138,7 +160,7 @@ while IFS= read -r line; do
     failures=$((failures + 1))
     continue
   fi
-  if ! write_finding_from_stdout "$iter_log" "$finding_path"; then
+  if ! write_finding_from_stdout "$iter_log" "$finding_path" "$candidate_id"; then
     elapsed=$(($(date +%s) - start_ts))
     echo "FAIL no block (${elapsed}s)" >&2
     failures=$((failures + 1))

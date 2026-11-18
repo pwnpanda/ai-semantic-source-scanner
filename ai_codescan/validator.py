@@ -10,10 +10,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
+import duckdb
+
 from ai_codescan.findings.model import Finding, Status, parse_finding, render_finding
+from ai_codescan.lineage import refresh_candidate_lineage
 from ai_codescan.llm import LLMConfig, is_available
 from ai_codescan.nominator import write_llm_cmd_script
 from ai_codescan.review_cache import build_llm_context_fingerprint
+from ai_codescan.review_verdicts import sync_review_verdicts
 from ai_codescan.runs.state import RunState, save
 from ai_codescan.sandbox import (
     DEFAULT_SIGNAL,
@@ -30,6 +34,10 @@ from ai_codescan.taxonomy.loader import list_classes
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "validator"
 
 _VERDICT_RE = re.compile(r"\{[^{}]*\"verdict\"[^{}]*\}")
+_LEGACY_BENIGN_RE = re.compile(r"(?m)^\s*BENIGN\s*$")
+_VALIDATABLE_STATUSES = frozenset({"unverified", "poc_inconclusive"})
+_EVIDENCE_START = "<!-- ai-codescan-validation-evidence:start -->"
+_EVIDENCE_END = "<!-- ai-codescan-validation-evidence:end -->"
 
 
 def _parse_verdict(stdout: str) -> dict[str, Any] | None:
@@ -50,6 +58,22 @@ def _parse_verdict(stdout: str) -> dict[str, Any] | None:
     return None
 
 
+def _verdict_evidence(verdict: dict[str, Any]) -> list[str]:
+    raw_evidence = verdict.get("evidence")
+    if not isinstance(raw_evidence, list):
+        return []
+    return [item.strip() for item in raw_evidence if isinstance(item, str) and item.strip()]
+
+
+def _structured_verdict_status(verdict: dict[str, Any]) -> str:
+    verdict_name = str(verdict["verdict"]).lower()
+    if verdict_name == "vulnerable":
+        return "verified"
+    if verdict_name != "not_vulnerable":
+        return "poc_inconclusive"
+    return "rejected" if _verdict_evidence(verdict) else "poc_inconclusive"
+
+
 def _flip_status(result: SandboxResult) -> tuple[str, dict[str, Any] | None]:
     """Combine multiple verdict signals into a status.
 
@@ -60,16 +84,13 @@ def _flip_status(result: SandboxResult) -> tuple[str, dict[str, Any] | None]:
     """
     parsed = _parse_verdict(result.stdout)
     if parsed:
-        verdict = str(parsed["verdict"]).lower()
-        if verdict == "vulnerable":
-            return "verified", parsed
-        if verdict == "not_vulnerable":
-            return "rejected", parsed
-        return "poc_inconclusive", parsed
+        return _structured_verdict_status(parsed), parsed
     if result.signal_seen:
         return "verified", None
     if result.exit_code == 0 and not result.timed_out:
-        return "rejected", None
+        if _LEGACY_BENIGN_RE.search(result.stdout):
+            return "rejected", None
+        return "poc_inconclusive", None
     return "poc_inconclusive", None
 
 
@@ -89,6 +110,26 @@ def _validation_log_row(
         f"| timed_out={'y' if result.timed_out else 'n'} "
         f"| evidence={evidence_count}{confidence} |"
     )
+
+
+def _body_with_validation_evidence(body: str, verdict: dict[str, Any] | None) -> str:
+    if not verdict or not (evidence_items := _verdict_evidence(verdict)):
+        return body
+    evidence = "\n".join(f"- {item}" for item in evidence_items)
+    confidence = ""
+    if "confidence" in verdict:
+        confidence = f"\n\n*Confidence: {verdict['confidence']}*"
+    block = (
+        f"{_EVIDENCE_START}\n\n## Validation evidence\n\n{evidence}{confidence}\n\n{_EVIDENCE_END}"
+    )
+    if _EVIDENCE_START not in body:
+        return body.rstrip() + "\n\n" + block + "\n"
+    prefix, _start, remainder = body.partition(_EVIDENCE_START)
+    _old, end, suffix = remainder.partition(_EVIDENCE_END)
+    if not end:
+        return prefix.rstrip() + "\n\n" + block + "\n"
+    suffix = suffix.lstrip("\n")
+    return prefix.rstrip() + "\n\n" + block + ("\n\n" + suffix if suffix else "\n")
 
 
 def _hints_for_cwe(cwe: str | None) -> list[str]:
@@ -229,7 +270,7 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
     log_rows: list[str] = []
     for finding_path in sorted(findings_dir.glob("*.md")):
         finding = parse_finding(finding_path.read_text(encoding="utf-8"))
-        if finding.status != "unverified":
+        if finding.status not in _VALIDATABLE_STATUSES:
             continue
         # Look for poc.<ext> for any supported extension; fall back to poc.py.
         sandbox_dir = state.run_dir / "sandbox" / finding.finding_id
@@ -268,13 +309,7 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
             continue
         flipped, verdict = _flip_status(result)
         new_status = cast(Status, flipped)
-        # If the JSON verdict carried evidence, append it to the finding body.
-        body = finding.body
-        if verdict and verdict.get("evidence"):
-            body = body.rstrip() + "\n\n## Validation evidence\n\n"
-            body += "\n".join(f"- {e}" for e in verdict["evidence"]) + "\n"
-            if "confidence" in verdict:
-                body += f"\n*Confidence: {verdict['confidence']}*\n"
+        body = _body_with_validation_evidence(finding.body, verdict)
         updated = Finding(
             finding_id=finding.finding_id,
             nomination_id=finding.nomination_id,
@@ -283,6 +318,7 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
             status=new_status,
             title=finding.title,
             body=body,
+            candidate_id=finding.candidate_id,
         )
         finding_path.write_text(render_finding(updated), encoding="utf-8")
         log_rows.append(_validation_log_row(finding.finding_id, new_status, result, verdict))
@@ -294,4 +330,12 @@ def run_validator(  # noqa: PLR0912, PLR0915 - orchestrator inherently combines 
         "|---|---|---|---|---|---|\n"
     )
     log_path.write_text(header + "\n".join(log_rows) + "\n", encoding="utf-8")
+    db_path = repo_dir / "index.duckdb"
+    if db_path.is_file():
+        conn = duckdb.connect(str(db_path))
+        try:
+            sync_review_verdicts(conn, findings_dir, nomination_prefix="N-")
+        finally:
+            conn.close()
+    refresh_candidate_lineage(state.run_dir)
     return log_path

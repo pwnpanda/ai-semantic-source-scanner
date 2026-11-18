@@ -19,6 +19,17 @@ def test_parse_extracts_y_n_state(fixtures_dir: Path) -> None:
     assert by_id["N-004"].decision == ""
 
 
+def test_parse_extracts_source_candidate_id() -> None:
+    md = (
+        "# Nominations\n\n## Stream A\n\n"
+        "- [ ] N-001 | api | sqli | src/x.ts:4 | rec: high | y/n: y\n"
+        "    Candidate: A-flow-17\n"
+        "    Summary: SQL input reaches a query.\n"
+    )
+
+    assert parse_nominations(md)[0].candidate_id == "A-flow-17"
+
+
 def test_apply_yes_to_all_only_fills_unanswered(fixtures_dir: Path) -> None:
     md = (fixtures_dir / "nominations-sample.md").read_text()
     out = apply_yes_to_all(md)

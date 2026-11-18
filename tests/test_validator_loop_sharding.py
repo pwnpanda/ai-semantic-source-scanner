@@ -36,9 +36,9 @@ def test_workers_process_disjoint_finding_shards(tmp_path: Path) -> None:
     slices.mkdir()
     inputs.mkdir()
     (inputs / "repo.md").write_text("# Repo\n", encoding="utf-8")
-    for number in ("001", "002"):
+    for number, status in (("001", "unverified"), ("002", "poc_inconclusive")):
         (findings / f"F-{number}.md").write_text(
-            "status: unverified\ntitle: test finding\n",
+            f"status: {status}\ntitle: test finding\n",
             encoding="utf-8",
         )
         (slices / f"N-{number}.json").write_text("{}\n", encoding="utf-8")

@@ -18,8 +18,15 @@ def _write_stub_llm(path: Path) -> None:
         "cat - >/dev/null\n"
         "cat <<'BLOCK'\n"
         "<<<AI_CODESCAN_FINDING:STATUS=unverified>>>\n"
+        "---\n"
+        "finding_id: F-model-value\n"
+        "nomination_id: N-model-value\n"
+        "flow_id: ''\n"
+        "cwe: CWE-000\n"
         "status: unverified\n"
         "title: test finding\n"
+        "---\n"
+        "Body.\n"
         "<<<AI_CODESCAN_FINDING:END>>>\n"
         "BLOCK\n",
         encoding="utf-8",
@@ -34,8 +41,8 @@ def test_workers_process_disjoint_queue_shards(tmp_path: Path) -> None:
     bundles.mkdir(parents=True)
     (run_dir / "findings_queue.md").write_text(
         "# Findings queue\n\n"
-        "- [ ] N-001 | project | authz | src/a.ts:1 | rec: high | y/n: y\n"
-        "- [ ] N-002 | project | xss | src/b.ts:2 | rec: high | y/n: y\n",
+        "- [ ] N-001 | project | authz | src/a.ts:1 | candidate: A-one\n"
+        "- [ ] N-002 | project | xss | src/b.ts:2 | candidate: A-two\n",
         encoding="utf-8",
     )
     for nomination_id in ("N-001", "N-002"):
@@ -64,3 +71,5 @@ def test_workers_process_disjoint_queue_shards(tmp_path: Path) -> None:
         path.name for path in (run_dir / ".done-analyze").iterdir() if path.suffix != ".stdout"
     }
     assert markers == {"N-001", "N-002"}
+    assert "candidate_id: A-one" in (run_dir / "findings" / "F-001.md").read_text()
+    assert "candidate_id: A-two" in (run_dir / "findings" / "F-002.md").read_text()

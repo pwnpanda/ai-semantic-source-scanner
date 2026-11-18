@@ -10,6 +10,7 @@ from ai_codescan.findings.model import Finding, parse_finding, render_finding
 from ai_codescan.runs.state import load_or_create
 from ai_codescan.sandbox import SandboxResult, SandboxUnavailableError, profile_for_extension
 from ai_codescan.validator import (
+    _body_with_validation_evidence,
     _flip_status,
     _hints_for_cwe,
     _parse_verdict,
@@ -34,9 +35,25 @@ def test_flip_verified_when_signal_seen() -> None:
     assert status == "verified"
 
 
-def test_flip_rejected_when_clean_exit_no_signal() -> None:
+def test_flip_rejects_explicit_legacy_benign() -> None:
     status, _ = _flip_status(_result(0, signal=False))
     assert status == "rejected"
+
+
+def test_flip_inconclusive_when_clean_exit_has_no_verdict() -> None:
+    result = _result(0, signal=False)
+    result = SandboxResult(
+        exit_code=result.exit_code,
+        stdout="analysis completed",
+        stderr=result.stderr,
+        duration_sec=result.duration_sec,
+        signal_seen=result.signal_seen,
+        timed_out=result.timed_out,
+    )
+
+    status, _ = _flip_status(result)
+
+    assert status == "poc_inconclusive"
 
 
 def test_flip_inconclusive_when_nonzero_exit() -> None:
@@ -47,6 +64,23 @@ def test_flip_inconclusive_when_nonzero_exit() -> None:
 def test_flip_inconclusive_when_timed_out() -> None:
     status, _ = _flip_status(_result(124, signal=False, timed_out=True))
     assert status == "poc_inconclusive"
+
+
+def test_validation_evidence_replaces_previous_attempt() -> None:
+    first = _body_with_validation_evidence(
+        "## Summary\n\nOriginal finding.\n",
+        {"evidence": ["first observation"], "confidence": 0.4},
+    )
+
+    updated = _body_with_validation_evidence(
+        first,
+        {"evidence": ["second observation"], "confidence": 0.6},
+    )
+
+    assert updated.count("## Validation evidence") == 1
+    assert "first observation" not in updated
+    assert "second observation" in updated
+    assert "Original finding." in updated
 
 
 def test_run_validator_writes_log_when_no_pocs(
@@ -158,6 +192,62 @@ def test_flip_status_uses_json_verdict_when_present() -> None:
     assert parsed is not None and parsed["confidence"] == 0.7
 
 
+def test_flip_status_rejects_negative_verdict_with_evidence() -> None:
+    result = SandboxResult(
+        exit_code=0,
+        stdout=(
+            '{"verdict": "not_vulnerable", '
+            '"evidence": ["sanitizer rejected the payload"], "confidence": 0.8}'
+        ),
+        stderr="",
+        duration_sec=0.0,
+        signal_seen=False,
+        timed_out=False,
+        runtime="docker",
+    )
+
+    status, parsed = _flip_status(result)
+
+    assert status == "rejected"
+    assert parsed is not None
+
+
+def test_flip_status_keeps_negative_verdict_without_evidence_inconclusive() -> None:
+    result = SandboxResult(
+        exit_code=0,
+        stdout='{"verdict": "not_vulnerable", "evidence": [], "confidence": 0.8}',
+        stderr="",
+        duration_sec=0.0,
+        signal_seen=False,
+        timed_out=False,
+        runtime="docker",
+    )
+
+    status, parsed = _flip_status(result)
+
+    assert status == "poc_inconclusive"
+    assert parsed is not None
+
+
+def test_flip_status_ignores_non_list_negative_evidence() -> None:
+    result = SandboxResult(
+        exit_code=0,
+        stdout=(
+            '{"verdict": "not_vulnerable", '
+            '"evidence": "sanitizer rejected the payload", "confidence": 0.8}'
+        ),
+        stderr="",
+        duration_sec=0.0,
+        signal_seen=False,
+        timed_out=False,
+        runtime="docker",
+    )
+
+    status, _parsed = _flip_status(result)
+
+    assert status == "poc_inconclusive"
+
+
 def test_flip_status_falls_back_to_signal_when_no_json() -> None:
     result = SandboxResult(
         exit_code=0,
@@ -173,7 +263,7 @@ def test_flip_status_falls_back_to_signal_when_no_json() -> None:
     assert parsed is None
 
 
-def test_flip_status_rejected_on_clean_run_without_signal() -> None:
+def test_flip_status_inconclusive_on_clean_run_without_verdict() -> None:
     result = SandboxResult(
         exit_code=0,
         stdout="just some output, no signal",
@@ -184,8 +274,48 @@ def test_flip_status_rejected_on_clean_run_without_signal() -> None:
         runtime="docker",
     )
     status, parsed = _flip_status(result)
-    assert status == "rejected"
+    assert status == "poc_inconclusive"
     assert parsed is None
+
+
+def test_run_validator_retries_inconclusive_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_dir = tmp_path / "repo"
+    (repo_dir / "source").mkdir(parents=True)
+    state = load_or_create(repo_dir, engine="codeql", temperature=0.0, target_bug_classes=[])
+    findings_dir = state.run_dir / "findings"
+    findings_dir.mkdir()
+    finding_path = findings_dir / "F-001.md"
+    finding_path.write_text(
+        render_finding(
+            Finding(
+                finding_id="F-001",
+                nomination_id="N-001",
+                flow_id="F1",
+                cwe="CWE-89",
+                status="poc_inconclusive",
+                title="t",
+                body="b",
+                candidate_id="A-source",
+            )
+        ),
+        encoding="utf-8",
+    )
+    sandbox_dir = state.run_dir / "sandbox" / "F-001"
+    sandbox_dir.mkdir(parents=True)
+    (sandbox_dir / "poc.py").write_text("print('OK_VULN')\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", "/nonexistent")
+    monkeypatch.setattr(
+        "ai_codescan.validator._run_poc",
+        lambda *_args, **_kwargs: _result(0, signal=True),
+    )
+
+    run_validator(state, repo_dir=repo_dir)
+
+    finding = parse_finding(finding_path.read_text(encoding="utf-8"))
+    assert finding.status == "verified"
+    assert finding.candidate_id == "A-source"
 
 
 def test_hints_for_cwe_returns_taxonomy_hints() -> None:

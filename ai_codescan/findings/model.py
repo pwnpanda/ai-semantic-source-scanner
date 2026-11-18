@@ -20,6 +20,7 @@ class Finding:
     status: Status
     title: str
     body: str
+    candidate_id: str = ""
 
 
 def render_finding(f: Finding) -> str:
@@ -31,6 +32,7 @@ def render_finding(f: Finding) -> str:
         "cwe": f.cwe or "",
         "status": f.status,
         "title": f.title,
+        "candidate_id": f.candidate_id,
     }
     yaml_block = yaml.safe_dump(front, sort_keys=True).strip()
     return f"---\n{yaml_block}\n---\n\n{f.body}"
@@ -68,4 +70,5 @@ def parse_finding(md: str) -> Finding:
         status=status,
         title=str(front.get("title", "")),
         body=body,
+        candidate_id=str(front.get("candidate_id", "")),
     )

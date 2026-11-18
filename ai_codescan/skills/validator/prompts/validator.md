@@ -50,6 +50,7 @@ Print a final JSON line on stdout with this exact shape:
 
 The runner parses this. `vulnerable` flips the finding to `verified`,
 `not_vulnerable` to `rejected`, `inconclusive` to `poc_inconclusive`.
+The runner accepts `not_vulnerable` only when `evidence` contains a concrete observation.
 
 `evidence` should reference observable facts from the run, e.g.
 `"response body contains 'You have an error in your SQL syntax'"` or
@@ -62,6 +63,8 @@ If you cannot emit JSON for any reason, you may instead:
 1. Print exactly the literal `OK_VULN` on stdout when the bug triggers.
 2. Print `BENIGN` and exit 0 when a sanitiser blocks the exploit.
 3. Exit non-zero with a short explanation when the path can't be reproduced offline.
+
+A clean exit without JSON, `OK_VULN`, or the exact `BENIGN` token is inconclusive.
 
 ## Sandboxing
 

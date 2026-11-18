@@ -102,3 +102,27 @@ body
         "CWE-22",
         "Path traversal model gap",
     )
+
+
+def test_sync_review_verdicts_can_limit_nomination_prefix(tmp_path: Path) -> None:
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    findings = tmp_path / "findings"
+    findings.mkdir()
+    for finding_id, nomination_id in (("F-001", "N-001"), ("F-miss-1", "B-miss-1")):
+        (findings / f"{finding_id}.md").write_text(
+            "---\n"
+            f"finding_id: {finding_id}\n"
+            f"nomination_id: {nomination_id}\n"
+            "status: verified\n"
+            "title: Finding\n"
+            "---\n\nBody.\n",
+            encoding="utf-8",
+        )
+
+    synced = sync_review_verdicts(conn, findings, nomination_prefix="N-")
+
+    assert [verdict.nomination_id for verdict in synced] == ["N-001"]
+    rows = conn.execute("SELECT nomination_id FROM review_verdicts").fetchall()
+    assert rows == [("N-001",)]

@@ -98,13 +98,15 @@ append_nomination_from_stdout() {
   # Stream header in $NOMS. Returns non-zero if no block was found so the
   # caller can warn but keep iterating.
   local llm_out="$1"
-  python3 - "$llm_out" "$NOMS" <<'PY'
+  local candidate_id="$2"
+  python3 - "$llm_out" "$NOMS" "$candidate_id" <<'PY'
 import re
 import sys
 from pathlib import Path
 
 raw = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
 noms_path = Path(sys.argv[2])
+candidate_id = sys.argv[3]
 
 start_re = re.compile(r"<<<AI_CODESCAN_NOMINATION:STREAM=([ABC])>>>", re.MULTILINE)
 end_re = re.compile(r"<<<AI_CODESCAN_NOMINATION:END>>>", re.MULTILINE)
@@ -140,6 +142,12 @@ if not renumbered:
     print("nomination block has no '- [ ] N-NNN' line", file=sys.stderr)
     sys.exit(4)
 
+# The model does not own candidate identity. Store the source candidate in the
+# nomination block so later stages do not infer lineage from unrelated ids.
+body_lines = body.splitlines()
+body_lines.insert(1, f"    Candidate: {candidate_id}")
+body = "\n".join(body_lines)
+
 # Insert the body immediately after the header line + blank line.
 insert_at = contents.find("\n", hm.end()) + 1
 if contents[insert_at:insert_at + 1] == "\n":
@@ -174,7 +182,7 @@ while IFS= read -r line; do
     failures=$((failures + 1))
     continue
   fi
-  stream=$(append_nomination_from_stdout "$iter_log" 2>&1) || stream=""
+  stream=$(append_nomination_from_stdout "$iter_log" "$candidate_id" 2>&1) || stream=""
   elapsed=$(($(date +%s) - start_ts))
   if [[ -z "$stream" || ! "$stream" =~ ^[ABC]$ ]]; then
     echo "FAIL no block (${elapsed}s)" >&2

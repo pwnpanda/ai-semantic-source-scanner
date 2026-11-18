@@ -17,6 +17,11 @@ from typing import Any
 import duckdb
 
 from ai_codescan.evidence import build_evidence_bundle, write_evidence_bundle
+from ai_codescan.lineage import (
+    record_candidates,
+    refresh_candidate_lineage,
+    reset_candidate_lineage,
+)
 from ai_codescan.llm import LLMConfig, build_argv, is_available
 from ai_codescan.review_cache import build_llm_context_fingerprint
 from ai_codescan.runs.state import RunState, save
@@ -385,6 +390,7 @@ def run_nominator(
     llm: LLMConfig | None = None,
 ) -> Path:
     """Stage inputs, drive the skill loop, return path to nominations.md."""
+    reset_candidate_lineage(state.run_dir)
     conn = duckdb.connect(str(db_path))
     try:
         queue = build_queue(
@@ -393,8 +399,22 @@ def run_nominator(
         )
         scores = score_candidates(conn, queue, source_root=repo_dir / "source")
         persist_candidate_scores(conn, scores)
-        queue = attach_scores(queue, scores)
-        queue = _exclude_test_candidates(queue, run_dir=state.run_dir)
+        scored_queue = attach_scores(queue, scores)
+        queue = _exclude_test_candidates(scored_queue, run_dir=state.run_dir)
+        selected_ids = {str(candidate["id"]) for candidate in queue}
+        registry_candidates = [
+            {**candidate, "skip_reason": "test-source"}
+            if is_test_candidate(candidate)
+            else candidate
+            for candidate in scored_queue
+        ]
+        record_candidates(
+            state.run_dir,
+            run_id=state.run_id,
+            candidates=registry_candidates,
+            selected_candidate_ids=selected_ids,
+            origin="nominator",
+        )
         _stage_inputs(state, repo_dir, queue, conn)
     finally:
         conn.close()
@@ -416,6 +436,7 @@ def run_nominator(
         reusable=bool(effective.model),
     )
     if not is_available(effective.provider):
+        refresh_candidate_lineage(state.run_dir)
         return nominations_path
 
     cmd_script = write_llm_cmd_script(state.run_dir / ".llm-cmd.sh", effective)
@@ -433,4 +454,5 @@ def run_nominator(
         env=env,
         check=True,
     )
+    refresh_candidate_lineage(state.run_dir)
     return nominations_path

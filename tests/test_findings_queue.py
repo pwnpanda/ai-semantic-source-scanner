@@ -32,3 +32,17 @@ def test_render_then_parse() -> None:
     md = render_queue(items)
     parsed = parse_queue(md)
     assert parsed == items
+
+
+def test_candidate_id_round_trips() -> None:
+    items = [
+        QueueItem(
+            nomination_id="N-001",
+            project="api",
+            vector="sqli",
+            loc="x.ts:42",
+            candidate_id="A-flow-17",
+        )
+    ]
+
+    assert parse_queue(render_queue(items)) == items

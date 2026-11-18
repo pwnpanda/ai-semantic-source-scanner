@@ -42,6 +42,10 @@ from ai_codescan.findings.model import Finding, parse_finding
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.ingest.sarif import ingest_sarif
+from ai_codescan.lineage import (
+    refresh_candidate_lineage,
+    write_report_manifest,
+)
 from ai_codescan.llm import LLMConfig, UnknownProviderError, is_available
 from ai_codescan.miss_finder import write_miss_candidates
 from ai_codescan.model_proposals import (
@@ -1773,6 +1777,7 @@ def gate_1(
             apply_yes_to_all(nominations.read_text(encoding="utf-8")),
             encoding="utf-8",
         )
+        refresh_candidate_lineage(last_run)
         typer.echo("marked all unanswered as y")
         return
 
@@ -1819,6 +1824,7 @@ def gate_1(
         [editor, str(nominations)],  # noqa: S607
         check=False,
     )
+    refresh_candidate_lineage(last_run)
 
 
 @app.command()
@@ -2284,6 +2290,10 @@ def report(  # noqa: PLR0913 - Typer option surface
         report_dir=out_dir,
         db_path=db_path,
     )
+    write_report_manifest(last_run, verified_findings, report_paths)
+    lineage_paths = refresh_candidate_lineage(last_run)
+    if lineage_paths is not None:
+        typer.echo(f"wrote {lineage_paths[1]}")
     for target in report_paths:
         typer.echo(f"wrote {target}")
     written = len(report_paths)

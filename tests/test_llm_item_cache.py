@@ -43,8 +43,15 @@ def _write_analyzer_stub(path: Path, attempts: Path) -> None:
         "cat - >/dev/null\n"
         f'printf \'%s\\n\' "$AICS_LLM_CONTEXT" >> "{attempts}"\n'
         "printf '%s\\n' '<<<AI_CODESCAN_FINDING:STATUS=unverified>>>'\n"
+        "printf '%s\\n' '---'\n"
+        "printf '%s\\n' 'finding_id: F-model-value'\n"
+        "printf '%s\\n' 'nomination_id: N-model-value'\n"
+        "printf '%s\\n' \"flow_id: ''\"\n"
+        "printf '%s\\n' 'cwe: CWE-000'\n"
         "printf '%s\\n' 'status: unverified'\n"
         "printf '%s\\n' 'title: reviewed'\n"
+        "printf '%s\\n' '---'\n"
+        "printf '%s\\n' 'Body.'\n"
         "printf '%s\\n' '<<<AI_CODESCAN_FINDING:END>>>'\n",
         encoding="utf-8",
     )

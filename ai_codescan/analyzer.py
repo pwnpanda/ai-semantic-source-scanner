@@ -17,6 +17,7 @@ from ai_codescan.findings.queue import (
     accepted_nominations_to_queue,
     render_queue,
 )
+from ai_codescan.lineage import refresh_candidate_lineage
 from ai_codescan.llm import LLMConfig, is_available
 from ai_codescan.nominator import write_llm_cmd_script
 from ai_codescan.review_cache import build_llm_context_fingerprint
@@ -84,7 +85,9 @@ def _score_for_items(
 ) -> dict[str, float]:
     if not items:
         return {}
-    wanted = {item.nomination_id for item in items}
+    nomination_by_candidate = {
+        item.candidate_id or item.nomination_id: item.nomination_id for item in items
+    }
     rows = conn.execute(
         """
         SELECT candidate_id, score
@@ -92,9 +95,9 @@ def _score_for_items(
         """,
     ).fetchall()
     return {
-        str(candidate_id): float(score or 0.0)
+        nomination_by_candidate[str(candidate_id)]: float(score or 0.0)
         for candidate_id, score in rows
-        if str(candidate_id) in wanted
+        if str(candidate_id) in nomination_by_candidate
     }
 
 
@@ -142,22 +145,26 @@ def _stage_slices(
     slices_dir.mkdir(exist_ok=True)
     bundles_dir = state.run_dir / "bundles"
     bundle_sizes: dict[str, int] = {}
+    staged_candidates = _load_staged_candidates(state.run_dir / "queue.jsonl")
     for it in items:
-        flow_id = _pick_flow_for_nomination(conn, {"source_loc": it.loc})
-        # Mixed value types: ids and locations are strings, "line" is an int.
-        candidate: dict[str, Any] = {
-            "id": it.nomination_id,
-            "stream": "A" if flow_id else "B",
-            "fid": flow_id,
-            "source_loc": it.loc,
-        }
+        candidate_id = it.candidate_id or it.nomination_id
+        candidate = dict(staged_candidates.get(candidate_id, {}))
+        candidate.setdefault("id", candidate_id)
+        candidate.setdefault("source_loc", it.loc)
+        flow_id = _pick_flow_for_nomination(conn, candidate)
+        candidate.setdefault("stream", "A" if flow_id else "B")
+        candidate.setdefault("fid", flow_id)
         if parsed := _loc_parts(it.loc):
-            candidate["file"] = parsed[0]
-            candidate["line"] = parsed[1]
+            candidate.setdefault("file", parsed[0])
+            candidate.setdefault("line", parsed[1])
         evidence = build_evidence_bundle(conn, candidate, source_root=source_root)
         if max_bundle_bytes is not None:
             evidence = truncate_bundle_to(evidence, max_bytes=max_bundle_bytes)
-        json_bundle_path, _md_bundle_path = write_evidence_bundle(evidence, bundles_dir=bundles_dir)
+        json_bundle_path, _md_bundle_path = write_evidence_bundle(
+            evidence,
+            bundles_dir=bundles_dir,
+            file_stem=it.nomination_id,
+        )
         bundle_sizes[it.nomination_id] = json_bundle_path.stat().st_size
         if flow_id:
             bundle = extract_slice(conn, flow_id=flow_id, source_root=source_root)
@@ -176,6 +183,20 @@ def _stage_slices(
                     encoding="utf-8",
                 )
     return bundle_sizes
+
+
+def _load_staged_candidates(queue_path: Path) -> dict[str, dict[str, Any]]:
+    if not queue_path.is_file():
+        return {}
+    candidates: dict[str, dict[str, Any]] = {}
+    for line in queue_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        candidate = json.loads(line)
+        candidate_id = str(candidate.get("id") or "")
+        if candidate_id:
+            candidates[candidate_id] = candidate
+    return candidates
 
 
 def _remove_obsolete_findings(run_dir: Path, nomination_ids: set[str]) -> None:
@@ -280,6 +301,7 @@ def run_analyzer(
         # No CLI on PATH — skill loop is skipped; downstream commands still work.
         _remove_current_analysis_findings(state, review_items)
         _ = repo_dir  # repo_dir reserved for future passes; suppress unused warning
+        refresh_candidate_lineage(state.run_dir)
         return queue_path
 
     cmd_script = write_llm_cmd_script(state.run_dir / ".llm-cmd-analyze.sh", effective)
@@ -304,4 +326,5 @@ def run_analyzer(
         sync_review_verdicts(conn, findings_dir)
     finally:
         conn.close()
+    refresh_candidate_lineage(state.run_dir)
     return queue_path

@@ -76,6 +76,10 @@ def test_colliding_nomination_ids_are_renumbered(tmp_path: Path) -> None:
     ids = _ID_LINE.findall((run_dir / "nominations.md").read_text(encoding="utf-8"))
     assert len(ids) == 3, f"expected 3 nomination lines, got {ids}"
     assert sorted(ids) == ["N-001", "N-002", "N-003"]
+    body = (run_dir / "nominations.md").read_text(encoding="utf-8")
+    assert "Candidate: A-one" in body
+    assert "Candidate: A-two" in body
+    assert "Candidate: A-three" in body
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")

@@ -12,6 +12,7 @@ _HEADER = re.compile(
 )
 
 _STREAM_C_HEADER = "## Stream C"
+_CANDIDATE_LINE = re.compile(r"^\s+Candidate:\s+`?(?P<id>[A-Za-z0-9_-]+)`?\s*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,7 @@ class Nomination:
     decision: str
     line_idx: int
     raw_line: str
+    candidate_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,10 +38,18 @@ class StreamCExtension:
 def parse_nominations(md: str) -> list[Nomination]:
     """Parse all `- [ ] N-XXX | ...` lines into ``Nomination`` records."""
     out: list[Nomination] = []
-    for idx, line in enumerate(md.splitlines()):
+    lines = md.splitlines()
+    for idx, line in enumerate(lines):
         m = _HEADER.match(line)
         if not m:
             continue
+        candidate_id = ""
+        for body_line in lines[idx + 1 :]:
+            if _HEADER.match(body_line) or body_line.startswith("## "):
+                break
+            if candidate_match := _CANDIDATE_LINE.match(body_line):
+                candidate_id = candidate_match.group("id")
+                break
         out.append(
             Nomination(
                 nomination_id=m.group("id"),
@@ -51,6 +61,7 @@ def parse_nominations(md: str) -> list[Nomination]:
                 decision=m.group("decision") or "",
                 line_idx=idx,
                 raw_line=line,
+                candidate_id=candidate_id,
             )
         )
     return out

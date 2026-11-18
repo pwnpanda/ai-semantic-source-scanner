@@ -194,6 +194,7 @@ def sync_review_verdicts(
     findings_dir: Path,
     *,
     reviewer: str = "deep_analyzer",
+    nomination_prefix: str = "",
 ) -> list[ReviewVerdict]:
     if not findings_dir.is_dir():
         return []
@@ -201,6 +202,7 @@ def sync_review_verdicts(
         verdict
         for path in sorted(findings_dir.glob("*.md"))
         if (verdict := parse_review_verdict(path, reviewer=reviewer)) is not None
+        and (not nomination_prefix or verdict.nomination_id.startswith(nomination_prefix))
     ]
     persist_review_verdicts(conn, verdicts)
     return verdicts

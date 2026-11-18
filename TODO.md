@@ -643,6 +643,19 @@ Risk controls:
 
 Deferred work:
 
+- [ ] HIGH PRIORITY: Brainstorm exploit-gadget discovery and finding links.
+  A gadget is code that becomes useful when an attacker already has another vulnerability.
+  Identify gadgets that bypass defenses, increase impact, add attack primitives, or change a finding.
+  Do not report a gadget as an independent vulnerability without evidence of an unsafe path.
+  Brainstorm these questions before implementation:
+  - Which gadget classes can static analysis find with useful precision?
+  - How can the scanner link a gadget to one or more findings without inventing reachability?
+  - Which evidence proves that the vulnerability and gadget can operate in the same attack chain?
+  - How can reports separate the primary vulnerability, the gadget, and the combined impact?
+  - How can scoring rank useful gadgets without hiding unmatched gadgets?
+  - Which positive and negative evaluation targets can measure gadget discovery and linkage?
+  Compare a graph model, a candidate subtype, and a post-finding correlation pass.
+  Choose the smallest design only after the evaluation targets expose the required data.
 - [ ] Standardize all reports around one finding schema and one rendering pipeline.
   Remove duplicate summaries, evidence, remediation text, and metadata from each report.
   Define required fields and section order before changing the report generators.

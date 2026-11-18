@@ -475,10 +475,16 @@ def render_bundle_markdown(bundle: EvidenceBundle) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def write_evidence_bundle(bundle: EvidenceBundle, *, bundles_dir: Path) -> tuple[Path, Path]:
+def write_evidence_bundle(
+    bundle: EvidenceBundle,
+    *,
+    bundles_dir: Path,
+    file_stem: str | None = None,
+) -> tuple[Path, Path]:
     bundles_dir.mkdir(parents=True, exist_ok=True)
-    json_path = bundles_dir / f"{bundle.candidate_id}.json"
-    md_path = bundles_dir / f"{bundle.candidate_id}.md"
+    stem = file_stem or bundle.candidate_id
+    json_path = bundles_dir / f"{stem}.json"
+    md_path = bundles_dir / f"{stem}.md"
     json_path.write_text(
         json.dumps(bundle.to_jsonable(), indent=2, sort_keys=True),
         encoding="utf-8",
