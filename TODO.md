@@ -676,7 +676,7 @@ Deferred work:
   - [x] Add a Markdown snapshot that fixes the field names and section order.
   - [x] Render HTML finding cards from the same normalized record.
 - [x] Promote reviewed Semgrep rules from `rules.staged/` into the active rule directory.
-- Joern model patching and CodeQL pack extension (Phase 3 covers Semgrep only; the others have a harder edit surface).
+- [x] Add staged Joern model patches and CodeQL extension packs to the scanner.
 - Full Ghost automation. We use Ghost results only as imported comparison data.
 - Live DAST validation changes.
 - Large realistic benchmark suite before tiny targets prove the harness.
