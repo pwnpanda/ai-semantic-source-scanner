@@ -156,11 +156,101 @@ def test_gadget_does_not_link_across_files_without_execution_evidence(tmp_path: 
     conn.close()
 
 
+def test_child_process_command_gadget_links_to_prototype_pollution(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    path = _seed_file(
+        conn,
+        source_root,
+        name="worker.js",
+        text=(
+            'const { spawn } = require("node:child_process");\n'
+            "const job = {};\n"
+            "merge(settings, req.body);\n"
+            "spawn(job.command, job.args || []);\n"
+        ),
+    )
+    _seed_prototype_pollution_flow(conn, path)
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    candidates = [
+        candidate
+        for candidate in analysis.candidates
+        if candidate.gadget_class == "inherited-child-process-command"
+    ]
+    assert len(candidates) == 1
+    assert candidates[0].capability == "command-execution"
+    assert len(analysis.links) == 1
+    assert analysis.links[0].relationship == "impact-amplifier"
+    conn.close()
+
+
+def test_safe_child_process_commands_are_not_gadgets(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    _seed_file(
+        conn,
+        source_root,
+        name="safe-worker.js",
+        text=(
+            'import { spawn } from "node:child_process";\n'
+            "const job = Object.create(null);\n"
+            "spawn(job.command, job.args || []);\n"
+        ),
+    )
+    _seed_file(
+        conn,
+        source_root,
+        name="owned-command-worker.js",
+        text=(
+            'const { spawn } = require("node:child_process");\n'
+            "const job = {};\n"
+            'job.command = "convert";\n'
+            "spawn(job.command, job.args || []);\n"
+        ),
+    )
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    assert analysis.candidates == ()
+    conn.close()
+
+
 @pytest.mark.parametrize(
     ("target_name", "expected_count"),
     (("express-proto-pollution", 1), ("express-proto-pollution-safe", 0)),
 )
 def test_prototype_pollution_eval_targets_cover_gadget_shapes(
+    tmp_path: Path,
+    target_name: str,
+    expected_count: int,
+) -> None:
+    source_root = Path(__file__).resolve().parents[1] / "eval-targets" / target_name
+    source_file = source_root / "server.js"
+    db = tmp_path / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    conn.execute(
+        "INSERT INTO files VALUES (?, 'sha', 'javascript', 'app', ?)",
+        [str(source_file), source_file.stat().st_size],
+    )
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    assert len(analysis.candidates) == expected_count
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("target_name", "expected_count"),
+    (("node-proto-child-process-gadget", 1), ("node-proto-child-process-gadget-safe", 0)),
+)
+def test_child_process_gadget_eval_targets(
     tmp_path: Path,
     target_name: str,
     expected_count: int,

@@ -32,6 +32,31 @@ _OWN_GUARD_TEMPLATES = (
     r"{receiver}\.hasOwnProperty\(\s*['\"]{property}['\"]\s*\)",
 )
 _GUARD_LOOKBACK_CHARS = 600
+_CHILD_PROCESS_METHODS = (
+    "exec",
+    "execFile",
+    "execFileSync",
+    "execSync",
+    "fork",
+    "spawn",
+    "spawnSync",
+)
+_CHILD_PROCESS_IMPORT_RE = re.compile(
+    r"(?:\b(?:const|let|var)\s*\{(?P<require_names>[^}]+)\}\s*=\s*"
+    r"require\(\s*['\"](?:node:)?child_process['\"]\s*\)|"
+    r"\bimport\s*\{(?P<import_names>[^}]+)\}\s*from\s*"
+    r"['\"](?:node:)?child_process['\"])"
+)
+_CHILD_PROCESS_NAMESPACE_RE = re.compile(
+    rf"(?:\b(?:const|let|var)\s+(?P<require_name>{_IDENTIFIER})\s*=\s*"
+    r"require\(\s*['\"](?:node:)?child_process['\"]\s*\)|"
+    rf"\bimport\s*\*\s*as\s+(?P<import_name>{_IDENTIFIER})\s+from\s*"
+    r"['\"](?:node:)?child_process['\"])"
+)
+_GADGET_RELATIONSHIPS = {
+    "inherited-authorization-flag": "bypass",
+    "inherited-child-process-command": "impact-amplifier",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +134,7 @@ def _relative_file(source_root: Path, path: Path) -> str:
     return path.resolve().relative_to(source_root.resolve()).as_posix()
 
 
-def _gadgets_in_text(
+def _auth_flag_gadgets_in_text(
     text: str,
     *,
     file: str,
@@ -151,12 +176,98 @@ def _gadgets_in_text(
     return gadgets
 
 
-def discover_auth_flag_gadgets(
+def _child_process_call_names(text: str) -> set[str]:
+    names: set[str] = set()
+    for match in _CHILD_PROCESS_IMPORT_RE.finditer(text):
+        imported = match.group("require_names") or match.group("import_names") or ""
+        for method in _CHILD_PROCESS_METHODS:
+            binding = re.search(
+                rf"(?:^|,)\s*{method}\s*(?:(?:as|:)\s*(?P<alias>{_IDENTIFIER}))?\s*(?=,|$)",
+                imported,
+            )
+            if binding:
+                names.add(binding.group("alias") or method)
+    for match in _CHILD_PROCESS_NAMESPACE_RE.finditer(text):
+        namespace = match.group("require_name") or match.group("import_name")
+        names.update(f"{namespace}.{method}" for method in _CHILD_PROCESS_METHODS)
+    return names
+
+
+def _sets_own_property(
+    text: str,
+    *,
+    receiver: str,
+    property_name: str,
+    initialization_offset: int,
+    use_offset: int,
+) -> bool:
+    context = text[initialization_offset:use_offset]
+    escaped_receiver = re.escape(receiver)
+    escaped_property = re.escape(property_name)
+    patterns = (
+        rf"\b{escaped_receiver}(?:\.{escaped_property}|"
+        rf"\[['\"]{escaped_property}['\"]\])\s*=",
+        rf"Object\.defineProperty\(\s*{escaped_receiver}\s*,\s*"
+        rf"['\"]{escaped_property}['\"]",
+    )
+    return any(re.search(pattern, context) for pattern in patterns)
+
+
+def _child_process_command_gadgets_in_text(
+    text: str,
+    *,
+    file: str,
+    project_id: str,
+) -> list[GadgetCandidate]:
+    initializations = {
+        match.group("receiver"): match.start() for match in _PLAIN_OBJECT_RE.finditer(text)
+    }
+    gadgets: list[GadgetCandidate] = []
+    for call_name in sorted(_child_process_call_names(text)):
+        call_re = re.compile(
+            rf"\b{re.escape(call_name)}\s*\(\s*"
+            rf"(?P<receiver>{_IDENTIFIER})(?:\?\.|\.)"
+            r"(?P<property>command|file|modulePath)\b"
+        )
+        for match in call_re.finditer(text):
+            receiver = match.group("receiver")
+            property_name = match.group("property")
+            initialization_offset = initializations.get(receiver, match.start() + 1)
+            if initialization_offset >= match.start() or _sets_own_property(
+                text,
+                receiver=receiver,
+                property_name=property_name,
+                initialization_offset=initialization_offset,
+                use_offset=match.start(),
+            ):
+                continue
+            line = _line_number(text, match.start())
+            evidence = text.splitlines()[line - 1].strip()
+            gadgets.append(
+                GadgetCandidate(
+                    gadget_id=_stable_id("G", file, line, call_name, receiver, property_name),
+                    gadget_class="inherited-child-process-command",
+                    capability="command-execution",
+                    project_id=project_id,
+                    file=file,
+                    line=line,
+                    evidence=evidence,
+                    prerequisites=(
+                        f"An attacker can set the inherited {property_name} property.",
+                        "The process reaches this child process call after the mutation.",
+                    ),
+                    detector="js-inherited-child-process-command-v1",
+                )
+            )
+    return gadgets
+
+
+def discover_gadgets(
     conn: duckdb.DuckDBPyConnection,
     *,
     source_root: Path,
 ) -> list[GadgetCandidate]:
-    """Find plain-object authorization checks that trust inherited properties."""
+    """Find supported gadget classes in indexed JavaScript source files."""
     rows = conn.execute("SELECT path, COALESCE(project_id, '') FROM files ORDER BY path").fetchall()
     gadgets: list[GadgetCandidate] = []
     for raw_path, raw_project_id in rows:
@@ -167,12 +278,11 @@ def discover_auth_flag_gadgets(
         if path.suffix.lower() not in _JS_SUFFIXES:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
+        file = _relative_file(source_root, path)
+        project_id = str(raw_project_id or "")
+        gadgets.extend(_auth_flag_gadgets_in_text(text, file=file, project_id=project_id))
         gadgets.extend(
-            _gadgets_in_text(
-                text,
-                file=_relative_file(source_root, path),
-                project_id=str(raw_project_id or ""),
-            )
+            _child_process_command_gadgets_in_text(text, file=file, project_id=project_id)
         )
     return gadgets
 
@@ -239,7 +349,7 @@ def link_prototype_pollution_gadgets(
     *,
     run_dir: Path,
 ) -> list[GadgetLink]:
-    """Link authorization gadgets to same-project prototype-pollution flows."""
+    """Link compatible gadgets to same-file prototype-pollution flows."""
     candidate_by_flow, finding_by_candidate = _run_references(run_dir)
     links: list[GadgetLink] = []
     for flow in _prototype_pollution_flows(conn):
@@ -252,7 +362,7 @@ def link_prototype_pollution_gadgets(
                 GadgetLink(
                     link_id=_stable_id("GL", flow.flow_id, gadget.gadget_id),
                     gadget_id=gadget.gadget_id,
-                    relationship="bypass",
+                    relationship=_GADGET_RELATIONSHIPS[gadget.gadget_class],
                     confidence="low",
                     flow_id=flow.flow_id,
                     candidate_id=candidate_id,
@@ -260,12 +370,14 @@ def link_prototype_pollution_gadgets(
                     connection_basis="same-file",
                     evidence=(
                         "The prototype-pollution flow and gadget occur in the same source file.",
-                        f"The gadget trusts an inherited authorization property at "
+                        f"The {gadget.gadget_class} gadget provides {gadget.capability} at "
                         f"{gadget.file}:{gadget.line}.",
                     ),
                     unmet_prerequisites=(
-                        "The prototype mutation and authorization branch execute in one process.",
-                        "The mutation occurs before the authorization branch.",
+                        *gadget.prerequisites,
+                        "The detected flow mutates the prototype used by this gadget.",
+                        "The prototype mutation and gadget execute in one process.",
+                        "The mutation occurs before the gadget.",
                     ),
                 )
             )
@@ -279,7 +391,7 @@ def analyze_gadgets(
     run_dir: Path,
 ) -> GadgetAnalysis:
     """Discover all gadgets and create evidence-backed compatible links."""
-    candidates = discover_auth_flag_gadgets(conn, source_root=source_root)
+    candidates = discover_gadgets(conn, source_root=source_root)
     links = link_prototype_pollution_gadgets(conn, candidates, run_dir=run_dir)
     return GadgetAnalysis(tuple(candidates), tuple(links))
 

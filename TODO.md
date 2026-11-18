@@ -660,6 +660,8 @@ Deferred work:
   - [x] Add the first detector for prototype pollution linked to inherited authorization flags.
   - [x] Surface unpaired gadgets in `gadgets.md` and `gadget-candidates.jsonl`.
   - [x] Add positive and negative prototype-pollution gadget evaluation shapes.
+  - [x] Detect inherited `child_process` commands that can amplify prototype pollution.
+  - [x] Add positive and negative `child_process` gadget evaluation shapes.
   - [x] Keep exploitability separate from validation status.
   - [x] Surface latent findings in `latent-findings.md` and `latent-findings.jsonl`.
   - [x] Record exact prerequisites that can make a latent finding exploitable.
