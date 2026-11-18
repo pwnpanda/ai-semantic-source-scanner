@@ -656,6 +656,10 @@ Deferred work:
   - Which positive and negative evaluation targets can measure gadget discovery and linkage?
   Compare a graph model, a candidate subtype, and a post-finding correlation pass.
   Choose the smallest design only after the evaluation targets expose the required data.
+  - [x] Add run-scoped gadget candidates and links without changing finding status.
+  - [x] Add the first detector for prototype pollution linked to inherited authorization flags.
+  - [x] Surface unpaired gadgets in `gadgets.md` and `gadget-candidates.jsonl`.
+  - [x] Add positive and negative prototype-pollution gadget evaluation shapes.
 - [ ] Standardize all reports around one finding schema and one rendering pipeline.
   Remove duplicate summaries, evidence, remediation text, and metadata from each report.
   Define required fields and section order before changing the report generators.

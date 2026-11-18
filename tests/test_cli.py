@@ -143,6 +143,37 @@ def test_candidates_supports_filters_and_all(tmp_path: Path) -> None:
     assert "bucket" in result.stdout
 
 
+def test_gadgets_command_surfaces_unpaired_candidate(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    repo = cache / "repo-1"
+    source = repo / "source"
+    source.mkdir(parents=True)
+    auth_file = source / "auth.js"
+    auth_file.write_text(
+        "const access = {};\nif (access.isAdmin) { grantAccess(); }\n",
+        encoding="utf-8",
+    )
+    db = repo / "index.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    conn.execute(
+        "INSERT INTO files VALUES (?, 'sha', 'javascript', 'app', 60)",
+        [str(auth_file)],
+    )
+    conn.close()
+    run_dir = repo / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+
+    result = runner.invoke(
+        app,
+        ["--cache-dir", str(cache), "gadgets", "--repo-id", "repo-1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "1 gadget(s)" in result.output
+    assert "unpaired" in (run_dir / "gadgets.md").read_text(encoding="utf-8")
+
+
 def test_miss_review_gracefully_skips_without_llm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -783,12 +814,15 @@ def test_report_writes_for_verified_finding(
         ],
     )
     assert result.exit_code == 0, result.stdout
-    files = [path for path in out.glob("*.md") if path.name != "final-report.md"]
+    files = [
+        path for path in out.glob("*.md") if path.name not in {"final-report.md", "gadgets.md"}
+    ]
     assert files, result.stdout
     assert "critical" in files[0].name
     assert "sqli" in files[0].name
     assert reporter_input_counts == [1]
     assert (out / "final-report.md").is_file()
+    assert (out / "gadgets.md").is_file()
 
 
 def test_visualize_help_advertises_flags() -> None:

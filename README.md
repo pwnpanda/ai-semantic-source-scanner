@@ -18,6 +18,7 @@ prep ─→ Gate 1 ─→ analyze ─→ Gate 2 ─→ validate ─→ Gate 3 �
 - **`analyze`** — per-finding sub-agent reads a minimal flow slice, walks evidence, writes `findings/<id>.md`.
 - **`validate`** — per-finding PoC writer + sandboxed Docker runner; flips status to `verified` / `rejected` / `poc_inconclusive`.
 - **`report`** — renders verified findings as bug-bounty-ready markdown with CWE→severity inference.
+- `gadgets`: finds exploit gadgets and compatible vulnerability links. It keeps unpaired gadgets visible in a separate report.
 - **`visualize`** — Graphviz DOT/SVG/PNG of flows.
 
 ---
@@ -287,7 +288,7 @@ ai_codescan/                         # Python package
 ├── ingest/sarif.py                  # Parse SARIF into flows
 ├── findings/                        # Finding model + queue
 ├── analyzer.py / nominator.py / validator.py
-├── report.py / visualize.py / sandbox.py
+├── report.py / gadgets.py / visualize.py / sandbox.py
 ├── runs/state.py                    # Cost ledger + run state
 ├── llm.py                           # Swappable provider abstraction
 ├── taxonomy/bug_classes.yaml        # 35 bug classes with CWE/CodeQL mappings

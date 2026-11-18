@@ -29,4 +29,14 @@ app.post("/settings", (req, res) => {
     res.json(settings);
 });
 
+// Exploit gadget: a polluted inherited isAdmin property changes authorization.
+// The gadget is reported separately from the prototype-pollution finding.
+const access = {};
+app.get("/admin", (_req, res) => {
+    if (access.isAdmin) {
+        return res.send("admin access granted");
+    }
+    return res.status(403).send("forbidden");
+});
+
 app.listen(3000);

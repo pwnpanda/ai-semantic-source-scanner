@@ -32,4 +32,13 @@ app.post("/settings", (req, res) => {
     res.json(settings);
 });
 
+// Negative gadget shape: the authorization object has no prototype.
+const access = Object.create(null);
+app.get("/admin", (_req, res) => {
+    if (access.isAdmin) {
+        return res.send("admin access granted");
+    }
+    return res.status(403).send("forbidden");
+});
+
 app.listen(3000);

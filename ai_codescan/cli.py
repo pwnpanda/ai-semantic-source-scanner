@@ -39,6 +39,7 @@ from ai_codescan.eval import (
 )
 from ai_codescan.evidence import evidence_bundle_from_jsonable
 from ai_codescan.findings.model import Finding, parse_finding
+from ai_codescan.gadgets import run_gadget_analysis
 from ai_codescan.gate import apply_yes_to_all, selected_extensions
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.ingest.sarif import ingest_sarif
@@ -713,6 +714,35 @@ def miss_finder(
         conn.close()
     typer.echo(
         f"wrote {len(generated)} miss candidate(s) to {out_path}; bundles at {bundle_output_dir}"
+    )
+
+
+@app.command("gadgets")
+def gadgets(
+    ctx: typer.Context,
+    repo_id: Annotated[str, typer.Option("--repo-id", help="Which cached repo.")] = "",
+) -> None:
+    """Discover standalone exploit gadgets and compatible vulnerability links."""
+    cache_root: Path = ctx.obj["cache_root"]
+    repo_id = _resolve_repo_id(cache_root, repo_id)
+    repo_dir = cache_root / repo_id
+    db_path = repo_dir / "index.duckdb"
+    runs_root = repo_dir / "runs"
+    if not db_path.is_file():
+        typer.echo("No index. Run prep first.", err=True)
+        raise typer.Exit(code=1)
+    if not runs_root.is_dir() or not any(runs_root.iterdir()):
+        typer.echo("No runs. Run nominate first.", err=True)
+        raise typer.Exit(code=1)
+    run_dir = max(runs_root.iterdir(), key=lambda path: path.stat().st_mtime)
+    result = run_gadget_analysis(
+        db_path=db_path,
+        source_root=repo_dir / "source",
+        run_dir=run_dir,
+    )
+    typer.echo(
+        f"wrote {len(result.analysis.candidates)} gadget(s) and "
+        f"{len(result.analysis.links)} compatible link(s) to {result.markdown_path}"
     )
 
 
@@ -2227,6 +2257,24 @@ def _write_verified_reports(
     return findings, report_paths
 
 
+def _write_gadget_report(
+    *,
+    db_path: Path,
+    source_root: Path,
+    run_dir: Path,
+    report_dir: Path,
+) -> Path:
+    result = run_gadget_analysis(
+        db_path=db_path,
+        source_root=source_root,
+        run_dir=run_dir,
+        report_dir=report_dir,
+    )
+    if result.report_path is None:
+        raise RuntimeError("gadget analysis did not write the requested report")
+    return result.report_path
+
+
 @app.command()
 def report(  # noqa: PLR0913 - Typer option surface
     ctx: typer.Context,
@@ -2284,6 +2332,13 @@ def report(  # noqa: PLR0913 - Typer option surface
         out_dir = Path.cwd() / "report"
 
     db_path = cache_root / repo_id / "index.duckdb"
+    gadget_report = _write_gadget_report(
+        db_path=db_path,
+        source_root=cache_root / repo_id / "source",
+        run_dir=last_run,
+        report_dir=out_dir,
+    )
+    typer.echo(f"wrote {gadget_report}")
     verified_findings, report_paths = _write_verified_reports(
         findings_dir=findings_dir,
         run_dir=last_run,
