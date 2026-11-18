@@ -9,6 +9,7 @@ import pytest
 from ai_codescan.index.duckdb_schema import apply_schema
 from ai_codescan.llm import LLMConfig
 from ai_codescan.nominator import (
+    _exclude_test_candidates,
     _reset_nomination_attempt_if_needed,
     build_queue,
     run_nominator,
@@ -46,6 +47,49 @@ def test_build_queue_includes_stream_a_for_each_flow(tmp_path: Path) -> None:
     assert "A" in streams
     flow_records = [q for q in queue if q["stream"] == "A"]
     assert flow_records[0]["fid"] == "F1"
+
+
+def test_build_queue_includes_http_entrypoint_review(tmp_path: Path) -> None:
+    db = tmp_path / "entrypoint.duckdb"
+    conn = duckdb.connect(str(db))
+    apply_schema(conn)
+    conn.execute(
+        "INSERT INTO entrypoints VALUES "
+        "('S1', 'http_route', 'HttpGet(\"{customerId}\")', "
+        "'/repo/CustomersController.cs', 17)"
+    )
+
+    queue = build_queue(conn, target_bug_classes=[])
+
+    candidate = next(item for item in queue if item["concern"] == "entrypoint-security-review")
+    assert candidate["file"] == "/repo/CustomersController.cs"
+    assert candidate["line"] == 17
+    assert candidate["symbol_id"] == "S1"
+
+
+def test_test_candidates_are_recorded_but_excluded_from_model_queue(tmp_path: Path) -> None:
+    queue = [
+        {
+            "id": "A-test",
+            "stream": "A",
+            "source_loc": "/repo/src/__tests__/auth.test.ts:9",
+        },
+        {
+            "id": "A-production",
+            "stream": "A",
+            "source_loc": "/repo/src/auth.ts:9",
+        },
+    ]
+
+    review_queue = _exclude_test_candidates(queue, run_dir=tmp_path)
+
+    assert [candidate["id"] for candidate in review_queue] == ["A-production"]
+    skipped = [
+        json.loads(line)
+        for line in (tmp_path / "skipped_candidates.jsonl").read_text().splitlines()
+    ]
+    assert skipped[0]["id"] == "A-test"
+    assert skipped[0]["skip_reason"] == "test-source"
 
 
 def test_build_queue_filters_by_bug_class(tmp_path: Path) -> None:
@@ -232,7 +276,8 @@ def test_run_nominator_stages_scores_and_bundles(
 
     done_dir = state.run_dir / ".done"
     done_dir.mkdir()
-    (done_dir / "A-F1").write_text("old-default-model", encoding="utf-8")
+    for candidate in queued:
+        (done_dir / candidate["id"]).write_text("old-default-model", encoding="utf-8")
     nominations.write_text("# Nominations\n\nold default-model output\n", encoding="utf-8")
 
     run_nominator(

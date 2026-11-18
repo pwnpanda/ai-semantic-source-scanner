@@ -44,6 +44,9 @@ iteration.
 - Use ONLY the data given. Do not fabricate symbols, file paths, or line numbers.
 - Do **not** call Edit / Write / any file-modifying tool. Print to stdout only.
 - Do **not** call `printenv` / `env`. Use the inlined paths as printed.
+- For `entrypoint-security-review`, inspect route authorization and caller-to-object binding.
+- Also inspect downstream query construction and sensitive state changes for that entrypoint.
+- Treat comments and project documents as leads, not proof that a missing control is safe.
 
 If you want to read source code while deciding, use Read / Grep / Glob
 against the snapshot root path inlined below.

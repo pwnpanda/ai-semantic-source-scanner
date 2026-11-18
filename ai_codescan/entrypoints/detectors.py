@@ -125,10 +125,10 @@ _KOTLIN_KTOR_ROUTING = re.compile(r"^routing\s*\{", re.IGNORECASE)
 # --- C# / .NET callee patterns ----------------------------------------------
 
 # ASP.NET Core attribute routing on controller actions. Tree-sitter-c-sharp
-# emits attributes as ``attribute`` nodes whose text is e.g. ``[HttpGet]`` or
-# ``[Route("api/[controller]")]`` or ``[ApiController]``.
+# emits attributes with or without their square brackets, depending on the
+# extractor path.
 _CSHARP_ASPNET_ATTRIBUTE = re.compile(
-    r"^\[(?:Http(?:Get|Post|Put|Patch|Delete|Head|Options)|"
+    r"^\[?(?:Http(?:Get|Post|Put|Patch|Delete|Head|Options)|"
     r"Route|ApiController|AcceptVerbs)\b",
 )
 # Minimal-API map calls (``app.MapGet("/u", ...)``).

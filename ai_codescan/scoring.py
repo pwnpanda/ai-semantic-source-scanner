@@ -86,6 +86,15 @@ _LOW_SIGNAL_PARTS = {
     "build",
 }
 
+_TEST_PATH_PARTS = {
+    "test",
+    "tests",
+    "__tests__",
+    "spec",
+    "specs",
+    "integrationtests",
+}
+
 _SAFE_PARAMETERIZATION_HINTS = {
     "parameterized",
     "prepared",
@@ -201,8 +210,34 @@ def _path_penalty(candidate: dict[str, Any]) -> ScoreFactor | None:
 def _source_file_for_candidate(candidate: dict[str, Any]) -> str:
     source_loc = str(candidate.get("source_loc") or "")
     if source_loc:
-        return source_loc.rpartition(":")[0]
+        path, separator, line = source_loc.rpartition(":")
+        return path if separator and line.isdigit() else source_loc
     return str(candidate.get("file") or "")
+
+
+def _is_test_path(source_file: str) -> bool:
+    if not source_file:
+        return False
+    parts = [part.lower() for part in PurePosixPath(source_file).parts]
+    if any(part in _TEST_PATH_PARTS or part.endswith(".tests") for part in parts):
+        return True
+    filename = parts[-1]
+    stem_parts = filename.split(".")
+    return (
+        filename.startswith("test_")
+        or filename.endswith("_test.py")
+        or "test" in stem_parts[1:-1]
+        or "spec" in stem_parts[1:-1]
+    )
+
+
+def is_test_candidate(candidate: dict[str, Any]) -> bool:
+    """Return whether a candidate points to test source code."""
+    paths = (
+        _source_file_for_candidate(candidate),
+        str(candidate.get("sink_file") or ""),
+    )
+    return any(_is_test_path(path) for path in paths)
 
 
 def _sidecar_path_for_source(file: str, *, source_root: Path) -> Path | None:

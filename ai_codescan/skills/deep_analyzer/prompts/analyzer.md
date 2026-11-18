@@ -54,4 +54,9 @@ Hard rules:
 - If the bundle is too thin to be sure, set `status: unverified` and explain in Open questions.
 - Use `analysis_verdict: needs-model-extension` when the issue looks real but the static model did not capture the right source, sink, or semantic condition.
 - Use `analysis_verdict: inconclusive` when evidence is insufficient; do not upgrade weak evidence to true-positive.
+- Treat comments and project documents as intent, not proof of a security control.
+- Reject a candidate only when code proves mitigation or non-reachability.
+- Keep a plausible security boundary failure unverified when policy or deployment facts are unknown.
+- For sensitive actions, treat a fail-open local prompt as unsafe unless the server enforces the same control.
+- For object identifiers, require code that binds the caller to the requested object. Authentication alone is not object authorization.
 - One finding block per iteration. Do **not** call Write / Edit.

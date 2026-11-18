@@ -7,7 +7,43 @@ import duckdb
 import pytest
 
 from ai_codescan.index.duckdb_schema import apply_schema
-from ai_codescan.scoring import attach_scores, persist_candidate_scores, score_candidates
+from ai_codescan.scoring import (
+    attach_scores,
+    is_test_candidate,
+    persist_candidate_scores,
+    score_candidates,
+)
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/repo/src/__tests__/auth.test.ts:9",
+        "/repo/Tussa.Portal.API.Tests/AuthTest.cs:4",
+        "/repo/apps/northbound/tests/test_auth.py:36",
+        "/repo/src/header.spec.ts:7",
+        "/repo/src/auth_test.py:8",
+    ),
+)
+def test_is_test_candidate_detects_common_test_paths(path: str) -> None:
+    candidate = {"source_loc": path}
+
+    assert is_test_candidate(candidate) is True
+
+
+def test_is_test_candidate_keeps_production_paths() -> None:
+    candidate = {"file": "/repo/src/contest/authorization.ts", "line": 7}
+
+    assert is_test_candidate(candidate) is False
+
+
+def test_is_test_candidate_detects_test_sink_on_production_flow() -> None:
+    candidate = {
+        "source_loc": "/repo/src/authorization.ts:7",
+        "sink_file": "/repo/tests/authorization.test.ts",
+    }
+
+    assert is_test_candidate(candidate) is True
 
 
 @pytest.mark.parametrize(

@@ -730,6 +730,29 @@ def test_aspnet_attribute_route_detected() -> None:
     assert sum(1 for e in eps if e.kind == "http_route") == 2
 
 
+def test_aspnet_attributes_without_brackets_are_detected() -> None:
+    xrefs = [
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/Controllers/CustomersController.cs",
+            "line": 17,
+            "calleeText": 'HttpGet("{customerId}")',
+        },
+        {
+            "type": "xref",
+            "kind": "call",
+            "file": "/repo/Controllers/CustomersController.cs",
+            "line": 10,
+            "calleeText": "ApiController",
+        },
+    ]
+
+    eps = detect_entrypoints(xrefs=xrefs, symbols=[])
+
+    assert sum(1 for entrypoint in eps if entrypoint.kind == "http_route") == 2
+
+
 def test_aspnet_minimal_api_mapget_detected() -> None:
     xrefs = [
         {

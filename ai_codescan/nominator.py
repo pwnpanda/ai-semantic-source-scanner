@@ -10,6 +10,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,12 @@ from ai_codescan.evidence import build_evidence_bundle, write_evidence_bundle
 from ai_codescan.llm import LLMConfig, build_argv, is_available
 from ai_codescan.review_cache import build_llm_context_fingerprint
 from ai_codescan.runs.state import RunState, save
-from ai_codescan.scoring import attach_scores, persist_candidate_scores, score_candidates
+from ai_codescan.scoring import (
+    attach_scores,
+    is_test_candidate,
+    persist_candidate_scores,
+    score_candidates,
+)
 from ai_codescan.taxonomy.loader import BugClass, resolve_classes
 
 SKILL_DIR = Path(__file__).resolve().parent / "skills" / "wide_nominator"
@@ -58,11 +64,12 @@ def build_queue(
         """
         SELECT f.fid, f.tid, f.sid, f.cwe, f.engine, s.evidence_loc,
                t.class, t.lib, t.parameterization,
-               COALESCE(m.flow_type, 'dataflow')
+               COALESCE(m.flow_type, 'dataflow'), sink_symbol.file
         FROM flows f
         JOIN taint_sources s ON s.tid = f.tid
         JOIN taint_sinks   t ON t.sid = f.sid
         LEFT JOIN flow_metadata m ON m.fid = f.fid
+        LEFT JOIN symbols sink_symbol ON sink_symbol.id = t.symbol_id
         """
     ).fetchall()
     for (
@@ -76,6 +83,7 @@ def build_queue(
         lib,
         parameterization,
         flow_type,
+        sink_file,
     ) in flow_rows:
         if cwes is not None and cwe not in cwes:
             continue
@@ -94,17 +102,20 @@ def build_queue(
                 "lib": lib,
                 "parameterization": parameterization,
                 "flow_type": flow_type,
+                "sink_file": sink_file,
             }
         )
 
     sink_no_flow = conn.execute(
         """
-        SELECT sid, class, lib, parameterization
-        FROM taint_sinks
-        WHERE sid NOT IN (SELECT sid FROM flows)
+        SELECT t.sid, t.class, t.lib, t.parameterization,
+               symbol.file, symbol.range_start
+        FROM taint_sinks t
+        LEFT JOIN symbols symbol ON symbol.id = t.symbol_id
+        WHERE t.sid NOT IN (SELECT sid FROM flows)
         """
     ).fetchall()
-    for sid, sink_class, lib, parameterization in sink_no_flow:
+    for sid, sink_class, lib, parameterization, file, line in sink_no_flow:
         candidate_component = _candidate_id_component(sid)
         queue.append(
             {
@@ -115,6 +126,8 @@ def build_queue(
                 "sink_class": sink_class,
                 "lib": lib,
                 "parameterization": parameterization,
+                "file": file,
+                "line": line,
             }
         )
 
@@ -168,7 +181,54 @@ def build_queue(
             }
         )
 
+    entrypoint_rows = conn.execute(
+        """
+        SELECT DISTINCT symbol_id, file, line, signature
+        FROM entrypoints
+        WHERE kind = 'http_route'
+        """
+    ).fetchall()
+    for sym_id, file, line, signature in entrypoint_rows:
+        identity = f"{sym_id or ''}|{file}|{line}|{signature}"
+        candidate_component = _candidate_id_component(identity)
+        queue.append(
+            {
+                "id": f"B-entry-{candidate_component}",
+                "stream": "B",
+                "concern": "entrypoint-security-review",
+                "symbol_id": sym_id,
+                "file": file,
+                "line": line,
+                "name": signature,
+            }
+        )
+
     return queue
+
+
+def _exclude_test_candidates(
+    queue: list[dict[str, Any]],
+    *,
+    run_dir: Path,
+) -> list[dict[str, Any]]:
+    review_queue: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for candidate in queue:
+        if is_test_candidate(candidate):
+            skipped.append({**candidate, "skip_reason": "test-source"})
+        else:
+            review_queue.append(candidate)
+    skipped_path = run_dir / "skipped_candidates.jsonl"
+    skipped_path.write_text(
+        "".join(json.dumps(candidate) + "\n" for candidate in skipped),
+        encoding="utf-8",
+    )
+    if skipped:
+        sys.stderr.write(
+            f"[nominate] skipped {len(skipped)} test candidates from model review "
+            f"(details: {skipped_path})\n"
+        )
+    return review_queue
 
 
 def _stage_inputs(
@@ -334,6 +394,7 @@ def run_nominator(
         scores = score_candidates(conn, queue, source_root=repo_dir / "source")
         persist_candidate_scores(conn, scores)
         queue = attach_scores(queue, scores)
+        queue = _exclude_test_candidates(queue, run_dir=state.run_dir)
         _stage_inputs(state, repo_dir, queue, conn)
     finally:
         conn.close()
