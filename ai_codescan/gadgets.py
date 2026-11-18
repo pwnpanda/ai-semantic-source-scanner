@@ -16,6 +16,7 @@ from ai_codescan.findings.model import parse_finding
 from ai_codescan.source_paths import SourcePathError, resolve_contained_file
 
 _JS_SUFFIXES = frozenset({".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"})
+_TEMPLATE_SUFFIXES = frozenset({".html", ".jinja", ".jinja2", ".j2", ".jsp", ".cshtml"})
 _IDENTIFIER = r"[A-Za-z_$][A-Za-z0-9_$]*"
 _PLAIN_OBJECT_RE = re.compile(
     rf"\b(?:const|let|var)\s+(?P<receiver>{_IDENTIFIER})\s*=\s*"
@@ -66,11 +67,37 @@ _FILESYSTEM_NAMESPACE_RE = re.compile(
     rf"\bimport\s*\*\s*as\s+(?P<import_name>{_IDENTIFIER})\s+from\s*"
     r"['\"](?:node:)?fs(?:/promises)?['\"])"
 )
+_TEMPLATE_BYPASS_PATTERNS = (
+    (
+        frozenset({".html", ".jinja", ".jinja2", ".j2"}),
+        re.compile(r"{{[^}\n]*\|\s*safe(?:\s*\([^)]*\))?[^}\n]*}}"),
+        "jinja-safe-filter-v1",
+    ),
+    (
+        frozenset({".html", ".jinja", ".jinja2", ".j2"}),
+        re.compile(
+            r"{%\s*autoescape\s+off\s*%}.*?{{.*?}}.*?{%\s*endautoescape\s*%}",
+            re.DOTALL,
+        ),
+        "django-autoescape-off-v1",
+    ),
+    (
+        frozenset({".jsp"}),
+        re.compile(r"<%=\s*[^%\n]+%>"),
+        "jsp-raw-expression-v1",
+    ),
+    (
+        frozenset({".cshtml"}),
+        re.compile(r"@Html\.Raw\s*\([^\n)]+\)"),
+        "razor-html-raw-v1",
+    ),
+)
 _GADGET_RELATIONSHIPS = {
     "inherited-authorization-flag": "bypass",
     "inherited-child-process-command": "impact-amplifier",
     "inherited-filesystem-path": "impact-amplifier",
 }
+_PROTOTYPE_POLLUTION_GADGET_CLASSES = frozenset(_GADGET_RELATIONSHIPS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,12 +370,45 @@ def _filesystem_path_gadgets_in_text(
     return gadgets
 
 
+def _template_bypass_gadgets_in_text(
+    text: str,
+    *,
+    file: str,
+    project_id: str,
+    suffix: str,
+) -> list[GadgetCandidate]:
+    gadgets: list[GadgetCandidate] = []
+    for suffixes, pattern, detector in _TEMPLATE_BYPASS_PATTERNS:
+        if suffix not in suffixes:
+            continue
+        for match in pattern.finditer(text):
+            line = _line_number(text, match.start())
+            evidence = text.splitlines()[line - 1].strip()
+            gadgets.append(
+                GadgetCandidate(
+                    gadget_id=_stable_id("G", file, line, detector),
+                    gadget_class="template-output-encoding-bypass",
+                    capability="cross-site-scripting-amplifier",
+                    project_id=project_id,
+                    file=file,
+                    line=line,
+                    evidence=evidence,
+                    prerequisites=(
+                        "Untrusted content reaches this template expression.",
+                        "The rendered output reaches a browser in an HTML context.",
+                    ),
+                    detector=detector,
+                )
+            )
+    return gadgets
+
+
 def discover_gadgets(
     conn: duckdb.DuckDBPyConnection,
     *,
     source_root: Path,
 ) -> list[GadgetCandidate]:
-    """Find supported gadget classes in indexed JavaScript source files."""
+    """Find supported gadget classes in indexed source and template files."""
     rows = conn.execute("SELECT path, COALESCE(project_id, '') FROM files ORDER BY path").fetchall()
     gadgets: list[GadgetCandidate] = []
     for raw_path, raw_project_id in rows:
@@ -356,16 +416,27 @@ def discover_gadgets(
             path = resolve_contained_file(source_root, str(raw_path))
         except SourcePathError:
             continue
-        if path.suffix.lower() not in _JS_SUFFIXES:
+        suffix = path.suffix.lower()
+        if suffix not in _JS_SUFFIXES | _TEMPLATE_SUFFIXES:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         file = _relative_file(source_root, path)
         project_id = str(raw_project_id or "")
-        gadgets.extend(_auth_flag_gadgets_in_text(text, file=file, project_id=project_id))
-        gadgets.extend(
-            _child_process_command_gadgets_in_text(text, file=file, project_id=project_id)
-        )
-        gadgets.extend(_filesystem_path_gadgets_in_text(text, file=file, project_id=project_id))
+        if suffix in _JS_SUFFIXES:
+            gadgets.extend(_auth_flag_gadgets_in_text(text, file=file, project_id=project_id))
+            gadgets.extend(
+                _child_process_command_gadgets_in_text(text, file=file, project_id=project_id)
+            )
+            gadgets.extend(_filesystem_path_gadgets_in_text(text, file=file, project_id=project_id))
+        if suffix in _TEMPLATE_SUFFIXES:
+            gadgets.extend(
+                _template_bypass_gadgets_in_text(
+                    text,
+                    file=file,
+                    project_id=project_id,
+                    suffix=suffix,
+                )
+            )
     return gadgets
 
 
@@ -436,6 +507,8 @@ def link_prototype_pollution_gadgets(
     links: list[GadgetLink] = []
     for flow in _prototype_pollution_flows(conn):
         for gadget in gadgets:
+            if gadget.gadget_class not in _PROTOTYPE_POLLUTION_GADGET_CLASSES:
+                continue
             same_file = bool(flow.file and flow.file.endswith(gadget.file))
             if not same_file:
                 continue

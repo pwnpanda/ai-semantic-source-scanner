@@ -562,7 +562,7 @@ Follow-ups (intentionally deferred):
 - [ ] Stored-XSS eval target. Needs a JS/Python target whose DB-write pattern `storage_taint.run_fixpoint` already understands; building one + tuning the pattern is its own debugging cycle.
 - [ ] Wire `run_full_fixpoint` into `analyze` / `scan` so stored XSS runs by default. Today only `taint-schema` triggers it.
 - [ ] Tighter same-function (not same-file) proximity gate once the call graph is wired into the heuristic.
-- [ ] Template-engine bypass detection (Jinja2 `|safe`, Django `autoescape off`, JSP `<%= %>`).
+- [x] Detect template output bypasses in Jinja, Django, JSP, and Razor templates.
 
 ## Phase 16: Pure-JS DOM-XSS coverage (complete)
 
@@ -664,6 +664,8 @@ Deferred work:
   - [x] Add positive and negative `child_process` gadget evaluation shapes.
   - [x] Detect inherited filesystem paths that can amplify prototype pollution.
   - [x] Add positive and negative file-read gadget evaluation shapes.
+  - [x] Detect template output bypass gadgets without inventing XSS reachability.
+  - [x] Add positive and negative template bypass evaluation shapes.
   - [x] Keep exploitability separate from validation status.
   - [x] Surface latent findings in `latent-findings.md` and `latent-findings.jsonl`.
   - [x] Record exact prerequisites that can make a latent finding exploitable.

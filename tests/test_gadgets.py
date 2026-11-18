@@ -287,6 +287,90 @@ def test_safe_filesystem_paths_are_not_gadgets(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("name", "text", "detector"),
+    [
+        ("templates/jinja.html", "{{ profile.bio | safe }}\n", "jinja-safe-filter-v1"),
+        (
+            "templates/django.html",
+            "{% autoescape off %}{{ profile.bio }}{% endautoescape %}\n",
+            "django-autoescape-off-v1",
+        ),
+        ("views/profile.jsp", '<%= request.getParameter("bio") %>\n', "jsp-raw-expression-v1"),
+        ("Views/Profile.cshtml", "@Html.Raw(Model.Bio)\n", "razor-html-raw-v1"),
+    ],
+)
+def test_template_output_bypass_gadgets_remain_visible(
+    tmp_path: Path,
+    name: str,
+    text: str,
+    detector: str,
+) -> None:
+    source_root = tmp_path / "source"
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    _seed_file(conn, source_root, name=name, text=text)
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    assert len(analysis.candidates) == 1
+    gadget = analysis.candidates[0]
+    assert gadget.gadget_class == "template-output-encoding-bypass"
+    assert gadget.capability == "cross-site-scripting-amplifier"
+    assert gadget.detector == detector
+    assert analysis.links == ()
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("templates/jinja.html", "{{ profile.bio }}\n"),
+        (
+            "templates/django.html",
+            "{% autoescape on %}{{ profile.bio }}{% endautoescape %}\n",
+        ),
+        ("views/profile.jsp", '<c:out value="${profile.bio}" />\n'),
+        ("Views/Profile.cshtml", "@Model.Bio\n"),
+    ],
+)
+def test_encoded_template_output_is_not_a_gadget(
+    tmp_path: Path,
+    name: str,
+    text: str,
+) -> None:
+    source_root = tmp_path / "source"
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    _seed_file(conn, source_root, name=name, text=text)
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    assert analysis.candidates == ()
+    conn.close()
+
+
+def test_template_bypass_does_not_link_to_unrelated_prototype_pollution(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    path = _seed_file(
+        conn,
+        source_root,
+        name="templates/profile.html",
+        text="{{ profile.bio | safe }}\n",
+    )
+    _seed_prototype_pollution_flow(conn, path)
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    assert len(analysis.candidates) == 1
+    assert analysis.links == ()
+    conn.close()
+
+
+@pytest.mark.parametrize(
     ("target_name", "expected_count"),
     (("express-proto-pollution", 1), ("express-proto-pollution-safe", 0)),
 )
@@ -352,6 +436,33 @@ def test_file_read_gadget_eval_targets(
     apply_schema(conn)
     conn.execute(
         "INSERT INTO files VALUES (?, 'sha', 'javascript', 'app', ?)",
+        [str(source_file), source_file.stat().st_size],
+    )
+
+    analysis = analyze_gadgets(conn, source_root=source_root, run_dir=tmp_path / "run")
+
+    assert len(analysis.candidates) == expected_count
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("target_name", "expected_count"),
+    (
+        ("template-output-bypass-gadgets", 1),
+        ("template-output-bypass-gadgets-safe", 0),
+    ),
+)
+def test_template_bypass_gadget_eval_targets(
+    tmp_path: Path,
+    target_name: str,
+    expected_count: int,
+) -> None:
+    source_root = Path(__file__).resolve().parents[1] / "eval-targets" / target_name
+    source_file = source_root / "templates" / "profile.html"
+    conn = duckdb.connect(str(tmp_path / "index.duckdb"))
+    apply_schema(conn)
+    conn.execute(
+        "INSERT INTO files VALUES (?, 'sha', 'html', 'app', ?)",
         [str(source_file), source_file.stat().st_size],
     )
 
